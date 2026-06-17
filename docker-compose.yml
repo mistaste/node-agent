@@ -1,0 +1,15 @@
+services:
+  xray:
+    image: ghcr.io/xtls/xray-core:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./xray-config.json:/etc/xray/config.json:ro
+
+  node-agent:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    depends_on:
+      - xray

@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Guardex Node Agent — one-command server setup
+# Guardex Node Agent — one-command Docker setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
-# Or with env vars:
-#   NODE_ID=<uuid> CONTROLLER_URL=https://api.example.com INTERNAL_SERVICE_TOKEN=xxx bash install.sh
 
 XRAY_VERSION="${XRAY_VERSION:-v25.3.6}"
 XRAY_PORT="${XRAY_PORT:-443}"
@@ -17,36 +15,31 @@ CONTROLLER_URL="${CONTROLLER_URL:-}"
 INTERNAL_SERVICE_TOKEN="${INTERNAL_SERVICE_TOKEN:-}"
 AGENT_SECRET="${AGENT_SECRET:-$(openssl rand -hex 32)}"
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+INSTALL_DIR="${INSTALL_DIR:-/opt/guardex-node}"
+
 log()  { echo -e "\033[1;32m[guardex]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[guardex]\033[0m $*"; }
 die()  { echo -e "\033[1;31m[guardex]\033[0m $*" >&2; exit 1; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "Run as root: sudo bash install.sh"; }
-require_cmd()  { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
-# ── install Xray ──────────────────────────────────────────────────────────────
-install_xray() {
-    log "Installing Xray-core ${XRAY_VERSION}..."
-    local arch; arch=$(uname -m)
-    case "$arch" in
-        x86_64)  arch="64" ;;
-        aarch64) arch="arm64-v8a" ;;
-        *) die "Unsupported architecture: $arch" ;;
-    esac
-
-    local url="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${arch}.zip"
-    curl -fsSL "$url" -o /tmp/xray.zip
-    unzip -o /tmp/xray.zip xray -d /usr/local/bin/
-    chmod +x /usr/local/bin/xray
-    rm /tmp/xray.zip
-    log "Xray installed: $(xray version | head -1)"
+# ── install Docker ─────────────────────────────────────────────────────────────
+install_docker() {
+    if command -v docker >/dev/null 2>&1; then
+        log "Docker already installed: $(docker --version)"
+        return
+    fi
+    log "Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    systemctl enable docker
+    systemctl start docker
+    log "Docker installed ✓"
 }
 
-# ── generate Reality keys ─────────────────────────────────────────────────────
+# ── generate Reality keys via Xray ────────────────────────────────────────────
 generate_reality_keys() {
     log "Generating Reality keypair..."
-    local keys; keys=$(xray x25519)
+    local keys; keys=$(docker run --rm ghcr.io/xtls/xray-core:latest x25519)
     REALITY_PRIVATE_KEY=$(echo "$keys" | grep "Private key:" | awk '{print $3}')
     REALITY_PUBLIC_KEY=$(echo  "$keys" | grep "Public key:"  | awk '{print $3}')
     REALITY_SHORT_ID=$(openssl rand -hex 8)
@@ -56,9 +49,9 @@ generate_reality_keys() {
 
 # ── write Xray config ─────────────────────────────────────────────────────────
 write_xray_config() {
-    log "Writing Xray config..."
-    mkdir -p /etc/xray
-    cat > /etc/xray/config.json <<EOF
+    log "Writing Xray config to ${INSTALL_DIR}/xray-config.json..."
+    mkdir -p "$INSTALL_DIR"
+    cat > "$INSTALL_DIR/xray-config.json" <<EOF
 {
   "log": { "loglevel": "warning" },
   "api": {
@@ -112,83 +105,10 @@ write_xray_config() {
 EOF
 }
 
-# ── create Xray systemd service ───────────────────────────────────────────────
-install_xray_service() {
-    log "Installing Xray systemd service..."
-    cat > /etc/systemd/system/xray.service <<EOF
-[Unit]
-Description=Xray VPN Core
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
-Restart=on-failure
-RestartSec=3
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable xray
-    systemctl restart xray
-    sleep 1
-    systemctl is-active --quiet xray && log "Xray running ✓" || warn "Xray may not be running — check: systemctl status xray"
-}
-
-# ── install Go ────────────────────────────────────────────────────────────────
-install_go() {
-    if command -v go >/dev/null 2>&1; then
-        log "Go already installed: $(go version)"
-        return
-    fi
-    log "Installing Go 1.24.1..."
-    local arch; arch=$(uname -m)
-    case "$arch" in
-        x86_64)  arch="amd64" ;;
-        aarch64) arch="arm64" ;;
-        *) die "Unsupported architecture: $arch" ;;
-    esac
-    curl -fsSL "https://go.dev/dl/go1.24.1.linux-${arch}.tar.gz" -o /tmp/go.tar.gz
-    rm -rf /usr/local/go
-    tar -C /usr/local -xzf /tmp/go.tar.gz
-    rm /tmp/go.tar.gz
-    export PATH=$PATH:/usr/local/go/bin
-    log "Go installed: $(go version)"
-}
-
-# ── install Node Agent ─────────────────────────────────────────────────────────
-install_node_agent() {
-    log "Installing Guardex Node Agent..."
-    local arch; arch=$(uname -m)
-    case "$arch" in
-        x86_64)  arch="amd64" ;;
-        aarch64) arch="arm64" ;;
-        *) die "Unsupported architecture: $arch" ;;
-    esac
-
-    local release_url="https://github.com/mistaste/node-agent/releases/latest/download/node-agent-linux-${arch}"
-    if ! curl -fsSL "$release_url" -o /usr/local/bin/node-agent 2>/dev/null; then
-        warn "No pre-built binary found. Building from source..."
-        install_go
-        require_cmd git
-        local tmpdir; tmpdir=$(mktemp -d)
-        git clone https://github.com/mistaste/node-agent.git "$tmpdir/node-agent"
-        cd "$tmpdir/node-agent"
-        PATH=$PATH:/usr/local/go/bin GOFLAGS="" go build -ldflags="-checklinkname=0" -o /usr/local/bin/node-agent .
-        rm -rf "$tmpdir"
-    fi
-    chmod +x /usr/local/bin/node-agent
-    log "Node Agent installed"
-}
-
-# ── create Node Agent env file and service ────────────────────────────────────
-install_agent_service() {
-    log "Installing Node Agent systemd service..."
-    mkdir -p /etc/guardex
-
-    cat > /etc/guardex/node-agent.env <<EOF
+# ── write .env for node-agent ─────────────────────────────────────────────────
+write_env() {
+    log "Writing ${INSTALL_DIR}/.env..."
+    cat > "$INSTALL_DIR/.env" <<EOF
 XRAY_GRPC_ADDR=127.0.0.1:${XRAY_GRPC_PORT}
 AGENT_LISTEN_ADDR=:${AGENT_PORT}
 AGENT_SECRET=${AGENT_SECRET}
@@ -198,30 +118,25 @@ NODE_ID=${NODE_ID}
 CONTROLLER_URL=${CONTROLLER_URL}
 INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN}
 EOF
-    chmod 600 /etc/guardex/node-agent.env
+    chmod 600 "$INSTALL_DIR/.env"
+}
 
-    cat > /etc/systemd/system/node-agent.service <<EOF
-[Unit]
-Description=Guardex Node Agent
-After=xray.service
-Requires=xray.service
+# ── clone repo and start containers ───────────────────────────────────────────
+start_containers() {
+    log "Cloning node-agent repo to ${INSTALL_DIR}..."
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        git -C "$INSTALL_DIR" pull --ff-only
+    else
+        git clone https://github.com/mistaste/node-agent.git "$INSTALL_DIR"
+    fi
 
-[Service]
-Type=simple
-EnvironmentFile=/etc/guardex/node-agent.env
-ExecStart=/usr/local/bin/node-agent
-Restart=on-failure
-RestartSec=5
-LimitNOFILE=65536
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable node-agent
-    systemctl restart node-agent
-    sleep 1
-    systemctl is-active --quiet node-agent && log "Node Agent running ✓" || warn "Node Agent may not be running — check: systemctl status node-agent"
+    # copy generated files into the repo dir (already there if INSTALL_DIR is the clone)
+    log "Starting containers with Docker Compose..."
+    cd "$INSTALL_DIR"
+    docker compose pull xray 2>/dev/null || true
+    docker compose up -d --build
+    sleep 2
+    docker compose ps
 }
 
 # ── print summary ─────────────────────────────────────────────────────────────
@@ -247,26 +162,22 @@ print_summary() {
     echo "REALITY_PUBLIC_KEY=${REALITY_PUBLIC_KEY}"
     echo "REALITY_SHORT_ID=${REALITY_SHORT_ID}"
     echo "AGENT_SECRET=${AGENT_SECRET}"
+    echo ""
+    echo "# Manage: cd ${INSTALL_DIR} && docker compose logs -f"
 }
 
 # ── main ──────────────────────────────────────────────────────────────────────
 main() {
     require_root
-    require_cmd curl
-    require_cmd unzip
-    require_cmd openssl
-
-    log "Starting Guardex node setup..."
 
     apt-get update -qq
-    apt-get install -y -qq curl unzip openssl
+    apt-get install -y -qq curl openssl git
 
-    install_xray
+    install_docker
     generate_reality_keys
     write_xray_config
-    install_xray_service
-    install_node_agent
-    install_agent_service
+    write_env
+    start_containers
     print_summary
 }
 
