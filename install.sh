@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euxo pipefail
+set -eo pipefail
 
 # Guardex Node Agent — one-command Docker setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
@@ -181,8 +181,11 @@ print_summary() {
     printf "║  Reality SID:     %-38s ║\n" "$REALITY_SHORT_ID"
     printf "║  Inbound Port:    %-38s ║\n" "$XRAY_PORT"
     echo "╠══════════════════════════════════════════════════════════╣"
-    echo "║  Add in Admin Panel → Servers → Edit:                    ║"
-    echo "║    node_url, node_secret, reality_pbk, reality_short_id  ║"
+    if [ -n "$CONTROLLER_URL" ]; then
+    echo "║  ✓ Approval request sent → Admin Panel → Servers         ║"
+    else
+    echo "║  Add manually: Admin Panel → Servers → Add server        ║"
+    fi
     echo "╚══════════════════════════════════════════════════════════╝"
     echo ""
     echo "# Save these — the private key never leaves this server:"
@@ -192,6 +195,45 @@ print_summary() {
     echo "AGENT_SECRET=${AGENT_SECRET}"
     echo ""
     echo "# Manage: cd ${INSTALL_DIR} && docker compose logs -f"
+}
+
+# ── auto-register with controller ─────────────────────────────────────────────
+register_node() {
+    [ -z "$CONTROLLER_URL" ] && return 0
+
+    local ip; ip=$(curl -fsSL https://api4.my-ip.io/ip 2>/dev/null || curl -fsSL ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+
+    log "Registering node with controller at ${CONTROLLER_URL}..."
+    local payload
+    payload=$(cat <<PAYLOAD
+{
+  "host": "${ip}",
+  "node_url": "http://${ip}:${AGENT_PORT}",
+  "node_secret": "${AGENT_SECRET}",
+  "reality_pbk": "${REALITY_PUBLIC_KEY}",
+  "reality_short_id": "${REALITY_SHORT_ID}",
+  "vless_port": ${XRAY_PORT},
+  "inbound_tag": "${INBOUND_TAG}",
+  "reality_sni": "www.google.com",
+  "reality_flow": "xtls-rprx-vision"
+}
+PAYLOAD
+)
+
+    local http_code
+    http_code=$(curl -fsSL -o /dev/null -w "%{http_code}" \
+        -X POST "${CONTROLLER_URL}/v1/internal/node/register" \
+        -H "Content-Type: application/json" \
+        -H "X-Service-Token: ${INTERNAL_SERVICE_TOKEN}" \
+        -d "$payload" 2>/dev/null || echo "000")
+
+    if [ "$http_code" = "201" ]; then
+        log "✓ Node registered — check Admin Panel → Servers for approval request"
+    elif [ "$http_code" = "409" ]; then
+        warn "Pending registration for this IP already exists in the admin panel"
+    else
+        warn "Auto-registration failed (HTTP $http_code) — add server manually via Admin Panel"
+    fi
 }
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -207,6 +249,7 @@ main() {
     write_xray_config
     write_env
     start_containers
+    register_node
     print_summary
 }
 
