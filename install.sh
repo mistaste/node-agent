@@ -38,9 +38,13 @@ install_docker() {
 # ── generate Reality keys via Xray ────────────────────────────────────────────
 generate_reality_keys() {
     log "Generating Reality keypair..."
-    local keys; keys=$(docker run --rm ghcr.io/xtls/xray-core:latest x25519)
-    REALITY_PRIVATE_KEY=$(echo "$keys" | grep "Private key:" | awk '{print $3}')
-    REALITY_PUBLIC_KEY=$(echo  "$keys" | grep "Public key:"  | awk '{print $3}')
+    local keys; keys=$(docker run --rm ghcr.io/xtls/xray-core:latest x25519 2>/dev/null || true)
+    log "xray x25519 output: $keys"
+    REALITY_PRIVATE_KEY=$(echo "$keys" | grep -i "private" | awk '{print $NF}' || true)
+    REALITY_PUBLIC_KEY=$(echo  "$keys" | grep -i "public"  | awk '{print $NF}' || true)
+    if [ -z "$REALITY_PRIVATE_KEY" ] || [ -z "$REALITY_PUBLIC_KEY" ]; then
+        die "Failed to generate Reality keys. Output was: $keys"
+    fi
     REALITY_SHORT_ID=$(openssl rand -hex 8)
     log "Public key:  $REALITY_PUBLIC_KEY"
     log "Short ID:    $REALITY_SHORT_ID"
