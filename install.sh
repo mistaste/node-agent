@@ -13,6 +13,7 @@ NODE_ID="${NODE_ID:-}"
 CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com}"
 INTERNAL_SERVICE_TOKEN="${INTERNAL_SERVICE_TOKEN:-}"
 AGENT_SECRET="${AGENT_SECRET:-$(openssl rand -hex 32)}"
+REGISTRATION_STATUS=""  # set by register_node()
 
 # ── prompt for token if not set ───────────────────────────────────────────────
 prompt_token() {
@@ -198,11 +199,12 @@ print_summary() {
     printf "║  Reality SID:     %-38s ║\n" "$REALITY_SHORT_ID"
     printf "║  Inbound Port:    %-38s ║\n" "$XRAY_PORT"
     echo "╠══════════════════════════════════════════════════════════╣"
-    if [ -n "$CONTROLLER_URL" ]; then
-    echo "║  ✓ Approval request sent → Admin Panel → Servers         ║"
-    else
-    echo "║  Add manually: Admin Panel → Servers → Add server        ║"
-    fi
+    case "$REGISTRATION_STATUS" in
+        ok)        echo "║  ✓ Запрос отправлен → Admin Panel → Servers              ║" ;;
+        duplicate) echo "║  ⚠ Уже ожидает подтверждения в Admin Panel               ║" ;;
+        failed)    echo "║  ✗ Авторегистрация не удалась — добавь вручную           ║" ;;
+        *)         echo "║  Добавь вручную: Admin Panel → Servers → Add server      ║" ;;
+    esac
     echo "╚══════════════════════════════════════════════════════════╝"
     echo ""
     echo "# Save these — the private key never leaves this server:"
@@ -238,18 +240,22 @@ PAYLOAD
 )
 
     local http_code
-    http_code=$(curl -fsSL -o /dev/null -w "%{http_code}" \
-        -X POST "${CONTROLLER_URL}/v1/internal/node/register" \
+    http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+        -X POST "${CONTROLLER_URL}/api/internal/node/register" \
         -H "Content-Type: application/json" \
         -H "X-Service-Token: ${INTERNAL_SERVICE_TOKEN}" \
-        -d "$payload" 2>/dev/null || echo "000")
+        -d "$payload" 2>/dev/null)
+    http_code="${http_code:-000}"
 
     if [ "$http_code" = "201" ]; then
-        log "✓ Node registered — check Admin Panel → Servers for approval request"
+        log "✓ Node registered — проверь Admin Panel → Servers"
+        REGISTRATION_STATUS="ok"
     elif [ "$http_code" = "409" ]; then
-        warn "Pending registration for this IP already exists in the admin panel"
+        warn "Этот IP уже ожидает подтверждения в Admin Panel"
+        REGISTRATION_STATUS="duplicate"
     else
-        warn "Auto-registration failed (HTTP $http_code) — add server manually via Admin Panel"
+        warn "Авторегистрация не удалась (HTTP $http_code) — добавь сервер вручную"
+        REGISTRATION_STATUS="failed"
     fi
 }
 
