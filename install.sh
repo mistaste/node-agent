@@ -4,7 +4,6 @@ set -euo pipefail
 # Guardex Node Agent — one-command Docker setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
 
-XRAY_VERSION="${XRAY_VERSION:-v25.3.6}"
 XRAY_PORT="${XRAY_PORT:-443}"
 AGENT_PORT="${AGENT_PORT:-8099}"
 XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
