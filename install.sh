@@ -241,7 +241,7 @@ PAYLOAD
 
     local http_code
     http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
-        -X POST "${CONTROLLER_URL}/api/internal/node/register" \
+        -X POST "${CONTROLLER_URL}/v1/internal/node/register" \
         -H "Content-Type: application/json" \
         -H "X-Service-Token: ${INTERNAL_SERVICE_TOKEN}" \
         -d "$payload" 2>/dev/null)
