@@ -35,17 +35,39 @@ install_docker() {
     log "Docker installed ✓"
 }
 
-# ── generate Reality keys via Xray ────────────────────────────────────────────
+# ── generate Reality keys using a temporary xray binary ───────────────────────
 generate_reality_keys() {
     log "Generating Reality keypair..."
-    local keys; keys=$(docker run --rm ghcr.io/xtls/xray-core:latest x25519 2>/dev/null || true)
-    log "xray x25519 output: $keys"
-    REALITY_PRIVATE_KEY=$(echo "$keys" | grep -i "private" | awk '{print $NF}' || true)
-    REALITY_PUBLIC_KEY=$(echo  "$keys" | grep -i "public"  | awk '{print $NF}' || true)
-    if [ -z "$REALITY_PRIVATE_KEY" ] || [ -z "$REALITY_PUBLIC_KEY" ]; then
-        die "Failed to generate Reality keys. Output was: $keys"
+    local xray_bin="/tmp/xray-keygen"
+    local arch; arch=$(uname -m)
+    case "$arch" in
+        x86_64)  arch="64" ;;
+        aarch64) arch="arm64-v8a" ;;
+        *) die "Unsupported architecture: $arch" ;;
+    esac
+
+    if ! command -v xray >/dev/null 2>&1; then
+        log "Downloading xray for key generation..."
+        local latest; latest=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+        curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/${latest}/Xray-linux-${arch}.zip" -o /tmp/xray-keygen.zip
+        unzip -o /tmp/xray-keygen.zip xray -d /tmp/
+        mv /tmp/xray "$xray_bin"
+        chmod +x "$xray_bin"
+        rm -f /tmp/xray-keygen.zip
+    else
+        xray_bin="xray"
     fi
+
+    local keys; keys=$("$xray_bin" x25519)
+    REALITY_PRIVATE_KEY=$(echo "$keys" | grep "Private key:" | awk '{print $3}')
+    REALITY_PUBLIC_KEY=$(echo  "$keys" | grep "Public key:"  | awk '{print $3}')
     REALITY_SHORT_ID=$(openssl rand -hex 8)
+
+    [ "$xray_bin" = "/tmp/xray-keygen" ] && rm -f "$xray_bin"
+
+    [ -z "$REALITY_PRIVATE_KEY" ] && die "Failed to parse private key from: $keys"
+    [ -z "$REALITY_PUBLIC_KEY"  ] && die "Failed to parse public key from: $keys"
+
     log "Public key:  $REALITY_PUBLIC_KEY"
     log "Short ID:    $REALITY_SHORT_ID"
 }
