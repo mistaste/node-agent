@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euxo pipefail
 
 # Guardex Node Agent — one-command Docker setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
