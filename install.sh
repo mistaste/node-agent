@@ -136,7 +136,7 @@ write_xray_config() {
   ],
   "routing": {
     "rules": [
-      { "inboundTag": ["api"], "outboundTag": "direct", "type": "field" }
+      { "inboundTag": ["api"], "outboundTag": "api", "type": "field" }
     ]
   },
   "stats": {},
