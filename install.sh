@@ -244,7 +244,7 @@ PAYLOAD
         -X POST "${CONTROLLER_URL}/v1/internal/node/register" \
         -H "Content-Type: application/json" \
         -H "X-Service-Token: ${INTERNAL_SERVICE_TOKEN}" \
-        -d "$payload" 2>/dev/null)
+        -d "$payload" 2>/dev/null) || true
     http_code="${http_code:-000}"
 
     if [ "$http_code" = "201" ]; then
