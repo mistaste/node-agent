@@ -10,7 +10,7 @@ XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
 INBOUND_TAG="${INBOUND_TAG:-vless-in}"
 
 NODE_ID="${NODE_ID:-}"
-CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com}"
+CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com:2096}"
 INTERNAL_SERVICE_TOKEN="${INTERNAL_SERVICE_TOKEN:-}"
 AGENT_SECRET="${AGENT_SECRET:-$(openssl rand -hex 32)}"
 REGISTRATION_STATUS=""  # set by register_node()
@@ -240,7 +240,7 @@ PAYLOAD
 )
 
     local http_code
-    http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+    http_code=$(curl -skS -o /dev/null -w "%{http_code}" \
         -X POST "${CONTROLLER_URL}/v1/internal/node/register" \
         -H "Content-Type: application/json" \
         -H "X-Service-Token: ${INTERNAL_SERVICE_TOKEN}" \
