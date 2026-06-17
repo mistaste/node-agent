@@ -10,9 +10,26 @@ XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
 INBOUND_TAG="${INBOUND_TAG:-vless-in}"
 
 NODE_ID="${NODE_ID:-}"
-CONTROLLER_URL="${CONTROLLER_URL:-}"
+CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com}"
 INTERNAL_SERVICE_TOKEN="${INTERNAL_SERVICE_TOKEN:-}"
 AGENT_SECRET="${AGENT_SECRET:-$(openssl rand -hex 32)}"
+
+# ── prompt for token if not set ───────────────────────────────────────────────
+prompt_token() {
+    [ -n "$INTERNAL_SERVICE_TOKEN" ] && return
+
+    # curl | bash — stdin не терминал, нельзя читать
+    if [ ! -t 0 ]; then
+        warn "INTERNAL_SERVICE_TOKEN не задан — авторегистрация пропущена."
+        warn "Запусти скрипт снова: bash /tmp/install.sh  (не через curl | bash)"
+        return
+    fi
+
+    echo ""
+    read -rsp "  Введи Internal Service Token: " INTERNAL_SERVICE_TOKEN
+    echo ""
+    echo ""
+}
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/guardex-node}"
 
@@ -243,6 +260,7 @@ main() {
     apt-get update -qq
     apt-get install -y -qq curl openssl git
 
+    prompt_token
     install_docker
     generate_reality_keys
     clone_repo
