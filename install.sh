@@ -137,6 +137,27 @@ EOF
     systemctl is-active --quiet xray && log "Xray running ✓" || warn "Xray may not be running — check: systemctl status xray"
 }
 
+# ── install Go ────────────────────────────────────────────────────────────────
+install_go() {
+    if command -v go >/dev/null 2>&1; then
+        log "Go already installed: $(go version)"
+        return
+    fi
+    log "Installing Go 1.24.1..."
+    local arch; arch=$(uname -m)
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+        *) die "Unsupported architecture: $arch" ;;
+    esac
+    curl -fsSL "https://go.dev/dl/go1.24.1.linux-${arch}.tar.gz" -o /tmp/go.tar.gz
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm /tmp/go.tar.gz
+    export PATH=$PATH:/usr/local/go/bin
+    log "Go installed: $(go version)"
+}
+
 # ── install Node Agent ─────────────────────────────────────────────────────────
 install_node_agent() {
     log "Installing Guardex Node Agent..."
@@ -150,11 +171,12 @@ install_node_agent() {
     local release_url="https://github.com/mistaste/node-agent/releases/latest/download/node-agent-linux-${arch}"
     if ! curl -fsSL "$release_url" -o /usr/local/bin/node-agent 2>/dev/null; then
         warn "No pre-built binary found. Building from source..."
-        require_cmd go
+        install_go
+        require_cmd git
         local tmpdir; tmpdir=$(mktemp -d)
         git clone https://github.com/mistaste/node-agent.git "$tmpdir/node-agent"
         cd "$tmpdir/node-agent"
-        GOFLAGS="" go build -ldflags="-checklinkname=0" -o /usr/local/bin/node-agent .
+        PATH=$PATH:/usr/local/go/bin GOFLAGS="" go build -ldflags="-checklinkname=0" -o /usr/local/bin/node-agent .
         rm -rf "$tmpdir"
     fi
     chmod +x /usr/local/bin/node-agent
