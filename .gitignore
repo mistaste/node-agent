@@ -1,0 +1,21 @@
+# Binary outputs
+*.exe
+*.exe~
+node-agent
+node-agent-*
+
+# Build artifacts
+/dist/
+/build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OMC session state
+.omc/
+
+# OS
+.DS_Store
+Thumbs.db
