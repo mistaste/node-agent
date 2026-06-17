@@ -88,6 +88,41 @@ func (h *handlers) removeUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "uuid": uuid})
 }
 
+func (h *handlers) addInbound(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty body"})
+		return
+	}
+	var meta struct {
+		Tag string `json:"tag"`
+	}
+	_ = json.Unmarshal(body, &meta)
+
+	if err := h.xray.AddInboundFromJSON(r.Context(), body); err != nil {
+		log.Printf("[api] addInbound %q: %v", meta.Tag, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[api] inbound %q added", meta.Tag)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "added", "tag": meta.Tag})
+}
+
+func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
+	tag := r.PathValue("tag")
+	if tag == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tag required"})
+		return
+	}
+	if err := h.xray.RemoveInbound(r.Context(), tag); err != nil {
+		log.Printf("[api] removeInbound %q: %v", tag, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	log.Printf("[api] inbound %q removed", tag)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "tag": tag})
+}
+
 type updateRequest struct {
 	URL string `json:"url"`
 }

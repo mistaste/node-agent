@@ -55,6 +55,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/users", h.addUser)
 	s.mux.HandleFunc("DELETE /v1/users/{uuid}", h.removeUser)
 
+	s.mux.HandleFunc("POST /v1/inbounds", h.addInbound)
+	s.mux.HandleFunc("DELETE /v1/inbounds/{tag}", h.removeInbound)
+
 	s.mux.HandleFunc("POST /v1/system/update-xray", h.updateXray)
 	s.mux.HandleFunc("POST /v1/system/update-agent", h.updateAgent)
 }
