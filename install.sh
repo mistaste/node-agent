@@ -146,16 +146,19 @@ EOF
     chmod 600 "$INSTALL_DIR/.env"
 }
 
-# ── clone repo and start containers ───────────────────────────────────────────
-start_containers() {
+# ── clone repo ────────────────────────────────────────────────────────────────
+clone_repo() {
     log "Cloning node-agent repo to ${INSTALL_DIR}..."
     if [ -d "$INSTALL_DIR/.git" ]; then
         git -C "$INSTALL_DIR" pull --ff-only
     else
+        rm -rf "$INSTALL_DIR"
         git clone https://github.com/mistaste/node-agent.git "$INSTALL_DIR"
     fi
+}
 
-    # copy generated files into the repo dir (already there if INSTALL_DIR is the clone)
+# ── start containers ──────────────────────────────────────────────────────────
+start_containers() {
     log "Starting containers with Docker Compose..."
     cd "$INSTALL_DIR"
     docker compose pull xray 2>/dev/null || true
@@ -200,6 +203,7 @@ main() {
 
     install_docker
     generate_reality_keys
+    clone_repo
     write_xray_config
     write_env
     start_containers
