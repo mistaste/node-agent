@@ -6,6 +6,9 @@ services:
     image: ghcr.io/xtls/xray-core:25.8.3
     restart: unless-stopped
     network_mode: host
+    # Run as root: the image drops to a non-privileged user that cannot bind the
+    # VLESS port 443 (<1024). Root keeps the default NET_BIND_SERVICE capability.
+    user: "0:0"
     command: run -config /etc/xray/config.json
     volumes:
       - ./xray-config.json:/etc/xray/config.json:ro
