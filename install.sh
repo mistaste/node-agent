@@ -9,10 +9,11 @@ AGENT_PORT="${AGENT_PORT:-8099}"
 XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
 INBOUND_TAG="${INBOUND_TAG:-vless-in}"
 
-# Pin xray-core to the version bundled by the Flutter app's proxy_core.
-# Reality handshakes only succeed when client and server speak the same protocol
-# version. Keep this in lockstep with proxy_core's xray-core (and docker-compose.yml).
-XRAY_VERSION="${XRAY_VERSION:-25.8.3}"
+# Pin xray-core close to the version the Flutter app's proxy_core bundles
+# (GFW-knocker fork v1.26.5-mahsa, based on upstream 26.5). Reality handshakes only
+# succeed when client and server speak the same protocol generation. Keep this in
+# lockstep with proxy_core's xray-core (and docker-compose.yml).
+XRAY_VERSION="${XRAY_VERSION:-26.6.1}"
 
 NODE_ID="${NODE_ID:-}"
 CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com:2096}"

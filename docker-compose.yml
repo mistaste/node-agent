@@ -1,9 +1,10 @@
 services:
   xray:
-    # Pin to the xray-core version bundled by the Flutter app's proxy_core.
-    # Reality handshakes only succeed when client and server speak the same
-    # protocol version — bump this in lockstep with proxy_core's xray-core.
-    image: ghcr.io/xtls/xray-core:25.8.3
+    # Pin close to the xray-core the Flutter app's proxy_core bundles
+    # (GFW-knocker fork v1.26.5-mahsa, based on upstream 26.5). Reality handshakes
+    # only succeed when client and server speak the same protocol generation —
+    # bump this in lockstep with proxy_core's xray-core.
+    image: ghcr.io/xtls/xray-core:26.6.1
     restart: unless-stopped
     network_mode: host
     # Run as root: the image drops to a non-privileged user that cannot bind the
