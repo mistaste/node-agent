@@ -7,28 +7,30 @@ import (
 )
 
 type Config struct {
-	XrayGRPCAddr      string
-	ListenAddr        string
-	Secret            string
-	DefaultInboundTag string
-	MetricsInterval   time.Duration
-	ControllerURL     string
-	NodeID            string
-	UsersFile         string
-	ResyncInterval    time.Duration
+	XrayGRPCAddr         string
+	ListenAddr           string
+	Secret               string
+	DefaultInboundTag    string
+	MetricsInterval      time.Duration
+	ControllerURL        string
+	NodeID               string
+	InternalServiceToken string
+	UsersFile            string
+	ResyncInterval       time.Duration
 }
 
 func Load() *Config {
 	return &Config{
-		XrayGRPCAddr:      getenv("XRAY_GRPC_ADDR", "127.0.0.1:10085"),
-		ListenAddr:        getenv("AGENT_LISTEN_ADDR", "0.0.0.0:8080"),
-		Secret:            getenv("AGENT_SECRET", "change-me-secret"),
-		DefaultInboundTag: getenv("XRAY_INBOUND_TAG", "vless-in"),
-		MetricsInterval:   parseDuration(getenv("METRICS_INTERVAL", "15s")),
-		ControllerURL:     getenv("CONTROLLER_URL", ""),
-		NodeID:            getenv("NODE_ID", ""),
-		UsersFile:         getenv("USERS_FILE", "/data/users.json"),
-		ResyncInterval:    parseDuration(getenv("RESYNC_INTERVAL", "30s")),
+		XrayGRPCAddr:         getenv("XRAY_GRPC_ADDR", "127.0.0.1:10085"),
+		ListenAddr:           getenv("AGENT_LISTEN_ADDR", "0.0.0.0:8080"),
+		Secret:               getenv("AGENT_SECRET", "change-me-secret"),
+		DefaultInboundTag:    getenv("XRAY_INBOUND_TAG", "vless-in"),
+		MetricsInterval:      parseDuration(getenv("METRICS_INTERVAL", "15s")),
+		ControllerURL:        getenv("CONTROLLER_URL", ""),
+		NodeID:               getenv("NODE_ID", ""),
+		InternalServiceToken: getenv("INTERNAL_SERVICE_TOKEN", ""),
+		UsersFile:            getenv("USERS_FILE", "/data/users.json"),
+		ResyncInterval:       parseDuration(getenv("RESYNC_INTERVAL", "30s")),
 	}
 }
 
