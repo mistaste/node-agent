@@ -5,6 +5,7 @@ import (
 
 	"github.com/guardex/node-agent/internal/config"
 	"github.com/guardex/node-agent/internal/metrics"
+	"github.com/guardex/node-agent/internal/store"
 	"github.com/guardex/node-agent/internal/xray"
 )
 
@@ -12,14 +13,16 @@ type Server struct {
 	cfg       *config.Config
 	xray      *xray.Client
 	collector *metrics.Collector
+	store     *store.Store
 	mux       *http.ServeMux
 }
 
-func NewServer(cfg *config.Config, xrayClient *xray.Client, collector *metrics.Collector) *Server {
+func NewServer(cfg *config.Config, xrayClient *xray.Client, collector *metrics.Collector, st *store.Store) *Server {
 	s := &Server{
 		cfg:       cfg,
 		xray:      xrayClient,
 		collector: collector,
+		store:     st,
 		mux:       http.NewServeMux(),
 	}
 	s.registerRoutes()
@@ -47,6 +50,7 @@ func (s *Server) registerRoutes() {
 		cfg:       s.cfg,
 		xray:      s.xray,
 		collector: s.collector,
+		store:     s.store,
 	}
 
 	s.mux.HandleFunc("GET /v1/health", h.health)

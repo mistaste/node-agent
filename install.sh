@@ -9,6 +9,11 @@ AGENT_PORT="${AGENT_PORT:-8099}"
 XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
 INBOUND_TAG="${INBOUND_TAG:-vless-in}"
 
+# Pin xray-core to the version bundled by the Flutter app's proxy_core.
+# Reality handshakes only succeed when client and server speak the same protocol
+# version. Keep this in lockstep with proxy_core's xray-core (and docker-compose.yml).
+XRAY_VERSION="${XRAY_VERSION:-25.8.3}"
+
 NODE_ID="${NODE_ID:-}"
 CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com:2096}"
 INTERNAL_SERVICE_TOKEN="${INTERNAL_SERVICE_TOKEN:-}"
@@ -65,9 +70,8 @@ generate_reality_keys() {
     esac
 
     if ! command -v xray >/dev/null 2>&1; then
-        log "Downloading xray for key generation..."
-        local latest; latest=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-        curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/${latest}/Xray-linux-${arch}.zip" -o /tmp/xray-keygen.zip
+        log "Downloading xray v${XRAY_VERSION} for key generation..."
+        curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-${arch}.zip" -o /tmp/xray-keygen.zip
         unzip -o /tmp/xray-keygen.zip xray -d /tmp/
         mv /tmp/xray "$xray_bin"
         chmod +x "$xray_bin"

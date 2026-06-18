@@ -10,6 +10,7 @@ import (
 
 	"github.com/guardex/node-agent/internal/config"
 	"github.com/guardex/node-agent/internal/metrics"
+	"github.com/guardex/node-agent/internal/store"
 	"github.com/guardex/node-agent/internal/xray"
 )
 
@@ -17,6 +18,7 @@ type handlers struct {
 	cfg       *config.Config
 	xray      *xray.Client
 	collector *metrics.Collector
+	store     *store.Store
 }
 
 func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
@@ -59,10 +61,21 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 		Flow:       req.Flow,
 		Level:      req.Level,
 	})
-	if err != nil {
+	if err != nil && !xray.IsAlreadyExists(err) {
 		log.Printf("[api] addUser error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	// Persist so the user survives an Xray restart (re-applied by the syncer).
+	if h.store != nil {
+		if serr := h.store.Add(store.User{
+			UUID:       req.UUID,
+			InboundTag: req.InboundTag,
+			Flow:       req.Flow,
+			Level:      req.Level,
+		}); serr != nil {
+			log.Printf("[api] addUser persist error: %v", serr)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "added", "uuid": req.UUID})
 }
@@ -84,6 +97,12 @@ func (h *handlers) removeUser(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] removeUser error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	// Drop from the durable store so it is not re-applied by the syncer.
+	if h.store != nil {
+		if serr := h.store.Remove(inboundTag, uuid); serr != nil {
+			log.Printf("[api] removeUser persist error: %v", serr)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "uuid": uuid})
 }

@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	handlerCmd "github.com/xtls/xray-core/app/proxyman/command"
@@ -10,6 +11,13 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	vlessAccount "github.com/xtls/xray-core/proxy/vless"
 )
+
+// IsAlreadyExists reports whether err indicates the user is already present in
+// the inbound. Xray returns this when re-adding a user that still lives in core
+// memory; the user-sync reconcile loop treats it as success, not a failure.
+func IsAlreadyExists(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "already exists")
+}
 
 // AddUserParams holds the parameters for adding a VLESS user to an inbound.
 type AddUserParams struct {

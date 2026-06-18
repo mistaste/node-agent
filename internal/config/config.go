@@ -14,6 +14,8 @@ type Config struct {
 	MetricsInterval   time.Duration
 	ControllerURL     string
 	NodeID            string
+	UsersFile         string
+	ResyncInterval    time.Duration
 }
 
 func Load() *Config {
@@ -25,6 +27,8 @@ func Load() *Config {
 		MetricsInterval:   parseDuration(getenv("METRICS_INTERVAL", "15s")),
 		ControllerURL:     getenv("CONTROLLER_URL", ""),
 		NodeID:            getenv("NODE_ID", ""),
+		UsersFile:         getenv("USERS_FILE", "/data/users.json"),
+		ResyncInterval:    parseDuration(getenv("RESYNC_INTERVAL", "30s")),
 	}
 }
 

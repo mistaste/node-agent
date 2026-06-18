@@ -1,6 +1,9 @@
 services:
   xray:
-    image: ghcr.io/xtls/xray-core:latest
+    # Pin to the xray-core version bundled by the Flutter app's proxy_core.
+    # Reality handshakes only succeed when client and server speak the same
+    # protocol version — bump this in lockstep with proxy_core's xray-core.
+    image: ghcr.io/xtls/xray-core:25.8.3
     restart: unless-stopped
     network_mode: host
     command: run -config /etc/xray/config.json
@@ -12,5 +15,8 @@ services:
     restart: unless-stopped
     network_mode: host
     env_file: .env
+    volumes:
+      # Durable user store — survives container/Xray restarts.
+      - ./data:/data
     depends_on:
       - xray
