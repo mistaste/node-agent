@@ -141,7 +141,8 @@ write_xray_config() {
   ],
   "routing": {
     "rules": [
-      { "inboundTag": ["api"], "outboundTag": "api", "type": "field" }
+      { "inboundTag": ["api"], "outboundTag": "api", "type": "field" },
+      { "type": "field", "network": "udp", "port": 443, "outboundTag": "blocked" }
     ]
   },
   "stats": {},
