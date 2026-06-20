@@ -27,25 +27,6 @@ func New(xrayClient *xray.Client, st *store.Store, interval time.Duration) *Sync
 	return &Syncer{xray: xrayClient, store: st, interval: interval}
 }
 
-// reapplyInbounds re-adds every stored dynamic inbound to Xray. Inbounds already
-// present are silently skipped. This must run before reapplying users so that the
-// inbound tags exist when users are added.
-func (s *Syncer) reapplyInbounds(ctx context.Context) int {
-	applied := 0
-	for _, cfg := range s.store.Inbounds() {
-		err := s.xray.AddInboundFromJSON(ctx, cfg)
-		switch {
-		case err == nil:
-			applied++
-		case xray.IsAlreadyExists(err):
-			// already in core — nothing to do
-		default:
-			log.Printf("[usersync] re-add inbound: %v", err)
-		}
-	}
-	return applied
-}
-
 // reconcile re-adds every stored user to Xray. Users already present in core are
 // skipped, so the call is idempotent and cheap on a steady-state node. Returns
 // the number of users that were actually (re)applied.
@@ -70,13 +51,8 @@ func (s *Syncer) reconcile(ctx context.Context) int {
 	return applied
 }
 
-// Bootstrap applies all stored inbounds and users once at startup.
-// Inbounds are restored first so that user AddUser calls find their target tags.
+// Bootstrap applies all stored users once at startup.
 func (s *Syncer) Bootstrap(ctx context.Context) {
-	ni := s.reapplyInbounds(ctx)
-	if ni > 0 {
-		log.Printf("[usersync] bootstrap: %d inbound(s) applied from store", ni)
-	}
 	n := s.reconcile(ctx)
 	log.Printf("[usersync] bootstrap: %d user(s) applied from store", n)
 }

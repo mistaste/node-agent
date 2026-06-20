@@ -118,35 +118,13 @@ func (h *handlers) addInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &meta)
 
-	// Mint a per-node Reality keypair for keyless reality inbounds and patch
-	// the config. Non-reality inbounds pass through unchanged.
-	patched, pub, sid, err := xray.InjectRealityKey(body)
-	if err != nil {
-		log.Printf("[api] addInbound %q key inject: %v", meta.Tag, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
-	if err := h.xray.AddInboundFromJSON(r.Context(), patched); err != nil {
+	if err := h.xray.AddInboundFromJSON(r.Context(), body); err != nil {
 		log.Printf("[api] addInbound %q: %v", meta.Tag, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-
-	// Persist the patched config (with minted key) so it survives an xray restart.
-	if h.store != nil {
-		if serr := h.store.AddInbound(meta.Tag, patched); serr != nil {
-			log.Printf("[api] addInbound persist error: %v", serr)
-		}
-	}
-
-	log.Printf("[api] inbound %q added (pub=%s)", meta.Tag, pub)
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status":     "added",
-		"tag":        meta.Tag,
-		"public_key": pub,
-		"short_id":   sid,
-	})
+	log.Printf("[api] inbound %q added", meta.Tag)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "added", "tag": meta.Tag})
 }
 
 func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
@@ -159,12 +137,6 @@ func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] removeInbound %q: %v", tag, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
-	}
-	// Drop from the durable store so it is not re-applied by the syncer.
-	if h.store != nil {
-		if serr := h.store.RemoveInbound(tag); serr != nil {
-			log.Printf("[api] removeInbound persist error: %v", serr)
-		}
 	}
 	log.Printf("[api] inbound %q removed", tag)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "tag": tag})
