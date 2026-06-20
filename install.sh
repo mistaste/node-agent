@@ -46,6 +46,24 @@ die()  { echo -e "\033[1;31m[guardex]\033[0m $*" >&2; exit 1; }
 
 require_root() { [ "$(id -u)" -eq 0 ] || die "Run as root: sudo bash install.sh"; }
 
+install_prerequisites() {
+    local packages="curl openssl git unzip"
+
+    log "Installing prerequisites..."
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $packages
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y -q $packages
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y -q $packages
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache $packages
+    else
+        die "Unsupported package manager. Install manually: $packages"
+    fi
+}
+
 # ── install Docker ─────────────────────────────────────────────────────────────
 install_docker() {
     if command -v docker >/dev/null 2>&1; then
@@ -82,8 +100,8 @@ generate_reality_keys() {
     fi
 
     local keys; keys=$("$xray_bin" x25519)
-    REALITY_PRIVATE_KEY=$(echo "$keys" | grep "Private key:" | awk '{print $3}')
-    REALITY_PUBLIC_KEY=$(echo  "$keys" | grep "Public key:"  | awk '{print $3}')
+    REALITY_PRIVATE_KEY=$(echo "$keys" | grep -E "PrivateKey:|Private key:" | awk '{print $NF}')
+    REALITY_PUBLIC_KEY=$(echo  "$keys" | grep -E "PublicKey|Public key:"   | awk '{print $NF}')
     REALITY_SHORT_ID=$(openssl rand -hex 8)
 
     [ "$xray_bin" = "/tmp/xray-keygen" ] && rm -f "$xray_bin"
@@ -269,8 +287,7 @@ PAYLOAD
 main() {
     require_root
 
-    apt-get update -qq
-    apt-get install -y -qq curl openssl git
+    install_prerequisites
 
     prompt_token
     install_docker
