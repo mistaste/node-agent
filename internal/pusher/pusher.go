@@ -66,19 +66,37 @@ func (p *Pusher) Run(ctx context.Context) {
 }
 
 type metricsPayload struct {
-	NodeSecret   string  `json:"node_secret"`
-	AgentVersion string  `json:"agent_version"`
-	CPUPercent   float64 `json:"cpu_percent"`
-	RAMPercent   float64 `json:"ram_percent"`
-	NetBytesSent uint64  `json:"net_bytes_sent"`
-	NetBytesRecv uint64  `json:"net_bytes_recv"`
-	Sessions     int     `json:"sessions"`
+	NodeSecret   string              `json:"node_secret"`
+	AgentVersion string              `json:"agent_version"`
+	CPUPercent   float64             `json:"cpu_percent"`
+	RAMPercent   float64             `json:"ram_percent"`
+	NetBytesSent uint64              `json:"net_bytes_sent"`
+	NetBytesRecv uint64              `json:"net_bytes_recv"`
+	Sessions     int                 `json:"sessions"`
+	ActiveUsers  []activeUserPayload `json:"active_users"`
+}
+
+type activeUserPayload struct {
+	UUID     string `json:"uuid"`
+	Uplink   int64  `json:"uplink"`
+	Downlink int64  `json:"downlink"`
+	LastSeen string `json:"last_seen"`
 }
 
 func (p *Pusher) push(ctx context.Context) error {
 	snap := p.collector.Latest()
 	if snap == nil {
 		return nil
+	}
+
+	activeUsers := make([]activeUserPayload, 0, len(snap.ActiveUsers))
+	for _, user := range snap.ActiveUsers {
+		activeUsers = append(activeUsers, activeUserPayload{
+			UUID:     user.UUID,
+			Uplink:   user.Uplink,
+			Downlink: user.Downlink,
+			LastSeen: user.LastSeen.Format(time.RFC3339),
+		})
 	}
 
 	payload := metricsPayload{
@@ -88,7 +106,8 @@ func (p *Pusher) push(ctx context.Context) error {
 		RAMPercent:   snap.MemPercent,
 		NetBytesSent: snap.NetBytesSent,
 		NetBytesRecv: snap.NetBytesRecv,
-		Sessions:     snap.ActiveUsers,
+		Sessions:     len(activeUsers),
+		ActiveUsers:  activeUsers,
 	}
 
 	body, err := json.Marshal(payload)

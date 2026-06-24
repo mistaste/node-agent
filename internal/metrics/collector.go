@@ -22,7 +22,14 @@ type Snapshot struct {
 	NetBytesSent uint64
 	NetBytesRecv uint64
 	UserTraffic  []xray.UserTraffic
-	ActiveUsers  int
+	ActiveUsers  []ActiveUser
+}
+
+type ActiveUser struct {
+	UUID     string
+	Uplink   int64
+	Downlink int64
+	LastSeen time.Time
 }
 
 // Collector periodically gathers system and Xray metrics.
@@ -106,30 +113,38 @@ func (c *Collector) collect(ctx context.Context) {
 		snap.MemUsedMB, snap.MemTotalMB,
 		snap.NetBytesRecv/1024/1024,
 		len(snap.UserTraffic),
-		snap.ActiveUsers,
+		len(snap.ActiveUsers),
 	)
 }
 
-func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic) int {
+func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic) []ActiveUser {
 	const activeWindow = 90 * time.Second
 
 	seen := make(map[string]struct{}, len(traffic))
+	byUUID := make(map[string]xray.UserTraffic, len(traffic))
 	for _, user := range traffic {
 		total := user.Uplink + user.Downlink
 		seen[user.UUID] = struct{}{}
+		byUUID[user.UUID] = user
 		if prev, ok := c.prevTraffic[user.UUID]; ok && total > prev {
 			c.lastActive[user.UUID] = now
 		}
 		c.prevTraffic[user.UUID] = total
 	}
 
-	active := 0
+	active := make([]ActiveUser, 0, len(c.lastActive))
 	for uuid, last := range c.lastActive {
 		if _, ok := seen[uuid]; !ok || now.Sub(last) > activeWindow {
 			delete(c.lastActive, uuid)
 			continue
 		}
-		active++
+		user := byUUID[uuid]
+		active = append(active, ActiveUser{
+			UUID:     uuid,
+			Uplink:   user.Uplink,
+			Downlink: user.Downlink,
+			LastSeen: last,
+		})
 	}
 	return active
 }
