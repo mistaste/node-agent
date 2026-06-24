@@ -22,6 +22,7 @@ type Snapshot struct {
 	NetBytesSent uint64
 	NetBytesRecv uint64
 	UserTraffic  []xray.UserTraffic
+	ActiveUsers  int
 }
 
 // Collector periodically gathers system and Xray metrics.
@@ -31,12 +32,17 @@ type Collector struct {
 
 	mu     sync.RWMutex
 	latest *Snapshot
+
+	prevTraffic map[string]int64
+	lastActive  map[string]time.Time
 }
 
 func NewCollector(xrayClient *xray.Client, interval time.Duration) *Collector {
 	return &Collector{
-		xray:     xrayClient,
-		interval: interval,
+		xray:        xrayClient,
+		interval:    interval,
+		prevTraffic: make(map[string]int64),
+		lastActive:  make(map[string]time.Time),
 	}
 }
 
@@ -86,6 +92,7 @@ func (c *Collector) collect(ctx context.Context) {
 
 	if traffic, err := c.xray.QueryAllUserStats(ctx); err == nil {
 		snap.UserTraffic = traffic
+		snap.ActiveUsers = c.markActiveUsers(snap.CollectedAt, traffic)
 	} else {
 		log.Printf("[metrics] xray stats error: %v", err)
 	}
@@ -94,10 +101,35 @@ func (c *Collector) collect(ctx context.Context) {
 	c.latest = snap
 	c.mu.Unlock()
 
-	log.Printf("[metrics] cpu=%.1f%% mem=%dMB/%dMB net_rx=%dMB users=%d",
+	log.Printf("[metrics] cpu=%.1f%% mem=%dMB/%dMB net_rx=%dMB users=%d active=%d",
 		snap.CPUPercent,
 		snap.MemUsedMB, snap.MemTotalMB,
 		snap.NetBytesRecv/1024/1024,
 		len(snap.UserTraffic),
+		snap.ActiveUsers,
 	)
+}
+
+func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic) int {
+	const activeWindow = 90 * time.Second
+
+	seen := make(map[string]struct{}, len(traffic))
+	for _, user := range traffic {
+		total := user.Uplink + user.Downlink
+		seen[user.UUID] = struct{}{}
+		if prev, ok := c.prevTraffic[user.UUID]; ok && total > prev {
+			c.lastActive[user.UUID] = now
+		}
+		c.prevTraffic[user.UUID] = total
+	}
+
+	active := 0
+	for uuid, last := range c.lastActive {
+		if _, ok := seen[uuid]; !ok || now.Sub(last) > activeWindow {
+			delete(c.lastActive, uuid)
+			continue
+		}
+		active++
+	}
+	return active
 }

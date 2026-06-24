@@ -86,7 +86,7 @@ func (p *Pusher) push(ctx context.Context) error {
 		RAMPercent:   snap.MemPercent,
 		NetBytesSent: snap.NetBytesSent,
 		NetBytesRecv: snap.NetBytesRecv,
-		Sessions:     len(snap.UserTraffic),
+		Sessions:     snap.ActiveUsers,
 	}
 
 	body, err := json.Marshal(payload)
