@@ -22,5 +22,8 @@ services:
     volumes:
       # Durable user store — survives container/Xray restarts.
       - ./data:/data
+      # Enables controlled git-based self-update from the admin panel.
+      - ./:/opt/guardex-node
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - xray

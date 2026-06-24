@@ -22,7 +22,7 @@ type handlers struct {
 }
 
 func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": h.cfg.AgentVersion()})
 }
 
 func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +143,9 @@ func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateRequest struct {
-	URL string `json:"url"`
+	Mode string `json:"mode"`
+	URL  string `json:"url"`
+	Ref  string `json:"ref"`
 }
 
 func (h *handlers) updateXray(w http.ResponseWriter, r *http.Request) {
@@ -166,11 +168,33 @@ func (h *handlers) updateXray(w http.ResponseWriter, r *http.Request) {
 
 func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 	var req updateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url required"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
 
+	mode := req.Mode
+	if mode == "" {
+		mode = "git"
+	}
+	if req.Ref == "" {
+		req.Ref = h.cfg.UpdateRef
+	}
+
+	if mode == "git" {
+		go func() {
+			if err := gitPullAndRebuild(h.cfg.RepoDir, req.Ref); err != nil {
+				log.Printf("[update] agent git update error: %v", err)
+			}
+		}()
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started", "mode": "git"})
+		return
+	}
+
+	if req.URL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url required"})
+		return
+	}
 	self, err := os.Executable()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot resolve self path"})
@@ -184,6 +208,27 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started"})
+}
+
+func gitPullAndRebuild(repoDir, ref string) error {
+	if repoDir == "" {
+		repoDir = "/opt/guardex-node"
+	}
+	if ref == "" {
+		ref = "master"
+	}
+	if err := exec.Command("git", "-C", repoDir, "fetch", "origin", ref).Run(); err != nil {
+		return err
+	}
+	if err := exec.Command("git", "-C", repoDir, "checkout", ref).Run(); err != nil {
+		return err
+	}
+	if err := exec.Command("git", "-C", repoDir, "pull", "--ff-only", "origin", ref).Run(); err != nil {
+		return err
+	}
+	cmd := exec.Command("docker", "compose", "-f", repoDir+"/docker-compose.yml", "up", "-d", "--build", "node-agent")
+	cmd.Dir = repoDir
+	return cmd.Run()
 }
 
 // replaceAndRestart downloads a binary to a temp file, replaces target, restarts via systemctl.

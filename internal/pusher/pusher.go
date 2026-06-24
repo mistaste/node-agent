@@ -67,6 +67,7 @@ func (p *Pusher) Run(ctx context.Context) {
 
 type metricsPayload struct {
 	NodeSecret   string  `json:"node_secret"`
+	AgentVersion string  `json:"agent_version"`
 	CPUPercent   float64 `json:"cpu_percent"`
 	RAMPercent   float64 `json:"ram_percent"`
 	NetBytesSent uint64  `json:"net_bytes_sent"`
@@ -82,6 +83,7 @@ func (p *Pusher) push(ctx context.Context) error {
 
 	payload := metricsPayload{
 		NodeSecret:   p.cfg.Secret,
+		AgentVersion: p.cfg.AgentVersion(),
 		CPUPercent:   snap.CPUPercent,
 		RAMPercent:   snap.MemPercent,
 		NetBytesSent: snap.NetBytesSent,

@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,6 +19,9 @@ type Config struct {
 	InternalServiceToken string
 	UsersFile            string
 	ResyncInterval       time.Duration
+	Version              string
+	RepoDir              string
+	UpdateRef            string
 }
 
 func Load() *Config {
@@ -31,6 +36,9 @@ func Load() *Config {
 		InternalServiceToken: getenv("INTERNAL_SERVICE_TOKEN", ""),
 		UsersFile:            getenv("USERS_FILE", "/data/users.json"),
 		ResyncInterval:       parseDuration(getenv("RESYNC_INTERVAL", "30s")),
+		Version:              getenv("AGENT_VERSION", "dev"),
+		RepoDir:              getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
+		UpdateRef:            getenv("AGENT_UPDATE_REF", "master"),
 	}
 }
 
@@ -50,4 +58,19 @@ func parseDuration(s string) time.Duration {
 		return 15 * time.Second
 	}
 	return d
+}
+
+func (c *Config) AgentVersion() string {
+	if c.Version != "" && c.Version != "git" {
+		return c.Version
+	}
+	if out, err := exec.Command("git", "-C", c.RepoDir, "rev-parse", "--short", "HEAD").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			return v
+		}
+	}
+	if c.Version != "" {
+		return c.Version
+	}
+	return "unknown"
 }
