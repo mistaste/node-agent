@@ -36,7 +36,7 @@ func Load() *Config {
 		InternalServiceToken: getenv("INTERNAL_SERVICE_TOKEN", ""),
 		UsersFile:            getenv("USERS_FILE", "/data/users.json"),
 		ResyncInterval:       parseDuration(getenv("RESYNC_INTERVAL", "30s")),
-		Version:              getenv("AGENT_VERSION", "dev"),
+		Version:              getenv("AGENT_VERSION", "git"),
 		RepoDir:              getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
 		UpdateRef:            getenv("AGENT_UPDATE_REF", "master"),
 	}

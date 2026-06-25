@@ -64,4 +64,5 @@ func (s *Server) registerRoutes() {
 
 	s.mux.HandleFunc("POST /v1/system/update-xray", h.updateXray)
 	s.mux.HandleFunc("POST /v1/system/update-agent", h.updateAgent)
+	s.mux.HandleFunc("POST /v1/system/restart", h.restartNode)
 }

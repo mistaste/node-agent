@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/guardex/node-agent/internal/config"
 	"github.com/guardex/node-agent/internal/metrics"
@@ -183,7 +184,12 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 
 	if mode == "git" {
 		go func() {
-			if err := gitPullAndRebuild(h.cfg.RepoDir, req.Ref); err != nil {
+			if err := runDetachedComposeHelper(h.cfg.RepoDir, []string{
+				"git", "fetch", "origin", req.Ref, "&&",
+				"git", "checkout", req.Ref, "&&",
+				"git", "pull", "--ff-only", "origin", req.Ref, "&&",
+				"docker", "compose", "up", "-d", "--build", "node-agent",
+			}); err != nil {
 				log.Printf("[update] agent git update error: %v", err)
 			}
 		}()
@@ -210,24 +216,31 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started"})
 }
 
-func gitPullAndRebuild(repoDir, ref string) error {
+func (h *handlers) restartNode(w http.ResponseWriter, r *http.Request) {
+	if err := runDetachedComposeHelper(h.cfg.RepoDir, []string{
+		"docker", "compose", "restart", "xray", "node-agent",
+	}); err != nil {
+		log.Printf("[restart] node restart error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "restart failed"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "restart started"})
+}
+
+func runDetachedComposeHelper(repoDir string, parts []string) error {
 	if repoDir == "" {
 		repoDir = "/opt/guardex-node"
 	}
-	if ref == "" {
-		ref = "master"
-	}
-	if err := exec.Command("git", "-C", repoDir, "fetch", "origin", ref).Run(); err != nil {
-		return err
-	}
-	if err := exec.Command("git", "-C", repoDir, "checkout", ref).Run(); err != nil {
-		return err
-	}
-	if err := exec.Command("git", "-C", repoDir, "pull", "--ff-only", "origin", ref).Run(); err != nil {
-		return err
-	}
-	cmd := exec.Command("docker", "compose", "-f", repoDir+"/docker-compose.yml", "up", "-d", "--build", "node-agent")
-	cmd.Dir = repoDir
+	script := strings.Join(parts, " ")
+	cmd := exec.Command(
+		"docker", "run", "-d", "--rm",
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"-v", repoDir+":/work",
+		"-w", "/work",
+		"docker:27-cli",
+		"sh", "-lc",
+		"apk add --no-cache docker-cli-compose git >/dev/null && "+script,
+	)
 	return cmd.Run()
 }
 
