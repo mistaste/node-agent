@@ -42,6 +42,80 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	}
 }
 
+func TestDetachedComposeHelperKeepsHostRepositoryPath(t *testing.T) {
+	args, err := detachedComposeHelperArgs("/opt/guardex-node", []string{"docker", "compose", "ps"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "-v\x00/opt/guardex-node:/opt/guardex-node") {
+		t.Fatalf("repository mount is not host-stable: %q", args)
+	}
+	if !strings.Contains(joined, "-w\x00/opt/guardex-node") || strings.Contains(joined, "/work") {
+		t.Fatalf("helper working directory is unsafe: %q", args)
+	}
+	if !strings.Contains(joined, "'docker' 'compose' 'ps'") {
+		t.Fatalf("helper command missing: %q", args)
+	}
+}
+
+func TestDetachedComposeHelperRejectsUnsafeRepositoryPaths(t *testing.T) {
+	for _, repoDir := range []string{
+		".",
+		"relative/repo",
+		"/",
+		"/opt/guardex-node:ro",
+		"/opt/guardex-node\n--privileged",
+		" /opt/guardex-node",
+		"/opt/guardex-node ",
+	} {
+		if _, err := detachedComposeHelperArgs(repoDir, []string{"docker", "compose", "ps"}); err == nil {
+			t.Fatalf("unsafe repository path %q accepted", repoDir)
+		}
+	}
+	if _, err := detachedComposeHelperArgs("/opt/guardex-node", nil); err == nil {
+		t.Fatal("empty helper command accepted")
+	}
+}
+
+func TestDetachedComposeHelperQuotesEveryCommandArgument(t *testing.T) {
+	args, err := detachedComposeHelperArgs("/opt/guardex-node", []string{
+		"git", "fetch", "origin", "main; touch /tmp/pwn", "&&", "docker", "compose", "ps",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := args[len(args)-1]
+	if !strings.Contains(script, `'main; touch /tmp/pwn'`) {
+		t.Fatalf("shell metacharacters were not quoted: %q", script)
+	}
+	if strings.Contains(script, "origin main;") {
+		t.Fatalf("command argument escaped its token boundary: %q", script)
+	}
+	for _, invalid := range [][]string{
+		{"&&", "docker"},
+		{"docker", "&&"},
+		{"docker", "&&", "&&", "compose"},
+		{"docker", "compose\nreboot"},
+	} {
+		if _, err := detachedComposeHelperArgs("/opt/guardex-node", invalid); err == nil {
+			t.Fatalf("unsafe helper command accepted: %q", invalid)
+		}
+	}
+}
+
+func TestDetachedComposeHelperDefaultPathIsHostStable(t *testing.T) {
+	args, err := detachedComposeHelperArgs("", []string{"docker", "compose", "ps"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "-v\x00/opt/guardex-node:/opt/guardex-node") ||
+		!strings.Contains(joined, "-w\x00/opt/guardex-node") {
+		t.Fatalf("default repository mount is not host-stable: %q", args)
+	}
+}
+
 func TestValidateBinaryUpdateRequiresHTTPSAndSHA256(t *testing.T) {
 	payloadDigest := sha256.Sum256([]byte("binary"))
 	checksum := hex.EncodeToString(payloadDigest[:])
