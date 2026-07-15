@@ -423,20 +423,81 @@ func (h *handlers) restartNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func runDetachedComposeHelper(repoDir string, parts []string) error {
+	args, err := detachedComposeHelperArgs(repoDir, parts)
+	if err != nil {
+		return err
+	}
+	return exec.Command("docker", args...).Run()
+}
+
+func detachedComposeHelperArgs(repoDir string, parts []string) ([]string, error) {
 	if repoDir == "" {
 		repoDir = "/opt/guardex-node"
 	}
-	script := strings.Join(parts, " ")
-	cmd := exec.Command(
-		"docker", "run", "-d", "--rm",
+	if repoDir != strings.TrimSpace(repoDir) || strings.Contains(repoDir, ":") || containsControlCharacter(repoDir) {
+		return nil, errors.New("agent repository path contains unsafe characters")
+	}
+	repoDir = filepath.Clean(repoDir)
+	if !filepath.IsAbs(repoDir) || repoDir == string(filepath.Separator) {
+		return nil, errors.New("agent repository path must be an absolute non-root path")
+	}
+	script, err := shellJoinCommand(parts)
+	if err != nil {
+		return nil, err
+	}
+	return []string{
+		"run", "-d", "--rm",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
-		"-v", repoDir+":/work",
-		"-w", "/work",
+		// Docker Compose resolves relative bind mounts on the host daemon. Keep
+		// the repository at the same absolute path inside this helper; mounting
+		// it as /work would make ./xray-config.json resolve to host /work and
+		// Docker would silently create a directory in place of the config file.
+		"-v", repoDir + ":" + repoDir,
+		"-w", repoDir,
 		"docker:27-cli",
 		"sh", "-lc",
-		"apk add --no-cache docker-cli-compose git >/dev/null && "+script,
-	)
-	return cmd.Run()
+		"apk add --no-cache docker-cli-compose git >/dev/null && " + script,
+	}, nil
+}
+
+// shellJoinCommand preserves the explicit && separators used by the fixed
+// update plans and quotes every executable/argument token. agentUpdateParts
+// already validates the user-controlled ref, but quoting here keeps this
+// privileged Docker-socket helper safe if another internal caller is added.
+func shellJoinCommand(parts []string) (string, error) {
+	if len(parts) == 0 {
+		return "", errors.New("detached compose command is empty")
+	}
+	quoted := make([]string, 0, len(parts))
+	operatorPending := true
+	for _, part := range parts {
+		if part == "&&" {
+			if operatorPending {
+				return "", errors.New("detached compose command has an invalid separator")
+			}
+			quoted = append(quoted, part)
+			operatorPending = true
+			continue
+		}
+		if part == "" || containsControlCharacter(part) {
+			return "", errors.New("detached compose command contains an unsafe argument")
+		}
+		quoted = append(quoted, "'"+strings.ReplaceAll(part, "'", `'"'"'`)+"'")
+		operatorPending = false
+	}
+	if operatorPending {
+		return "", errors.New("detached compose command ends with a separator")
+	}
+	return strings.Join(quoted, " "), nil
+}
+
+func containsControlCharacter(value string) bool {
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // replaceAndRestart installs only a bounded, checksum-verified HTTPS response.
