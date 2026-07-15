@@ -1,3 +1,5 @@
+name: guardex-node
+
 services:
   xray:
     # Pin close to the xray-core the Flutter app's proxy_core bundles
