@@ -19,7 +19,8 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command := strings.Join(agentOnly, " "); strings.Contains(command, "pull xray") || !strings.Contains(command, "--build node-agent") {
+	if command := strings.Join(agentOnly, " "); strings.Contains(command, "pull xray") ||
+		!strings.Contains(command, "--no-deps --build node-agent") {
 		t.Fatalf("agent-only command = %q", command)
 	}
 	full, err := agentUpdateParts("git-full", "master")

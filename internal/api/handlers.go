@@ -404,7 +404,9 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 			"docker", "compose", "up", "-d", "--build", "xray", "node-agent",
 		)
 	} else {
-		parts = append(parts, "docker", "compose", "up", "-d", "--build", "node-agent")
+		// Agent-only rollout must never recreate or stop the data-plane. Xray is
+		// intentionally updated only by the explicit git-full mode above.
+		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "node-agent")
 	}
 	return parts, nil
 }
