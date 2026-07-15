@@ -3,7 +3,6 @@ package pusher
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -27,12 +26,8 @@ func NewPusher(cfg *config.Config, collector *metrics.Collector) *Pusher {
 		collector: collector,
 		http: &http.Client{
 			Timeout: 8 * time.Second,
-			// The controller is reached on a non-standard port (:2096) that
-			// Cloudflare does not proxy, so the node hits the origin's self-signed
-			// cert directly — same as install.sh's `curl -k`. Auth is enforced by
-			// the X-Service-Token header, not TLS trust.
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
 			},
 		},
 	}
@@ -43,8 +38,8 @@ func NewPusher(cfg *config.Config, collector *metrics.Collector) *Pusher {
 // The node identifies itself to the controller by its node_secret (AGENT_SECRET),
 // so no per-node ID has to be configured — every node that registered auto-pushes.
 func (p *Pusher) Run(ctx context.Context) {
-	if p.cfg.ControllerURL == "" || p.cfg.InternalServiceToken == "" || p.cfg.Secret == "" {
-		log.Println("[pusher] CONTROLLER_URL / INTERNAL_SERVICE_TOKEN / AGENT_SECRET not set — metrics push disabled")
+	if p.cfg == nil || !p.cfg.ControllerPollingEnabled() {
+		log.Println("[pusher] verified HTTPS controller credentials are incomplete — metrics push disabled")
 		return
 	}
 

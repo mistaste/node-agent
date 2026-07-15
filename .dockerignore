@@ -1,0 +1,28 @@
+# Never send live node credentials or durable state to the Docker builder.
+# Production keeps all of these beside docker-compose.yml.
+.env
+.env.*
+!.env.example
+data/
+xray-config.json
+users.json
+inbounds.json
+*.key
+*.pem
+*.p8
+*.p12
+*.jks
+
+# Repository metadata and local build/editor output are not build inputs.
+.git/
+.github/
+.idea/
+.vscode/
+.omc/
+.DS_Store
+build/
+dist/
+node-agent
+node-agent-*
+*.tmp
+*.swp

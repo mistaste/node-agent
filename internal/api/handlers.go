@@ -1,17 +1,29 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/guardex/node-agent/internal/config"
+	"github.com/guardex/node-agent/internal/inbound"
+	"github.com/guardex/node-agent/internal/inboundsync"
 	"github.com/guardex/node-agent/internal/metrics"
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/xray"
 )
 
@@ -20,10 +32,42 @@ type handlers struct {
 	xray      *xray.Client
 	collector *metrics.Collector
 	store     *store.Store
+	inbounds  *inboundsync.Manager
+	userOps   *userops.Coordinator
+	userCore  userRuntime
+}
+
+type userRuntime interface {
+	AddUser(context.Context, xray.AddUserParams) error
+	RemoveUser(context.Context, string, string) error
 }
 
 func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": h.cfg.AgentVersion()})
+	items := h.inbounds.Inventory()
+	applied := 0
+	for _, item := range items {
+		if item.Applied {
+			applied++
+		}
+	}
+	status := "ok"
+	if applied != len(items) {
+		status = "degraded"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  status,
+		"version": h.cfg.AgentVersion(),
+		"xray": map[string]string{
+			"configured_core_version": h.cfg.XrayCoreVersion,
+			"control_plane_version":   xray.ControlPlaneVersion(),
+		},
+		"dynamic_inbounds": map[string]int{
+			"desired":  len(items),
+			"applied":  applied,
+			"degraded": len(items) - applied,
+		},
+		"capabilities": inboundCapabilities(h.cfg),
+	})
 }
 
 func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
@@ -55,15 +99,17 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 	if req.InboundTag == "" {
 		req.InboundTag = h.cfg.DefaultInboundTag
 	}
+	h.userOps.Lock()
+	defer h.userOps.Unlock()
 
-	err := h.xray.AddUser(r.Context(), xray.AddUserParams{
+	err := h.runtimeUsers().AddUser(r.Context(), xray.AddUserParams{
 		InboundTag: req.InboundTag,
 		UUID:       req.UUID,
 		Flow:       req.Flow,
 		Level:      req.Level,
 	})
 	if err != nil && !xray.IsAlreadyExists(err) {
-		log.Printf("[api] addUser error: %v", err)
+		log.Printf("[api] addUser runtime operation failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -92,10 +138,12 @@ func (h *handlers) removeUser(w http.ResponseWriter, r *http.Request) {
 	if inboundTag == "" {
 		inboundTag = h.cfg.DefaultInboundTag
 	}
+	h.userOps.Lock()
+	defer h.userOps.Unlock()
 
-	err := h.xray.RemoveUser(r.Context(), inboundTag, uuid)
-	if err != nil {
-		log.Printf("[api] removeUser error: %v", err)
+	err := h.runtimeUsers().RemoveUser(r.Context(), inboundTag, uuid)
+	if err != nil && !xray.IsNotFound(err) {
+		log.Printf("[api] removeUser runtime operation failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -108,24 +156,76 @@ func (h *handlers) removeUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "uuid": uuid})
 }
 
+func (h *handlers) runtimeUsers() userRuntime {
+	if h.userCore != nil {
+		return h.userCore
+	}
+	return h.xray
+}
+
 func (h *handlers) addInbound(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, inbound.MaxConfigBytes+1))
 	if err != nil || len(body) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty body"})
 		return
 	}
-	var meta struct {
-		Tag string `json:"tag"`
-	}
-	_ = json.Unmarshal(body, &meta)
-
-	if err := h.xray.AddInboundFromJSON(r.Context(), body); err != nil {
-		log.Printf("[api] addInbound %q: %v", meta.Tag, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if len(body) > inbound.MaxConfigBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "inbound config too large"})
 		return
 	}
-	log.Printf("[api] inbound %q added", meta.Tag)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "added", "tag": meta.Tag})
+	cfg, err := inbound.Parse(body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	desiredDigest := cfg.Digest
+	h.userOps.Lock()
+	defer h.userOps.Unlock()
+
+	var previous []byte
+	if managed, ok := h.inbounds.ManagedConfig(cfg.Tag); ok {
+		previous = managed.Raw
+	}
+	patched, publicKey, shortID, err := xray.EnsureRealityKey(cfg.Raw, previous)
+	if err != nil {
+		log.Printf("[api] prepare inbound %q: %v", cfg.Tag, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Reality settings"})
+		return
+	}
+	cfg, err = inbound.Parse(patched)
+	if err != nil {
+		log.Printf("[api] validate prepared inbound %q: %v", cfg.Tag, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid prepared inbound"})
+		return
+	}
+	if err := h.inbounds.ApplyDesired(r.Context(), cfg, desiredDigest); err != nil {
+		log.Printf("[api] apply inbound %q: %v", cfg.Tag, err)
+		if errors.Is(err, inboundsync.ErrTagConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "inbound tag is already owned by a static or unmanaged config"})
+			return
+		}
+		if errors.Is(err, inboundsync.ErrControllerOwned) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "inbound tag is managed by controller polling"})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "node could not apply the inbound"})
+		return
+	}
+	log.Printf("[api] dynamic inbound %q applied", cfg.Tag)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "applied",
+		"inbound":        cfg.Public(),
+		"desired_digest": desiredDigest,
+		"public_key":     publicKey,
+		"short_id":       shortID,
+	})
+}
+
+func (h *handlers) listInbounds(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"inbounds":     h.inbounds.Inventory(),
+		"capabilities": inboundCapabilities(h.cfg),
+	})
 }
 
 func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
@@ -134,30 +234,81 @@ func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tag required"})
 		return
 	}
-	if err := h.xray.RemoveInbound(r.Context(), tag); err != nil {
+	h.userOps.Lock()
+	defer h.userOps.Unlock()
+	if err := h.inbounds.Remove(r.Context(), tag); err != nil {
 		log.Printf("[api] removeInbound %q: %v", tag, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		if errors.Is(err, inboundsync.ErrNotManaged) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "dynamic inbound not found"})
+			return
+		}
+		if errors.Is(err, inboundsync.ErrControllerOwned) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "inbound tag is managed by controller polling"})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "node could not remove the inbound"})
 		return
 	}
-	log.Printf("[api] inbound %q removed", tag)
+	if h.store != nil {
+		if err := h.store.RemoveByInboundTag(tag); err != nil {
+			log.Printf("[api] removeInbound durable user cleanup failed")
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "durable user cleanup failed"})
+			return
+		}
+	}
+	log.Printf("[api] dynamic inbound %q removed", tag)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "tag": tag})
 }
 
+func inboundCapabilities(cfg *config.Config) map[string]any {
+	return map[string]any{
+		"protocols":                []string{"vless"},
+		"stream_networks":          []string{"raw", "xhttp"},
+		"stream_securities":        []string{"reality"},
+		"controller_tag_namespace": "gx-",
+		"durable_inventory":        true,
+		"startup_reconciliation":   true,
+		"desired_manifest_store":   true,
+		"controller_polling":       cfg != nil && cfg.ControllerPollingEnabled(),
+		"static_inbounds_managed":  false,
+	}
+}
+
 type updateRequest struct {
-	Mode string `json:"mode"`
-	URL  string `json:"url"`
-	Ref  string `json:"ref"`
+	Mode   string `json:"mode"`
+	URL    string `json:"url"`
+	Ref    string `json:"ref"`
+	SHA256 string `json:"sha256"`
+}
+
+var safeGitRef = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
+
+const (
+	maxBinaryUpdateBytes = int64(256 << 20)
+	binaryUpdateTimeout  = 2 * time.Minute
+)
+
+var binaryUpdateHTTPClient = &http.Client{
+	Timeout: binaryUpdateTimeout,
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
 func (h *handlers) updateXray(w http.ResponseWriter, r *http.Request) {
 	var req updateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url required"})
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	updateURL, checksum, err := validateBinaryUpdate(req.URL, req.SHA256)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
 	go func() {
-		if err := replaceAndRestart(req.URL, "/usr/local/bin/xray", "xray"); err != nil {
+		if err := replaceAndRestart(updateURL, "/usr/local/bin/xray", "xray", checksum); err != nil {
 			log.Printf("[update] xray update error: %v", err)
 		} else {
 			log.Printf("[update] xray updated successfully")
@@ -182,23 +333,28 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 		req.Ref = h.cfg.UpdateRef
 	}
 
-	if mode == "git" {
+	if mode == "git" || mode == "git-full" {
+		parts, err := agentUpdateParts(mode, req.Ref)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid update mode or ref"})
+			return
+		}
 		go func() {
-			if err := runDetachedComposeHelper(h.cfg.RepoDir, []string{
-				"git", "fetch", "origin", req.Ref, "&&",
-				"git", "checkout", req.Ref, "&&",
-				"git", "pull", "--ff-only", "origin", req.Ref, "&&",
-				"docker", "compose", "up", "-d", "--build", "node-agent",
-			}); err != nil {
+			if err := runDetachedComposeHelper(h.cfg.RepoDir, parts); err != nil {
 				log.Printf("[update] agent git update error: %v", err)
 			}
 		}()
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started", "mode": "git"})
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started", "mode": mode})
 		return
 	}
 
-	if req.URL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url required"})
+	if mode != "binary" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported update mode"})
+		return
+	}
+	updateURL, checksum, validateErr := validateBinaryUpdate(req.URL, req.SHA256)
+	if validateErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": validateErr.Error()})
 		return
 	}
 	self, err := os.Executable()
@@ -208,12 +364,49 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
-		if err := replaceAndRestart(req.URL, self, "agent"); err != nil {
+		if err := replaceAndRestart(updateURL, self, "agent", checksum); err != nil {
 			log.Printf("[update] agent update error: %v", err)
 		}
 	}()
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started"})
+}
+
+func validateBinaryUpdate(rawURL, rawChecksum string) (string, string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return "", "", errors.New("binary update URL must use HTTPS without credentials or a fragment")
+	}
+	checksum := strings.ToLower(strings.TrimSpace(rawChecksum))
+	decoded, err := hex.DecodeString(checksum)
+	if err != nil || len(decoded) != sha256.Size {
+		return "", "", errors.New("binary update requires a valid SHA-256 checksum")
+	}
+	return parsed.String(), checksum, nil
+}
+
+func agentUpdateParts(mode, ref string) ([]string, error) {
+	if mode != "git" && mode != "git-full" {
+		return nil, errors.New("unsupported git update mode")
+	}
+	if !safeGitRef.MatchString(ref) || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.HasSuffix(ref, "/") {
+		return nil, errors.New("unsafe git ref")
+	}
+	parts := []string{
+		"git", "fetch", "origin", ref, "&&",
+		"git", "checkout", ref, "&&",
+		"git", "pull", "--ff-only", "origin", ref, "&&",
+	}
+	if mode == "git-full" {
+		parts = append(parts,
+			"docker", "compose", "pull", "xray", "&&",
+			"docker", "compose", "up", "-d", "--build", "xray", "node-agent",
+		)
+	} else {
+		parts = append(parts, "docker", "compose", "up", "-d", "--build", "node-agent")
+	}
+	return parts, nil
 }
 
 func (h *handlers) restartNode(w http.ResponseWriter, r *http.Request) {
@@ -244,30 +437,98 @@ func runDetachedComposeHelper(repoDir string, parts []string) error {
 	return cmd.Run()
 }
 
-// replaceAndRestart downloads a binary to a temp file, replaces target, restarts via systemctl.
-func replaceAndRestart(url, targetPath, serviceName string) error {
-	resp, err := http.Get(url) //nolint:gosec
-	if err != nil {
+// replaceAndRestart installs only a bounded, checksum-verified HTTPS response.
+// The temporary file is created beside the target so the final rename is
+// atomic, and every failure before that rename removes the partial download.
+func replaceAndRestart(downloadURL, targetPath, serviceName, expectedSHA256 string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), binaryUpdateTimeout)
+	defer cancel()
+	if err := downloadVerifiedBinary(ctx, binaryUpdateHTTPClient, downloadURL, targetPath, expectedSHA256, maxBinaryUpdateBytes); err != nil {
 		return err
+	}
+	if err := exec.Command("systemctl", "restart", serviceName).Run(); err != nil {
+		return fmt.Errorf("restart updated service: %w", err)
+	}
+	return nil
+}
+
+func downloadVerifiedBinary(ctx context.Context, client *http.Client, downloadURL, targetPath, expectedSHA256 string, maxBytes int64) error {
+	if client == nil || maxBytes < 1 {
+		return errors.New("binary download configuration is invalid")
+	}
+	if normalizedURL, checksum, err := validateBinaryUpdate(downloadURL, expectedSHA256); err != nil {
+		return err
+	} else {
+		downloadURL = normalizedURL
+		expectedSHA256 = checksum
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return errors.New("binary download request is invalid")
+	}
+	requestClient := *client
+	requestClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := requestClient.Do(req)
+	if err != nil {
+		// Do not wrap the net/http error: signed download URLs commonly contain
+		// secret query parameters and net/http includes the full URL in errors.
+		return errors.New("binary download request failed")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return fmt.Errorf("binary download returned HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxBytes {
+		return errors.New("binary download exceeds the size limit")
+	}
 
-	tmp := targetPath + ".new"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return errors.New("binary target directory is unavailable")
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(targetPath)+"-*.new")
 	if err != nil {
-		return err
+		return errors.New("binary temporary file could not be created")
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
-		return err
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		_ = tmp.Close()
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	hasher := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(tmp, hasher), io.LimitReader(resp.Body, maxBytes+1))
+	if copyErr != nil {
+		return errors.New("binary download could not be written")
 	}
-	f.Close()
-
-	if err := os.Rename(tmp, targetPath); err != nil {
-		return err
+	if written == 0 {
+		return errors.New("binary download is empty")
 	}
-
-	return exec.Command("systemctl", "restart", serviceName).Run()
+	if written > maxBytes {
+		return errors.New("binary download exceeds the size limit")
+	}
+	if hex.EncodeToString(hasher.Sum(nil)) != expectedSHA256 {
+		return errors.New("binary download checksum mismatch")
+	}
+	if err := tmp.Chmod(0o755); err != nil {
+		return errors.New("binary temporary file permissions could not be set")
+	}
+	if err := tmp.Sync(); err != nil {
+		return errors.New("binary temporary file could not be synced")
+	}
+	if err := tmp.Close(); err != nil {
+		return errors.New("binary temporary file could not be closed")
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return errors.New("binary target could not be replaced")
+	}
+	removeTemp = false
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
