@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -18,8 +19,10 @@ type Config struct {
 	NodeID               string
 	InternalServiceToken string
 	UsersFile            string
+	InboundsFile         string
 	ResyncInterval       time.Duration
 	Version              string
+	XrayCoreVersion      string
 	RepoDir              string
 	UpdateRef            string
 }
@@ -31,15 +34,25 @@ func Load() *Config {
 		Secret:               getenv("AGENT_SECRET", "change-me-secret"),
 		DefaultInboundTag:    getenv("XRAY_INBOUND_TAG", "vless-in"),
 		MetricsInterval:      parseDuration(getenv("METRICS_INTERVAL", "15s")),
-		ControllerURL:        getenv("CONTROLLER_URL", ""),
+		ControllerURL:        canonicalControllerURL(getenv("CONTROLLER_URL", "")),
 		NodeID:               getenv("NODE_ID", ""),
 		InternalServiceToken: getenv("INTERNAL_SERVICE_TOKEN", ""),
 		UsersFile:            getenv("USERS_FILE", "/data/users.json"),
+		InboundsFile:         getenv("INBOUNDS_FILE", "/data/inbounds.json"),
 		ResyncInterval:       parseDuration(getenv("RESYNC_INTERVAL", "30s")),
 		Version:              getenv("AGENT_VERSION", "git"),
+		XrayCoreVersion:      getenv("XRAY_CORE_VERSION", "unknown"),
 		RepoDir:              getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
 		UpdateRef:            getenv("AGENT_UPDATE_REF", "master"),
 	}
+}
+
+func canonicalControllerURL(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.TrimRight(trimmed, "/") == "https://api.guardex-vpn.com:2096" {
+		return "https://api.guardex-vpn.com"
+	}
+	return trimmed
 }
 
 func getenv(key, fallback string) string {
@@ -73,4 +86,15 @@ func (c *Config) AgentVersion() string {
 		return c.Version
 	}
 	return "unknown"
+}
+
+// ControllerPollingEnabled is true only when the complete mutually
+// authenticated controller configuration is present and uses verified HTTPS.
+func (c *Config) ControllerPollingEnabled() bool {
+	secret := strings.TrimSpace(c.Secret)
+	if strings.TrimSpace(c.ControllerURL) == "" || strings.TrimSpace(c.InternalServiceToken) == "" || secret == "" || secret == "change-me-secret" {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(c.ControllerURL))
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil
 }

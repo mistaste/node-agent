@@ -19,8 +19,10 @@ services:
     restart: unless-stopped
     network_mode: host
     env_file: .env
+    environment:
+      XRAY_CORE_VERSION: "26.6.1"
     volumes:
-      # Durable user store — survives container/Xray restarts.
+      # Durable user and dynamic-inbound stores — survive container/Xray restarts.
       - ./data:/data
       # Enables controlled git-based self-update from the admin panel.
       - ./:/opt/guardex-node

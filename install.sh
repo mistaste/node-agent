@@ -16,7 +16,7 @@ INBOUND_TAG="${INBOUND_TAG:-vless-in}"
 XRAY_VERSION="${XRAY_VERSION:-26.6.1}"
 
 NODE_ID="${NODE_ID:-}"
-CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com:2096}"
+CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com}"
 INTERNAL_SERVICE_TOKEN="${INTERNAL_SERVICE_TOKEN:-}"
 AGENT_SECRET="${AGENT_SECRET:-$(openssl rand -hex 32)}"
 REGISTRATION_STATUS=""  # set by register_node()
@@ -170,6 +170,7 @@ write_xray_config() {
   }
 }
 EOF
+    chmod 600 "$INSTALL_DIR/xray-config.json"
 }
 
 # ── write .env for node-agent ─────────────────────────────────────────────────
@@ -184,6 +185,10 @@ METRICS_INTERVAL=15s
 NODE_ID=${NODE_ID}
 CONTROLLER_URL=${CONTROLLER_URL}
 INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN}
+USERS_FILE=/data/users.json
+INBOUNDS_FILE=/data/inbounds.json
+RESYNC_INTERVAL=30s
+XRAY_CORE_VERSION=${XRAY_VERSION}
 AGENT_VERSION=git
 AGENT_REPO_DIR=${INSTALL_DIR}
 AGENT_UPDATE_REF=master
@@ -267,7 +272,7 @@ PAYLOAD
 )
 
     local http_code
-    http_code=$(curl -skS -o /dev/null -w "%{http_code}" \
+    http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
         -X POST "${CONTROLLER_URL}/v1/internal/node/register" \
         -H "Content-Type: application/json" \
         -H "X-Service-Token: ${INTERNAL_SERVICE_TOKEN}" \

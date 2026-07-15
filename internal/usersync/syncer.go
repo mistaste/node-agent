@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/xray"
 )
 
@@ -15,22 +16,33 @@ import (
 // the stored users on startup and on a periodic reconcile loop, so users are
 // restored automatically within one interval of an Xray restart.
 type Syncer struct {
-	xray     *xray.Client
+	xray     userRuntime
 	store    *store.Store
 	interval time.Duration
+	userOps  *userops.Coordinator
 }
 
-func New(xrayClient *xray.Client, st *store.Store, interval time.Duration) *Syncer {
+type userRuntime interface {
+	AddUser(context.Context, xray.AddUserParams) error
+}
+
+func New(xrayClient userRuntime, st *store.Store, interval time.Duration, coordinators ...*userops.Coordinator) *Syncer {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	return &Syncer{xray: xrayClient, store: st, interval: interval}
+	coordinator := userops.New()
+	if len(coordinators) > 0 && coordinators[0] != nil {
+		coordinator = coordinators[0]
+	}
+	return &Syncer{xray: xrayClient, store: st, interval: interval, userOps: coordinator}
 }
 
 // reconcile re-adds every stored user to Xray. Users already present in core are
 // skipped, so the call is idempotent and cheap on a steady-state node. Returns
 // the number of users that were actually (re)applied.
 func (s *Syncer) reconcile(ctx context.Context) int {
+	s.userOps.Lock()
+	defer s.userOps.Unlock()
 	applied := 0
 	for _, u := range s.store.All() {
 		err := s.xray.AddUser(ctx, xray.AddUserParams{
@@ -45,7 +57,7 @@ func (s *Syncer) reconcile(ctx context.Context) int {
 		case xray.IsAlreadyExists(err):
 			// already in core — nothing to do
 		default:
-			log.Printf("[usersync] re-add %s: %v", u.UUID, err)
+			log.Printf("[usersync] durable user re-apply failed")
 		}
 	}
 	return applied
