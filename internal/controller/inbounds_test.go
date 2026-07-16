@@ -150,6 +150,20 @@ func applyItem(id, tag string, port int, revision int64, clients ...string) desi
 	}
 }
 
+func grpcApplyItem(id, tag string, port int, revision int64, clients ...string) desiredItem {
+	item := applyItem(id, tag, port, revision, clients...)
+	item.ConfigJSON = json.RawMessage(`{
+		"tag":"ignored-by-controller","port":9999,"protocol":"vless",
+		"settings":{"clients":[],"decryption":"none"},
+		"streamSettings":{"network":"grpc","security":"reality","realitySettings":{
+			"dest":"www.example.com:443","serverNames":["www.example.com"]
+		},"grpcSettings":{
+			"authority":"www.example.com","serviceName":"guardex.sync-v1","multiMode":true
+		}}
+	}`)
+	return item
+}
+
 type controllerHarness struct {
 	t            *testing.T
 	server       *httptest.Server
@@ -752,6 +766,16 @@ func TestControllerRejectsNamespaceFlowAndWrongServerIdentity(t *testing.T) {
 		t.Fatal("invalid XHTTP flow mutated inventory")
 	}
 
+	grpcVision := grpcApplyItem("catalog-grpc-flow", "grpc-flow", 8443, 1, testClientUUID)
+	grpcVision.UserFlow = "xtls-rprx-vision"
+	h = newControllerHarness(t, []desiredItem{grpcVision})
+	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+		t.Fatal("gRPC Vision unexpectedly succeeded")
+	}
+	if len(h.inventory.All()) != 0 {
+		t.Fatal("invalid gRPC flow mutated inventory")
+	}
+
 	identity := applyItem("catalog-identity", "identity", 2053, 1, testClientUUID)
 	h = newControllerHarness(t, []desiredItem{identity})
 	h.reconciler.cfg.NodeID = "another-server"
@@ -801,14 +825,37 @@ func TestControllerNeverFollowsRedirectWithNodeCredentials(t *testing.T) {
 	}
 }
 
-func TestControllerReportsOnlyPhaseOneCapabilities(t *testing.T) {
+func TestControllerAppliesGRPCRealityAndReportsClientParameters(t *testing.T) {
+	item := grpcApplyItem("catalog-grpc", "grpc", 8443, 1, testClientUUID)
+	h := newControllerHarness(t, []desiredItem{item})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	managed, ok := h.inventory.Get(item.EffectiveTag)
+	if !ok || managed.Config.Network != "grpc" || managed.Config.Security != "reality" {
+		t.Fatalf("managed gRPC config = %+v, exists=%v", managed.Config.Public(), ok)
+	}
+	report := h.latestReport().Deployments[0]
+	if report.Status != "active" || report.AppliedClientCount != 1 {
+		t.Fatalf("gRPC deployment report = %+v", report)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(report.ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["serviceName"] != "guardex.sync-v1" || params["authority"] != "www.example.com" || params["mode"] != "multi" {
+		t.Fatalf("gRPC client params = %s", report.ClientParamsJSON)
+	}
+}
+
+func TestControllerReportsManagedRealityCapabilities(t *testing.T) {
 	item := applyItem("catalog-capabilities", "capabilities", 2053, 1)
 	h := newControllerHarness(t, []desiredItem{item})
 	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	capabilities := h.latestReport().Capabilities
-	if strings.Join(capabilities.SupportedTransports, ",") != "raw,xhttp" || strings.Join(capabilities.SupportedSecurities, ",") != "reality" {
+	if strings.Join(capabilities.SupportedTransports, ",") != "raw,xhttp,grpc" || strings.Join(capabilities.SupportedSecurities, ",") != "reality" {
 		t.Fatalf("overclaimed capabilities = %+v", capabilities)
 	}
 	if !strings.Contains(string(capabilities.RawJSON), `"controller_tag_namespace":"gx-"`) {
