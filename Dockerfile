@@ -1,15 +1,15 @@
 FROM alpine:3.22 AS artifact
 
 ARG TARGETARCH=amd64
-ARG NODE_AGENT_RELEASE=v0.3.1
+ARG NODE_AGENT_RELEASE=v0.3.2
 
 # Compile the Xray control-plane once in CI/release tooling instead of on every
 # small VPN node.  The immutable, architecture-specific digest keeps the
 # download fail-closed even if the release URL is changed or replaced.
 RUN apk add --no-cache ca-certificates wget \
     && case "$TARGETARCH" in \
-         amd64) expected="23e9526b550832a8244b0f13cfb0806e250ae9533ce3c020eda84f819179dc41" ;; \
-         arm64) expected="78605c1aae6a52ee1b5501b3f52493505f41794e1ebc1e003ca7f08950efb598" ;; \
+         amd64) expected="0e84a8bda0940a372ae9cde44a135a8523718c7fe6a0bd93225e8abffbbe9469" ;; \
+         arm64) expected="e60f07402cdc6c06bb43bbb61cf49265b522994dbb4391901d68ee2e4a20aa7d" ;; \
          *) echo "unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
        esac \
     && wget -q -O /node-agent "https://github.com/mistaste/node-agent/releases/download/${NODE_AGENT_RELEASE}/guardex-node-agent-${NODE_AGENT_RELEASE}-linux-${TARGETARCH}" \
