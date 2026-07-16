@@ -1,7 +1,7 @@
 FROM alpine:3.22 AS artifact
 
 ARG TARGETARCH=amd64
-ARG NODE_AGENT_RELEASE=v0.3.0
+ARG NODE_AGENT_RELEASE=v0.3.1
 
 # Compile the Xray control-plane once in CI/release tooling instead of on every
 # small VPN node.  The immutable, architecture-specific digest keeps the
