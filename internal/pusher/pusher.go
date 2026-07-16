@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/guardex/node-agent/internal/config"
 	"github.com/guardex/node-agent/internal/metrics"
+	"github.com/guardex/node-agent/internal/xray"
 )
 
 // Pusher periodically sends collected metrics to the Central Controller.
@@ -69,13 +71,14 @@ type metricsPayload struct {
 	NetBytesRecv uint64              `json:"net_bytes_recv"`
 	Sessions     int                 `json:"sessions"`
 	ActiveUsers  []activeUserPayload `json:"active_users"`
+	UserTraffic  []activeUserPayload `json:"user_traffic"`
 }
 
 type activeUserPayload struct {
 	UUID     string `json:"uuid"`
 	Uplink   int64  `json:"uplink"`
 	Downlink int64  `json:"downlink"`
-	LastSeen string `json:"last_seen"`
+	LastSeen string `json:"last_seen,omitempty"`
 }
 
 func (p *Pusher) push(ctx context.Context) error {
@@ -93,6 +96,7 @@ func (p *Pusher) push(ctx context.Context) error {
 			LastSeen: user.LastSeen.Format(time.RFC3339),
 		})
 	}
+	userTraffic := trafficPayload(snap.UserTraffic)
 
 	payload := metricsPayload{
 		NodeSecret:   p.cfg.Secret,
@@ -103,6 +107,7 @@ func (p *Pusher) push(ctx context.Context) error {
 		NetBytesRecv: snap.NetBytesRecv,
 		Sessions:     len(activeUsers),
 		ActiveUsers:  activeUsers,
+		UserTraffic:  userTraffic,
 	}
 
 	body, err := json.Marshal(payload)
@@ -128,4 +133,25 @@ func (p *Pusher) push(ctx context.Context) error {
 		return fmt.Errorf("controller returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// trafficPayload carries monotonic per-user counters independently from the
+// short-lived active-session list. A user can finish a small transfer before
+// two collector samples observe growth; sending the cumulative counter still
+// lets the controller account for those bytes without reporting the user as
+// currently online.
+func trafficPayload(users []xray.UserTraffic) []activeUserPayload {
+	result := make([]activeUserPayload, 0, len(users))
+	for _, user := range users {
+		uuid := strings.TrimSpace(user.UUID)
+		if uuid == "" || user.Uplink < 0 || user.Downlink < 0 {
+			continue
+		}
+		result = append(result, activeUserPayload{
+			UUID:     uuid,
+			Uplink:   user.Uplink,
+			Downlink: user.Downlink,
+		})
+	}
+	return result
 }
