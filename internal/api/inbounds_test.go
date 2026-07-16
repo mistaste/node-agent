@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -35,10 +36,12 @@ type notFoundUserRuntime struct{}
 
 type recordingUserRuntime struct {
 	addCalls int
+	lastAdd  xray.AddUserParams
 }
 
-func (r *recordingUserRuntime) AddUser(context.Context, xray.AddUserParams) error {
+func (r *recordingUserRuntime) AddUser(_ context.Context, params xray.AddUserParams) error {
 	r.addCalls++
+	r.lastAdd = params
 	return nil
 }
 
@@ -167,15 +170,51 @@ func TestAddAndListInboundsNeverExposePrivateKey(t *testing.T) {
 	}
 }
 
-func TestInboundCapabilitiesAdvertiseManagedGRPCReality(t *testing.T) {
+func TestInboundCapabilitiesAdvertiseManagedRealityAndHysteria(t *testing.T) {
 	capabilities := inboundCapabilities(&config.Config{})
 	networks, ok := capabilities["stream_networks"].([]string)
-	if !ok || strings.Join(networks, ",") != "raw,xhttp,grpc" {
+	if !ok || strings.Join(networks, ",") != "raw,xhttp,grpc,hysteria" {
 		t.Fatalf("stream networks = %#v", capabilities["stream_networks"])
 	}
 	securities, ok := capabilities["stream_securities"].([]string)
-	if !ok || strings.Join(securities, ",") != "reality" {
+	if !ok || strings.Join(securities, ",") != "reality,tls" {
 		t.Fatalf("stream securities = %#v", capabilities["stream_securities"])
+	}
+}
+
+func TestDirectUserAPIUsesHysteriaAccountContract(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	cert, key := inbound.ManagedTLSPaths("api-hysteria")
+	configJSON := fmt.Sprintf(`{
+		"tag":"api-hysteria","port":24443,"protocol":"hysteria",
+		"settings":{"version":2,"clients":[]},
+		"streamSettings":{"network":"hysteria","security":"tls",
+			"tlsSettings":{"serverName":"203.0.113.10","alpn":["h3"],"minVersion":"1.3","maxVersion":"1.3","certificates":[{"certificateFile":%q,"keyFile":%q}]},
+			"hysteriaSettings":{"version":2,"auth":"","udpIdleTimeout":60,"masquerade":{}},
+			"finalmask":{"udp":[{"type":"salamander","settings":{"password":""}}]}
+		}
+	}`, cert, key)
+	h, _ := newInboundHandlers(t)
+	h.store = store.New(filepath.Join(t.TempDir(), "users.json"))
+	apply := httptest.NewRecorder()
+	h.addInbound(apply, httptest.NewRequest(http.MethodPost, "/v1/inbounds", strings.NewReader(configJSON)))
+	if apply.Code != http.StatusOK {
+		t.Fatalf("apply status=%d body=%s", apply.Code, apply.Body.String())
+	}
+	if strings.Contains(apply.Body.String(), "privkey") || strings.Contains(apply.Body.String(), "PRIVATE KEY") {
+		t.Fatalf("direct response leaked private TLS material: %s", apply.Body.String())
+	}
+	runtime := &recordingUserRuntime{}
+	h.userCore = runtime
+	const uuid = "6f8d0c5b-6c62-4b35-9231-b2af180b5284"
+	response := httptest.NewRecorder()
+	h.addUser(response, httptest.NewRequest(http.MethodPost, "/v1/users", strings.NewReader(`{"uuid":"`+uuid+`","inbound_tag":"api-hysteria"}`)))
+	if response.Code != http.StatusOK || runtime.lastAdd.Protocol != "hysteria" || runtime.lastAdd.UUID != uuid {
+		t.Fatalf("direct Hysteria add = status %d params %+v body=%s", response.Code, runtime.lastAdd, response.Body.String())
+	}
+	stored := h.store.UsersByInboundTag("api-hysteria")
+	if len(stored) != 1 || stored[0].Protocol != "hysteria" {
+		t.Fatalf("durable direct Hysteria user = %+v", stored)
 	}
 }
 

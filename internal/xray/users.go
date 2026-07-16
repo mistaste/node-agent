@@ -7,14 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/guardex/node-agent/internal/inbound"
 	handlerCmd "github.com/xtls/xray-core/app/proxyman/command"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
+	hysteriaAccount "github.com/xtls/xray-core/proxy/hysteria/account"
 	vlessAccount "github.com/xtls/xray-core/proxy/vless"
 )
 
 // ListInboundUserIDs returns UUIDs from the private Guardex email labels used
-// for VLESS users. It lets the controller reconcile runtime membership exactly
+// for managed users. It lets the controller reconcile runtime membership exactly
 // instead of assuming the durable user store always mirrors Xray memory.
 func (c *Client) ListInboundUserIDs(ctx context.Context, inboundTag string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -71,41 +73,62 @@ func IsNotFound(err error) bool {
 		strings.Contains(message, "not enough information for making a decision")
 }
 
-// AddUserParams holds the parameters for adding a VLESS user to an inbound.
+// AddUserParams holds the parameters for adding a managed user to an inbound.
 type AddUserParams struct {
 	InboundTag string
 	UUID       string
+	Protocol   string // "vless" (default) or "hysteria"
 	Flow       string // "" or "xtls-rprx-vision"
 	Level      uint32
 }
 
-// AddUser adds a new VLESS user to the specified inbound via Xray gRPC HandlerService.
+// AddUser adds a protocol-aware user via Xray gRPC HandlerService.
 // Zero-downtime: no config.json rewrite, no restart.
 func (c *Client) AddUser(ctx context.Context, p AddUserParams) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-
-	account := &vlessAccount.Account{
-		Id:   p.UUID,
-		Flow: p.Flow,
+	user, err := buildManagedUser(p)
+	if err != nil {
+		return err
 	}
-
-	user := &protocol.User{
-		Level:   p.Level,
-		Email:   fmt.Sprintf("%s@guardex", p.UUID),
-		Account: serial.ToTypedMessage(account),
-	}
-
 	op := serial.ToTypedMessage(&handlerCmd.AddUserOperation{User: user})
 
-	_, err := c.Handler.AlterInbound(ctx, &handlerCmd.AlterInboundRequest{
+	_, err = c.Handler.AlterInbound(ctx, &handlerCmd.AlterInboundRequest{
 		Tag:       p.InboundTag,
 		Operation: op,
 	})
 	return err
 }
 
-// RemoveUser removes a VLESS user from the specified inbound by email (UUID@guardex).
+func buildManagedUser(p AddUserParams) (*protocol.User, error) {
+	if err := inbound.ValidateClientID(p.UUID); err != nil {
+		return nil, err
+	}
+	protocolName := strings.ToLower(strings.TrimSpace(p.Protocol))
+	if protocolName == "" {
+		protocolName = "vless"
+	}
+	var accountMessage *serial.TypedMessage
+	switch protocolName {
+	case "vless":
+		accountMessage = serial.ToTypedMessage(&vlessAccount.Account{Id: p.UUID, Flow: p.Flow})
+	case "hysteria":
+		if strings.TrimSpace(p.Flow) != "" {
+			return nil, fmt.Errorf("hysteria users cannot use a VLESS flow")
+		}
+		accountMessage = serial.ToTypedMessage(&hysteriaAccount.Account{Auth: p.UUID})
+	default:
+		return nil, fmt.Errorf("unsupported managed user protocol %q", protocolName)
+	}
+
+	return &protocol.User{
+		Level:   p.Level,
+		Email:   fmt.Sprintf("%s@guardex", p.UUID),
+		Account: accountMessage,
+	}, nil
+}
+
+// RemoveUser removes a managed user by the shared stats identity UUID@guardex.
 func (c *Client) RemoveUser(ctx context.Context, inboundTag, uuid string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

@@ -15,6 +15,8 @@ services:
     command: run -config /etc/xray/config.json
     volumes:
       - ./xray-config.json:/etc/xray/config.json:ro
+      # Node-agent creates durable per-profile TLS keypairs; Xray only reads them.
+      - ./data/tls:/etc/guardex/tls:ro
 
   node-agent:
     build: .
@@ -23,9 +25,12 @@ services:
     env_file: .env
     environment:
       XRAY_CORE_VERSION: "26.6.1"
+      HYSTERIA_TLS_DIR: "/etc/guardex/tls"
     volumes:
       # Durable user and dynamic-inbound stores — survive container/Xray restarts.
       - ./data:/data
+      # Writable only in the agent; private keys are never sent to the controller.
+      - ./data/tls:/etc/guardex/tls
       # Enables controlled git-based self-update from the admin panel.
       - ./:/opt/guardex-node
       - /var/run/docker.sock:/var/run/docker.sock

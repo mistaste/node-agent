@@ -88,11 +88,24 @@ func New(core Core, inventory *store.InboundStore, interval time.Duration, prote
 // same config is safe. Replacing a managed tag rolls back to the prior runtime
 // config if either the new Xray config or durable write fails.
 func (m *Manager) Apply(ctx context.Context, cfg inbound.Config) error {
-	return m.ApplyDesired(ctx, cfg, cfg.Digest)
+	return m.ApplyWithRefresh(ctx, cfg, false)
 }
 
 func (m *Manager) ApplyDesired(ctx context.Context, cfg inbound.Config, desiredDigest string) error {
-	_, err := m.applyDesired(ctx, cfg, desiredDigest, store.InboundControllerState{})
+	return m.ApplyDesiredWithRefresh(ctx, cfg, desiredDigest, false)
+}
+
+// ApplyWithRefresh forces an already-managed handler to be recreated when
+// node-local material changed without changing the structural JSON (for
+// example a managed TLS certificate renewal).
+func (m *Manager) ApplyWithRefresh(ctx context.Context, cfg inbound.Config, refresh bool) error {
+	return m.ApplyDesiredWithRefresh(ctx, cfg, cfg.Digest, refresh)
+}
+
+// ApplyDesiredWithRefresh preserves a source-template digest while forcing a
+// runtime reload for rotated node-local material.
+func (m *Manager) ApplyDesiredWithRefresh(ctx context.Context, cfg inbound.Config, desiredDigest string, refresh bool) error {
+	_, err := m.applyDesired(ctx, cfg, desiredDigest, store.InboundControllerState{}, refresh)
 	return err
 }
 
@@ -108,13 +121,21 @@ func (m *Manager) ApplyControllerDesired(ctx context.Context, cfg inbound.Config
 // recreated. The controller uses this to re-add the exact desired UUID set only
 // when Xray necessarily lost its in-memory users.
 func (m *Manager) ApplyControllerDesiredWithResult(ctx context.Context, cfg inbound.Config, desiredDigest string, controller store.InboundControllerState) (bool, error) {
+	return m.ApplyControllerDesiredWithRefresh(ctx, cfg, desiredDigest, controller, false)
+}
+
+// ApplyControllerDesiredWithRefresh is the certificate-renewal variant of
+// ApplyControllerDesiredWithResult. A forced refresh uses the normal
+// remove/add rollback path and returns structuralChanged so controller users
+// are immediately restored after Xray reloads the new leaf certificate.
+func (m *Manager) ApplyControllerDesiredWithRefresh(ctx context.Context, cfg inbound.Config, desiredDigest string, controller store.InboundControllerState, refresh bool) (bool, error) {
 	if controller.InboundID == "" {
 		return false, errors.New("controller inbound id is required")
 	}
-	return m.applyDesired(ctx, cfg, desiredDigest, controller)
+	return m.applyDesired(ctx, cfg, desiredDigest, controller, refresh)
 }
 
-func (m *Manager) applyDesired(ctx context.Context, cfg inbound.Config, desiredDigest string, controller store.InboundControllerState) (bool, error) {
+func (m *Manager) applyDesired(ctx context.Context, cfg inbound.Config, desiredDigest string, controller store.InboundControllerState, refresh bool) (bool, error) {
 	validated, err := inbound.Parse(cfg.Raw)
 	if err != nil {
 		return false, fmt.Errorf("validate inbound before apply: %w", err)
@@ -172,7 +193,7 @@ func (m *Manager) applyDesired(ctx context.Context, cfg inbound.Config, desiredD
 	if !managed && runtimeHadTag {
 		return false, ErrTagConflict
 	}
-	if managed && previous.Config.Digest == cfg.Digest && runtimeHadTag {
+	if managed && previous.Config.Digest == cfg.Digest && runtimeHadTag && !refresh {
 		if persistErr := m.persistDesired(cfg, desiredDigest, controller); persistErr != nil {
 			m.setState(cfg, false, "the desired inbound could not be persisted")
 			return false, fmt.Errorf("persist inbound %q: %w", cfg.Tag, persistErr)
@@ -180,7 +201,7 @@ func (m *Manager) applyDesired(ctx context.Context, cfg inbound.Config, desiredD
 		m.setState(cfg, true, "")
 		return false, nil
 	}
-	if managed && previous.Config.Digest == cfg.Digest {
+	if managed && previous.Config.Digest == cfg.Digest && !refresh {
 		err := m.core.AddInboundFromJSON(ctx, cfg.Raw)
 		if err == nil || xray.IsInboundAlreadyExists(err) {
 			if persistErr := m.persistDesired(cfg, desiredDigest, controller); persistErr != nil {

@@ -3,16 +3,19 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
-// User is a VLESS user persisted to disk so it can be re-applied to Xray after
-// a restart. Xray keeps users only in memory, so the store is the durable record.
+// User is a managed proxy user persisted to disk so it can be re-applied to
+// Xray after a restart. Empty Protocol is the backward-compatible VLESS value.
 type User struct {
 	UUID       string `json:"uuid"`
 	InboundTag string `json:"inbound_tag"`
+	Protocol   string `json:"protocol,omitempty"`
 	Flow       string `json:"flow"`
 	Level      uint32 `json:"level"`
 }
@@ -47,6 +50,9 @@ func (s *Store) Load() error {
 		return err
 	}
 	for _, u := range users {
+		if err := validateUser(u); err != nil {
+			return fmt.Errorf("invalid durable user: %w", err)
+		}
 		s.users[key(u.InboundTag, u.UUID)] = u
 	}
 	return nil
@@ -54,6 +60,9 @@ func (s *Store) Load() error {
 
 // Add records a user and persists the store.
 func (s *Store) Add(u User) error {
+	if err := validateUser(u); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entryKey := key(u.InboundTag, u.UUID)
@@ -66,6 +75,20 @@ func (s *Store) Add(u User) error {
 			delete(s.users, entryKey)
 		}
 		return err
+	}
+	return nil
+}
+
+func validateUser(user User) error {
+	if strings.TrimSpace(user.UUID) == "" || strings.TrimSpace(user.InboundTag) == "" {
+		return errors.New("durable user UUID and inbound tag are required")
+	}
+	protocol := strings.ToLower(strings.TrimSpace(user.Protocol))
+	if protocol != "" && protocol != "vless" && protocol != "hysteria" {
+		return errors.New("durable user protocol is unsupported")
+	}
+	if protocol == "hysteria" && strings.TrimSpace(user.Flow) != "" {
+		return errors.New("durable Hysteria user cannot use a VLESS flow")
 	}
 	return nil
 }

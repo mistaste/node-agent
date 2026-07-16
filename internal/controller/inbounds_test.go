@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,19 +29,25 @@ type controllerFakeCore struct {
 	mu              sync.Mutex
 	inbounds        map[string][]byte
 	users           map[string]map[string]string
+	userProtocols   map[string]map[string]string
 	addInboundCalls int
 	addUserCalls    int
 	removeUserCalls int
+	failNextInbound bool
 	failNextAddUser bool
 }
 
 func newControllerFakeCore() *controllerFakeCore {
-	return &controllerFakeCore{inbounds: make(map[string][]byte), users: make(map[string]map[string]string)}
+	return &controllerFakeCore{inbounds: make(map[string][]byte), users: make(map[string]map[string]string), userProtocols: make(map[string]map[string]string)}
 }
 
 func (f *controllerFakeCore) AddInboundFromJSON(_ context.Context, raw []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failNextInbound {
+		f.failNextInbound = false
+		return errors.New("temporary AddInbound failure")
+	}
 	cfg, err := inbound.Parse(raw)
 	if err != nil {
 		return err
@@ -49,6 +57,7 @@ func (f *controllerFakeCore) AddInboundFromJSON(_ context.Context, raw []byte) e
 	}
 	f.inbounds[cfg.Tag] = append([]byte(nil), raw...)
 	f.users[cfg.Tag] = make(map[string]string)
+	f.userProtocols[cfg.Tag] = make(map[string]string)
 	f.addInboundCalls++
 	return nil
 }
@@ -61,6 +70,7 @@ func (f *controllerFakeCore) RemoveInbound(_ context.Context, tag string) error 
 	}
 	delete(f.inbounds, tag)
 	delete(f.users, tag)
+	delete(f.userProtocols, tag)
 	return nil
 }
 
@@ -80,6 +90,7 @@ func (f *controllerFakeCore) AddUser(_ context.Context, params xray.AddUserParam
 		return errors.New("already exists")
 	}
 	users[params.UUID] = params.Flow
+	f.userProtocols[params.InboundTag][params.UUID] = params.Protocol
 	return nil
 }
 
@@ -95,6 +106,7 @@ func (f *controllerFakeCore) RemoveUser(_ context.Context, tag, uuid string) err
 		return errors.New("not enough information for making a decision")
 	}
 	delete(users, uuid)
+	delete(f.userProtocols[tag], uuid)
 	return nil
 }
 
@@ -162,6 +174,32 @@ func grpcApplyItem(id, tag string, port int, revision int64, clients ...string) 
 		}}
 	}`)
 	return item
+}
+
+func hysteriaApplyItem(t *testing.T, id, tag string, port int, revision int64, clients ...string) desiredItem {
+	t.Helper()
+	if !strings.HasPrefix(tag, "gx-") {
+		tag = "gx-" + tag
+	}
+	certificateFile, keyFile := inbound.ManagedTLSPaths(tag)
+	configJSON := json.RawMessage(fmt.Sprintf(`{
+		"tag":"ignored-by-controller","port":9999,"protocol":"hysteria",
+		"settings":{"version":2,"clients":[]},
+		"streamSettings":{"network":"hysteria","security":"tls",
+			"tlsSettings":{"serverName":"203.0.113.10","alpn":["h3"],"minVersion":"1.3","maxVersion":"1.3","certificates":[{"certificateFile":%q,"keyFile":%q}]},
+			"hysteriaSettings":{"version":2,"auth":"","udpIdleTimeout":60,"masquerade":{}},
+			"finalmask":{"udp":[{"type":"salamander","settings":{"password":""}}]}
+		}
+	}`, certificateFile, keyFile))
+	return desiredItem{
+		InboundID:       id,
+		Action:          "apply",
+		DesiredRevision: revision,
+		EffectiveTag:    tag,
+		EffectivePort:   port,
+		ConfigJSON:      configJSON,
+		ClientUUIDs:     clients,
+	}
 }
 
 type controllerHarness struct {
@@ -848,6 +886,248 @@ func TestControllerAppliesGRPCRealityAndReportsClientParameters(t *testing.T) {
 	}
 }
 
+func TestControllerReconcilesManagedHysteriaUsersSecretsAndRestart(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	const secondUUID = "d9428888-122b-4dbb-97c1-8f2f8a3cb1d9"
+	item := hysteriaApplyItem(t, "catalog-hysteria", "hysteria", 24443, 1, testClientUUID)
+	h := newControllerHarness(t, []desiredItem{item})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := h.latestReport().Deployments[0]
+	if first.Status != "active" || first.AppliedClientCount != 1 {
+		t.Fatalf("Hysteria deployment = %+v", first)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(first.ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["sni"] != "203.0.113.10" || params["alpn"] != "h3" || params["fingerprint"] != "chrome" || len(fmt.Sprint(params["pin_sha256"])) != 64 {
+		t.Fatalf("Hysteria client params = %s", first.ClientParamsJSON)
+	}
+	if strings.Contains(string(first.ClientParamsJSON), "salamander") || strings.Contains(string(first.PublicMaterialJSON), "salamander") {
+		t.Fatal("Salamander secret leaked into non-secret report fields")
+	}
+	var secret map[string]string
+	if err := json.Unmarshal(first.ClientSecretJSON, &secret); err != nil {
+		t.Fatal(err)
+	}
+	firstPassword := secret["salamander_password"]
+	if len(firstPassword) < 32 {
+		t.Fatalf("missing Hysteria client secret: %s", first.ClientSecretJSON)
+	}
+	firstPin := fmt.Sprint(params["pin_sha256"])
+	if h.core.userProtocols[item.EffectiveTag][testClientUUID] != "hysteria" {
+		t.Fatalf("runtime user protocol = %#v", h.core.userProtocols[item.EffectiveTag])
+	}
+	stored := h.userStore.UsersByInboundTag(item.EffectiveTag)
+	if len(stored) != 1 || stored[0].Protocol != "hysteria" || stored[0].UUID != testClientUUID {
+		t.Fatalf("durable Hysteria users = %+v", stored)
+	}
+
+	// Simulate a crash/state-loss gap after a bundle rotation but before the
+	// same-revision runtime refresh/report. The durable old pin must force a real
+	// remove/add, immediately restore users, and publish the replacement pin.
+	_, keyFile := inbound.ManagedTLSPaths(item.EffectiveTag)
+	if err := os.Remove(filepath.Join(filepath.Dir(keyFile), "bundle.pem")); err != nil {
+		t.Fatal(err)
+	}
+	h.setItems([]desiredItem{item})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sameRevision := h.latestReport().Deployments[0]
+	if sameRevision.AppliedRevision != item.DesiredRevision || sameRevision.Status != "active" {
+		t.Fatalf("same-revision rotation report = %+v", sameRevision)
+	}
+	if err := json.Unmarshal(sameRevision.ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	if nextPin := fmt.Sprint(params["pin_sha256"]); len(nextPin) != 64 || nextPin == firstPin {
+		t.Fatalf("same-revision rotation pin = %q, old=%q", nextPin, firstPin)
+	}
+	if err := json.Unmarshal(sameRevision.ClientSecretJSON, &secret); err != nil || secret["salamander_password"] != firstPassword {
+		t.Fatalf("same-revision rotation changed Salamander secret: %s err=%v", sameRevision.ClientSecretJSON, err)
+	}
+	if h.core.addInboundCalls != 2 {
+		t.Fatalf("same-revision certificate rotation did not recreate the handler: add calls=%d", h.core.addInboundCalls)
+	}
+	if _, exists := h.core.users[item.EffectiveTag][testClientUUID]; !exists || h.core.userProtocols[item.EffectiveTag][testClientUUID] != "hysteria" {
+		t.Fatal("same-revision certificate refresh did not immediately restore Hysteria user")
+	}
+
+	updated := hysteriaApplyItem(t, item.InboundID, item.EffectiveTag, item.EffectivePort, 2, secondUUID)
+	h.setItems([]desiredItem{updated})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := h.latestReport().Deployments[0]
+	if err := json.Unmarshal(second.ClientSecretJSON, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if secret["salamander_password"] != firstPassword {
+		t.Fatal("client-set update rotated the profile Salamander secret")
+	}
+	if _, exists := h.core.users[item.EffectiveTag][testClientUUID]; exists {
+		t.Fatal("removed Hysteria UUID remained active in Xray")
+	}
+	if _, exists := h.core.users[item.EffectiveTag][secondUUID]; !exists || h.core.userProtocols[item.EffectiveTag][secondUUID] != "hysteria" {
+		t.Fatal("replacement Hysteria UUID was not applied to Xray")
+	}
+
+	// Simulate an Xray restart: the structural handler remains/restores first,
+	// while all AlterInbound users disappear from core memory.
+	h.core.mu.Lock()
+	h.core.users[item.EffectiveTag] = make(map[string]string)
+	h.core.userProtocols[item.EffectiveTag] = make(map[string]string)
+	h.core.mu.Unlock()
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := h.core.users[item.EffectiveTag][secondUUID]; !exists || h.core.userProtocols[item.EffectiveTag][secondUUID] != "hysteria" {
+		t.Fatal("Hysteria UUID was not restored after simulated Xray restart")
+	}
+	state, ok := h.manager.ControllerState(item.EffectiveTag)
+	if !ok || !strings.Contains(string(state.ClientSecretJSON), firstPassword) {
+		t.Fatal("durable controller state lost the Hysteria client secret")
+	}
+}
+
+func TestControllerRenewalFailureReportsNewPinAndRestoresUsers(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	item := hysteriaApplyItem(t, "catalog-hysteria-reload-failure", "hysteria-reload-failure", 24448, 1, testClientUUID)
+	h := newControllerHarness(t, []desiredItem{item})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := h.latestReport().Deployments[0]
+	var firstParams map[string]string
+	var firstSecret map[string]string
+	if err := json.Unmarshal(first.ClientParamsJSON, &firstParams); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(first.ClientSecretJSON, &firstSecret); err != nil {
+		t.Fatal(err)
+	}
+	_, keyFile := inbound.ManagedTLSPaths(item.EffectiveTag)
+	if err := os.Remove(filepath.Join(filepath.Dir(keyFile), "bundle.pem")); err != nil {
+		t.Fatal(err)
+	}
+	h.core.mu.Lock()
+	h.core.failNextInbound = true
+	h.core.mu.Unlock()
+	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+		t.Fatal("forced certificate reload failure unexpectedly reported success")
+	}
+	degraded := h.latestReport().Deployments[0]
+	if degraded.Status != "degraded" || degraded.ErrorCode != "certificate_reload_failed" || degraded.AppliedRevision != item.DesiredRevision {
+		t.Fatalf("certificate reload failure report = %+v", degraded)
+	}
+	var degradedParams map[string]string
+	var degradedSecret map[string]string
+	if err := json.Unmarshal(degraded.ClientParamsJSON, &degradedParams); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(degraded.ClientSecretJSON, &degradedSecret); err != nil {
+		t.Fatal(err)
+	}
+	if degradedParams["pin_sha256"] == "" || degradedParams["pin_sha256"] == firstParams["pin_sha256"] {
+		t.Fatalf("degraded report retained stale pin: old=%q new=%q", firstParams["pin_sha256"], degradedParams["pin_sha256"])
+	}
+	if degradedSecret["salamander_password"] != firstSecret["salamander_password"] {
+		t.Fatal("certificate reload failure changed Salamander secret")
+	}
+	if _, exists := h.core.users[item.EffectiveTag][testClientUUID]; !exists || h.core.userProtocols[item.EffectiveTag][testClientUUID] != "hysteria" {
+		t.Fatal("rollback handler did not immediately restore the Hysteria user")
+	}
+	// Durable state still has the old pin because the forced apply failed. The
+	// next same-revision poll detects that mismatch, forces another real reload,
+	// and converges to active without changing the new pin.
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	retried := h.latestReport().Deployments[0]
+	var retriedParams map[string]string
+	_ = json.Unmarshal(retried.ClientParamsJSON, &retriedParams)
+	if retried.Status != "active" || retriedParams["pin_sha256"] != degradedParams["pin_sha256"] {
+		t.Fatalf("certificate reload retry did not converge: report=%+v params=%+v", retried, retriedParams)
+	}
+	if _, exists := h.core.users[item.EffectiveTag][testClientUUID]; !exists {
+		t.Fatal("certificate reload retry lost the Hysteria user")
+	}
+}
+
+func TestInvalidWholeManifestDoesNotRealizeHysteriaMaterial(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	hysteria := hysteriaApplyItem(t, "catalog-hysteria-deferred", "hysteria-deferred", 24449, 1, testClientUUID)
+	invalid := applyItem("catalog-invalid-after-hysteria", "invalid-after-hysteria", 2054, 1)
+	invalid.ConfigJSON = json.RawMessage(strings.Replace(string(invalid.ConfigJSON), `"protocol":"vless"`, `"protocol":"shadowsocks"`, 1))
+	h := newControllerHarness(t, []desiredItem{hysteria, invalid})
+	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+		t.Fatal("invalid whole manifest unexpectedly succeeded")
+	}
+	_, keyFile := inbound.ManagedTLSPaths(hysteria.EffectiveTag)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(keyFile), "bundle.pem")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Hysteria material was realized before whole-manifest validation: %v", err)
+	}
+	if len(h.inventory.All()) != 0 || h.core.addInboundCalls != 0 {
+		t.Fatal("invalid whole manifest mutated runtime or durable inventory")
+	}
+}
+
+func TestControllerRejectsControllerSuppliedHysteriaSecrets(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	item := hysteriaApplyItem(t, "catalog-hysteria-secret", "hysteria-secret", 24444, 1)
+	item.ConfigJSON = json.RawMessage(strings.Replace(string(item.ConfigJSON), `"password":""`, `"password":"controller-secret-that-must-never-be-accepted"`, 1))
+	h := newControllerHarness(t, []desiredItem{item})
+	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+		t.Fatal("controller-supplied Salamander secret was accepted")
+	}
+	report := h.latestReport().Deployments[0]
+	if report.Status != "failed" || string(report.ClientSecretJSON) != "{}" {
+		t.Fatalf("secret rejection report = %+v", report)
+	}
+}
+
+func TestControllerTreatsHysteriaAsUDPListenerForPortOwnership(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	hysteria443 := hysteriaApplyItem(t, "catalog-hysteria-443", "hysteria-443", 443, 1)
+	h := newControllerHarness(t, []desiredItem{hysteria443})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("UDP 443 should coexist with the static TCP 443 baseline: %v", err)
+	}
+
+	tcp := applyItem("catalog-tcp-shared", "tcp-shared", 10443, 1)
+	udp := hysteriaApplyItem(t, "catalog-udp-shared", "udp-shared", 10443, 1)
+	h = newControllerHarness(t, []desiredItem{tcp, udp})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("TCP and UDP listeners should be allowed to share a numeric port: %v", err)
+	}
+	if len(h.inventory.All()) != 2 {
+		t.Fatalf("shared TCP/UDP manifest inventory = %+v", h.inventory.All())
+	}
+}
+
+func TestControllerReportsCanonicalHysteriaUDPHopParameters(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	item := hysteriaApplyItem(t, "catalog-hysteria-hop", "hysteria-hop", 24450, 1)
+	item.ConfigJSON = json.RawMessage(strings.Replace(string(item.ConfigJSON),
+		`"finalmask":{"udp":[{"type":"salamander","settings":{"password":""}}]}`,
+		`"finalmask":{"udp":[{"type":"salamander","settings":{"password":""}}],"quicParams":{"congestion":"bbr","udpHop":{"ports":"24450-24452","interval":"20-30"}}}`,
+		1))
+	h := newControllerHarness(t, []desiredItem{item})
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var params map[string]string
+	if err := json.Unmarshal(h.latestReport().Deployments[0].ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["udp_hop_ports"] != "24450-24452" || params["udp_hop_interval"] != "20-30" {
+		t.Fatalf("udpHop params = %+v", params)
+	}
+}
+
 func TestControllerReportsManagedRealityCapabilities(t *testing.T) {
 	item := applyItem("catalog-capabilities", "capabilities", 2053, 1)
 	h := newControllerHarness(t, []desiredItem{item})
@@ -855,10 +1135,10 @@ func TestControllerReportsManagedRealityCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	capabilities := h.latestReport().Capabilities
-	if strings.Join(capabilities.SupportedTransports, ",") != "raw,xhttp,grpc" || strings.Join(capabilities.SupportedSecurities, ",") != "reality" {
+	if strings.Join(capabilities.SupportedProtocols, ",") != "vless,hysteria" || strings.Join(capabilities.SupportedTransports, ",") != "raw,xhttp,grpc,hysteria" || strings.Join(capabilities.SupportedSecurities, ",") != "reality,tls" {
 		t.Fatalf("overclaimed capabilities = %+v", capabilities)
 	}
-	if !strings.Contains(string(capabilities.RawJSON), `"controller_tag_namespace":"gx-"`) {
+	if !strings.Contains(string(capabilities.RawJSON), `"controller_tag_namespace":"gx-"`) || !strings.Contains(string(capabilities.RawJSON), `"udp_firewall_managed":false`) {
 		t.Fatalf("controller namespace missing from capabilities = %s", capabilities.RawJSON)
 	}
 }

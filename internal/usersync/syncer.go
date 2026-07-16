@@ -11,7 +11,7 @@ import (
 )
 
 // Syncer keeps Xray's in-memory user set aligned with the persistent store.
-// Xray holds VLESS users only in memory, so any Xray restart (upgrade, crash,
+// Xray holds managed VLESS/Hysteria users only in memory, so any Xray restart (upgrade, crash,
 // reboot) drops every user and breaks all active profiles. The Syncer re-applies
 // the stored users on startup and on a periodic reconcile loop, so users are
 // restored automatically within one interval of an Xray restart.
@@ -48,6 +48,7 @@ func (s *Syncer) reconcile(ctx context.Context) int {
 		err := s.xray.AddUser(ctx, xray.AddUserParams{
 			InboundTag: u.InboundTag,
 			UUID:       u.UUID,
+			Protocol:   u.Protocol,
 			Flow:       u.Flow,
 			Level:      u.Level,
 		})

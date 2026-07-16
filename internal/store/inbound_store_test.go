@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,6 +38,25 @@ func testInbound(t *testing.T, tag string, port int) inbound.Config {
 		}}
 	}`, "TAG", tag)
 	raw = strings.Replace(raw, `"port":443`, `"port":`+strconv.Itoa(port), 1)
+	cfg, err := inbound.Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func testHysteriaInbound(t *testing.T, tag string, port int) inbound.Config {
+	t.Helper()
+	certificateFile, keyFile := inbound.ManagedTLSPaths(tag)
+	raw := fmt.Sprintf(`{
+		"tag":%q,"port":%d,"protocol":"hysteria",
+		"settings":{"version":2,"clients":[]},
+		"streamSettings":{"network":"hysteria","security":"tls",
+			"tlsSettings":{"serverName":"203.0.113.10","alpn":["h3"],"minVersion":"1.3","maxVersion":"1.3","certificates":[{"certificateFile":%q,"keyFile":%q}]},
+			"hysteriaSettings":{"version":2,"auth":"","udpIdleTimeout":60,"masquerade":{}},
+			"finalmask":{"udp":[{"type":"salamander","settings":{"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}]}
+		}
+	}`, tag, port, certificateFile, keyFile)
 	cfg, err := inbound.Parse([]byte(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +175,7 @@ func TestInboundStoreMigratesV1AndPersistsControllerObservedState(t *testing.T) 
 		Status:                 "active",
 		PublicMaterialJSON:     json.RawMessage(`{"public_key":"public-only"}`),
 		ClientParamsJSON:       json.RawMessage(`{"path":"/sync"}`),
+		ClientSecretJSON:       json.RawMessage(`{"salamander_password":"node-secret"}`),
 		AppliedClientSetSHA256: emptySetSHA256,
 		AppliedClientCount:     0,
 	}
@@ -177,8 +198,71 @@ func TestInboundStoreMigratesV1AndPersistsControllerObservedState(t *testing.T) 
 		t.Fatal(err)
 	}
 	record, ok := reloaded.Get(cfg.Tag)
-	if !ok || record.Controller.InboundID != "catalog-id" || record.Controller.AppliedRevision != 4 || record.Controller.Status != "active" || record.Config.Digest != cfg.Digest {
+	var clientSecret map[string]string
+	_ = json.Unmarshal(record.Controller.ClientSecretJSON, &clientSecret)
+	if !ok || record.Controller.InboundID != "catalog-id" || record.Controller.AppliedRevision != 4 || record.Controller.Status != "active" || record.Config.Digest != cfg.Digest || clientSecret["salamander_password"] != "node-secret" {
 		t.Fatalf("migrated controller record = %+v, ok=%v", record, ok)
+	}
+}
+
+func TestV3LegacyRollbackAfterHysteriaTombstoneIgnoresClientSecretField(t *testing.T) {
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	path := filepath.Join(t.TempDir(), "inbounds.json")
+	inventory := NewInboundStore(path)
+	vless := testInbound(t, "gx-legacy-vless", 8443)
+	vlessState := testControllerState("catalog-vless", 1)
+	vlessState.ClientSecretJSON = json.RawMessage(`{"future_optional_field":"ignored-by-v0.2.3"}`)
+	if _, err := inventory.PutControllerDesired(vless, vless.Digest, vlessState); err != nil {
+		t.Fatal(err)
+	}
+	hysteria := testHysteriaInbound(t, "gx-legacy-hysteria", 24443)
+	hysteriaState := testControllerState("catalog-hysteria", 1)
+	hysteriaState.ClientSecretJSON = json.RawMessage(`{"salamander_password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`)
+	if _, err := inventory.PutControllerDesired(hysteria, hysteria.Digest, hysteriaState); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckLegacyV3Rollback(path); err == nil || !strings.Contains(err.Error(), "delete/tombstone") {
+		t.Fatalf("rollback check accepted active Hysteria record: %v", err)
+	}
+	if err := inventory.PutControllerTombstone(hysteria.Tag, "catalog-hysteria", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckLegacyV3Rollback(path); err != nil {
+		t.Fatalf("rollback check rejected tombstoned Hysteria store: %v", err)
+	}
+
+	// Model the exact fields known by the already-released v0.2.3 reader. Go's
+	// JSON decoder ignores client_secret_json, while the active configs now only
+	// contain VLESS and therefore pass its protocol gate.
+	type legacyRecord struct {
+		Config       json.RawMessage `json:"config"`
+		InboundID    string          `json:"inbound_id,omitempty"`
+		ClientParams json.RawMessage `json:"client_params_json,omitempty"`
+	}
+	type legacyStore struct {
+		Version    int                              `json:"version"`
+		Inbounds   []legacyRecord                   `json:"inbounds"`
+		Tombstones []inboundControllerTombstoneDisk `json:"controller_tombstones,omitempty"`
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "client_secret_json") {
+		t.Fatal("test store did not contain the additive secret field")
+	}
+	var legacy legacyStore
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatalf("v0.2.3-shaped reader rejected additive field: %v", err)
+	}
+	if legacy.Version != 3 || len(legacy.Inbounds) != 1 || len(legacy.Tombstones) != 1 {
+		t.Fatalf("legacy rollback view = %+v", legacy)
+	}
+	var identity struct {
+		Protocol string `json:"protocol"`
+	}
+	if err := json.Unmarshal(legacy.Inbounds[0].Config, &identity); err != nil || identity.Protocol != "vless" {
+		t.Fatalf("legacy active config protocol=%q err=%v", identity.Protocol, err)
 	}
 }
 

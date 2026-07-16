@@ -16,6 +16,9 @@ import (
 	"github.com/guardex/node-agent/internal/inbound"
 )
 
+// client_secret_json is an additive optional field in the existing v3 schema.
+// Keeping the version stable lets the previous agent ignore that field and
+// roll back safely once all Hysteria records have been tombstoned.
 const inboundStoreVersion = 3
 
 var (
@@ -26,8 +29,9 @@ var (
 )
 
 // InboundControllerState links a node-realized config to the controller's
-// durable desired revision. It deliberately stores only identifiers and a hash
-// of the client set; Reality private material remains inside Config.Raw.
+// durable desired revision. Reality and Salamander server material remains
+// inside the mode-0600 Config.Raw; ClientSecretJSON is persisted only so the
+// internal controller report can restore client delivery after agent restart.
 type InboundControllerState struct {
 	InboundID              string
 	DesiredRevision        int64
@@ -35,6 +39,7 @@ type InboundControllerState struct {
 	Status                 string
 	PublicMaterialJSON     json.RawMessage
 	ClientParamsJSON       json.RawMessage
+	ClientSecretJSON       json.RawMessage
 	AppliedClientCount     int
 	AppliedClientSetSHA256 string
 }
@@ -51,6 +56,7 @@ type InboundControllerTombstone struct {
 func (s InboundControllerState) Clone() InboundControllerState {
 	s.PublicMaterialJSON = append(json.RawMessage(nil), s.PublicMaterialJSON...)
 	s.ClientParamsJSON = append(json.RawMessage(nil), s.ClientParamsJSON...)
+	s.ClientSecretJSON = append(json.RawMessage(nil), s.ClientSecretJSON...)
 	return s
 }
 
@@ -92,6 +98,7 @@ type inboundDiskRecord struct {
 	Status                 string          `json:"status,omitempty"`
 	PublicMaterialJSON     json.RawMessage `json:"public_material_json,omitempty"`
 	ClientParamsJSON       json.RawMessage `json:"client_params_json,omitempty"`
+	ClientSecretJSON       json.RawMessage `json:"client_secret_json,omitempty"`
 	AppliedClientCount     int             `json:"applied_client_count,omitempty"`
 	AppliedClientSetSHA256 string          `json:"applied_client_set_sha256,omitempty"`
 	UpdatedAt              time.Time       `json:"updated_at"`
@@ -113,6 +120,43 @@ func NewInboundStore(path string) *InboundStore {
 		records:    make(map[string]InboundRecord),
 		tombstones: make(map[string]InboundControllerTombstone),
 	}
+}
+
+// CheckLegacyV3Rollback verifies the on-disk precondition for switching back
+// to node-agent v0.2.3. That binary accepts the v3 envelope and ignores new
+// record fields, but its inbound parser only accepts VLESS. Operators must
+// tombstone every Hysteria record before replacing the binary.
+func CheckLegacyV3Rollback(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	var disk inboundDiskStore
+	if err := json.Unmarshal(data, &disk); err != nil {
+		return fmt.Errorf("decode inbound store: %w", err)
+	}
+	if disk.Version != 3 {
+		return fmt.Errorf("legacy rollback requires inbound store version 3, got %d", disk.Version)
+	}
+	for index, record := range disk.Inbounds {
+		var identity struct {
+			Protocol string `json:"protocol"`
+			Tag      string `json:"tag"`
+		}
+		if err := json.Unmarshal(record.Config, &identity); err != nil {
+			return fmt.Errorf("decode inbound record %d: %w", index, err)
+		}
+		if identity.Protocol != "vless" {
+			return fmt.Errorf("active inbound %q uses %q; delete/tombstone it before rollback to v0.2.3", identity.Tag, identity.Protocol)
+		}
+		if _, err := inbound.Parse(record.Config); err != nil {
+			return fmt.Errorf("active VLESS inbound %q is not rollback-safe: %w", identity.Tag, err)
+		}
+	}
+	return nil
 }
 
 func (s *InboundStore) Load() error {
@@ -158,6 +202,7 @@ func (s *InboundStore) Load() error {
 			Status:                 record.Status,
 			PublicMaterialJSON:     append(json.RawMessage(nil), record.PublicMaterialJSON...),
 			ClientParamsJSON:       append(json.RawMessage(nil), record.ClientParamsJSON...),
+			ClientSecretJSON:       append(json.RawMessage(nil), record.ClientSecretJSON...),
 			AppliedClientCount:     record.AppliedClientCount,
 			AppliedClientSetSHA256: record.AppliedClientSetSHA256,
 		}
@@ -293,7 +338,7 @@ func (s *InboundStore) putDesired(cfg inbound.Config, desiredDigest string, cont
 
 func validateControllerState(controller InboundControllerState) error {
 	if controller.InboundID == "" {
-		if controller.DesiredRevision != 0 || controller.AppliedRevision != 0 || controller.Status != "" || len(controller.PublicMaterialJSON) != 0 || len(controller.ClientParamsJSON) != 0 || controller.AppliedClientCount != 0 || controller.AppliedClientSetSHA256 != "" {
+		if controller.DesiredRevision != 0 || controller.AppliedRevision != 0 || controller.Status != "" || len(controller.PublicMaterialJSON) != 0 || len(controller.ClientParamsJSON) != 0 || len(controller.ClientSecretJSON) != 0 || controller.AppliedClientCount != 0 || controller.AppliedClientSetSHA256 != "" {
 			return errors.New("controller metadata requires an inbound id")
 		}
 		return nil
@@ -316,6 +361,9 @@ func validateControllerState(controller InboundControllerState) error {
 		return err
 	}
 	if err := validateJSONObject("client params", controller.ClientParamsJSON); err != nil {
+		return err
+	}
+	if err := validateJSONObject("client secret", controller.ClientSecretJSON); err != nil {
 		return err
 	}
 	if controller.AppliedClientCount < 0 {
@@ -345,6 +393,7 @@ func controllerStatesEqual(left, right InboundControllerState) bool {
 		left.Status == right.Status &&
 		bytes.Equal(left.PublicMaterialJSON, right.PublicMaterialJSON) &&
 		bytes.Equal(left.ClientParamsJSON, right.ClientParamsJSON) &&
+		bytes.Equal(left.ClientSecretJSON, right.ClientSecretJSON) &&
 		left.AppliedClientCount == right.AppliedClientCount &&
 		left.AppliedClientSetSHA256 == right.AppliedClientSetSHA256
 }
@@ -609,6 +658,7 @@ func (s *InboundStore) saveLocked() error {
 			Status:                 record.Controller.Status,
 			PublicMaterialJSON:     append(json.RawMessage(nil), record.Controller.PublicMaterialJSON...),
 			ClientParamsJSON:       append(json.RawMessage(nil), record.Controller.ClientParamsJSON...),
+			ClientSecretJSON:       append(json.RawMessage(nil), record.Controller.ClientSecretJSON...),
 			AppliedClientCount:     record.Controller.AppliedClientCount,
 			AppliedClientSetSHA256: record.Controller.AppliedClientSetSHA256,
 			UpdatedAt:              record.UpdatedAt,

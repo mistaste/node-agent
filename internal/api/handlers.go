@@ -45,9 +45,17 @@ type userRuntime interface {
 func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
 	items := h.inbounds.Inventory()
 	applied := 0
+	udpDesired := 0
+	udpApplied := 0
 	for _, item := range items {
 		if item.Applied {
 			applied++
+		}
+		if item.Protocol == "hysteria" || item.Network == "hysteria" {
+			udpDesired++
+			if item.Applied {
+				udpApplied++
+			}
 		}
 	}
 	status := "ok"
@@ -65,6 +73,16 @@ func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
 			"desired":  len(items),
 			"applied":  applied,
 			"degraded": len(items) - applied,
+		},
+		"udp_dynamic_inbounds": map[string]int{
+			"desired": udpDesired,
+			"applied": udpApplied,
+		},
+		"udp_firewall": map[string]any{
+			"managed_by_agent":        false,
+			"listener_apply_verified": udpDesired == udpApplied,
+			"external_probe_verified": false,
+			"udp_hop_requires_dnat":   true,
 		},
 		"capabilities": inboundCapabilities(h.cfg),
 	})
@@ -92,8 +110,8 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
-	if req.UUID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "uuid required"})
+	if err := inbound.ValidateClientID(req.UUID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid uuid required"})
 		return
 	}
 	if req.InboundTag == "" {
@@ -101,17 +119,21 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.userOps.Lock()
 	defer h.userOps.Unlock()
+	protocol := "vless"
 	if h.inbounds != nil {
-		if managed, ok := h.inbounds.ManagedConfig(req.InboundTag); ok &&
-			(managed.Network == "xhttp" || managed.Network == "grpc") && strings.TrimSpace(req.Flow) != "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": strings.ToUpper(managed.Network) + " inbounds must not use a VLESS flow"})
-			return
+		if managed, ok := h.inbounds.ManagedConfig(req.InboundTag); ok {
+			protocol = managed.Protocol
+			if ((managed.Network == "xhttp" || managed.Network == "grpc") || managed.Protocol == "hysteria") && strings.TrimSpace(req.Flow) != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": strings.ToUpper(managed.Network) + " inbounds must not use a VLESS flow"})
+				return
+			}
 		}
 	}
 
 	err := h.runtimeUsers().AddUser(r.Context(), xray.AddUserParams{
 		InboundTag: req.InboundTag,
 		UUID:       req.UUID,
+		Protocol:   protocol,
 		Flow:       req.Flow,
 		Level:      req.Level,
 	})
@@ -125,6 +147,7 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 		if serr := h.store.Add(store.User{
 			UUID:       req.UUID,
 			InboundTag: req.InboundTag,
+			Protocol:   protocol,
 			Flow:       req.Flow,
 			Level:      req.Level,
 		}); serr != nil {
@@ -136,8 +159,8 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *handlers) removeUser(w http.ResponseWriter, r *http.Request) {
 	uuid := r.PathValue("uuid")
-	if uuid == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "uuid required"})
+	if err := inbound.ValidateClientID(uuid); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid uuid required"})
 		return
 	}
 
@@ -193,10 +216,17 @@ func (h *handlers) addInbound(w http.ResponseWriter, r *http.Request) {
 	if managed, ok := h.inbounds.ManagedConfig(cfg.Tag); ok {
 		previous = managed.Raw
 	}
-	patched, publicKey, shortID, err := xray.EnsureRealityKey(cfg.Raw, previous)
+	var patched []byte
+	var publicKey, shortID string
+	hysteriaMaterial := xray.HysteriaMaterial{}
+	if cfg.Protocol == "hysteria" {
+		patched, hysteriaMaterial, err = xray.EnsureManagedHysteriaMaterial(cfg.Raw, previous)
+	} else {
+		patched, publicKey, shortID, err = xray.EnsureRealityKey(cfg.Raw, previous)
+	}
 	if err != nil {
-		log.Printf("[api] prepare inbound %q: %v", cfg.Tag, err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Reality settings"})
+		log.Printf("[api] prepare inbound %q failed", cfg.Tag)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "managed inbound material could not be prepared"})
 		return
 	}
 	cfg, err = inbound.Parse(patched)
@@ -205,7 +235,7 @@ func (h *handlers) addInbound(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid prepared inbound"})
 		return
 	}
-	if err := h.inbounds.ApplyDesired(r.Context(), cfg, desiredDigest); err != nil {
+	if err := h.inbounds.ApplyDesiredWithRefresh(r.Context(), cfg, desiredDigest, hysteriaMaterial.CertificateRotated); err != nil {
 		log.Printf("[api] apply inbound %q: %v", cfg.Tag, err)
 		if errors.Is(err, inboundsync.ErrTagConflict) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "inbound tag is already owned by a static or unmanaged config"})
@@ -219,13 +249,18 @@ func (h *handlers) addInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[api] dynamic inbound %q applied", cfg.Tag)
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"status":         "applied",
 		"inbound":        cfg.Public(),
 		"desired_digest": desiredDigest,
 		"public_key":     publicKey,
 		"short_id":       shortID,
-	})
+	}
+	if cfg.Protocol == "hysteria" {
+		response["pin_sha256"] = hysteriaMaterial.PinSHA256
+		response["client_secret"] = map[string]string{"salamander_password": hysteriaMaterial.SalamanderPassword}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *handlers) listInbounds(w http.ResponseWriter, r *http.Request) {
@@ -269,9 +304,16 @@ func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
 
 func inboundCapabilities(cfg *config.Config) map[string]any {
 	return map[string]any{
-		"protocols":                []string{"vless"},
-		"stream_networks":          []string{"raw", "xhttp", "grpc"},
-		"stream_securities":        []string{"reality"},
+		"protocols":                []string{"vless", "hysteria"},
+		"stream_networks":          []string{"raw", "xhttp", "grpc", "hysteria"},
+		"stream_securities":        []string{"reality", "tls"},
+		"listener_networks":        []string{"tcp", "udp"},
+		"hysteria_version":         2,
+		"hysteria_tls_mode":        "node_local_pinned_self_signed",
+		"hysteria_tls_root":        inbound.ManagedTLSRoot(),
+		"hysteria_salamander":      true,
+		"udp_firewall_managed":     false,
+		"udp_hop_external_dnat":    true,
 		"controller_tag_namespace": "gx-",
 		"durable_inventory":        true,
 		"startup_reconciliation":   true,
