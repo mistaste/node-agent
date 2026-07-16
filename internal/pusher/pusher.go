@@ -12,6 +12,7 @@ import (
 
 	"github.com/guardex/node-agent/internal/config"
 	"github.com/guardex/node-agent/internal/metrics"
+	"github.com/guardex/node-agent/internal/store"
 	"github.com/guardex/node-agent/internal/xray"
 )
 
@@ -19,13 +20,19 @@ import (
 type Pusher struct {
 	cfg       *config.Config
 	collector *metrics.Collector
+	users     userInventory
 	http      *http.Client
 }
 
-func NewPusher(cfg *config.Config, collector *metrics.Collector) *Pusher {
+type userInventory interface {
+	All() []store.User
+}
+
+func NewPusher(cfg *config.Config, collector *metrics.Collector, users userInventory) *Pusher {
 	return &Pusher{
 		cfg:       cfg,
 		collector: collector,
+		users:     users,
 		http: &http.Client{
 			Timeout: 8 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -96,7 +103,7 @@ func (p *Pusher) push(ctx context.Context) error {
 			LastSeen: user.LastSeen.Format(time.RFC3339),
 		})
 	}
-	userTraffic := trafficPayload(snap.UserTraffic)
+	userTraffic := trafficPayload(snap.UserTraffic, provisionedUUIDs(p.users))
 
 	payload := metricsPayload{
 		NodeSecret:   p.cfg.Secret,
@@ -140,11 +147,14 @@ func (p *Pusher) push(ctx context.Context) error {
 // two collector samples observe growth; sending the cumulative counter still
 // lets the controller account for those bytes without reporting the user as
 // currently online.
-func trafficPayload(users []xray.UserTraffic) []activeUserPayload {
+func trafficPayload(users []xray.UserTraffic, provisioned map[string]struct{}) []activeUserPayload {
 	result := make([]activeUserPayload, 0, len(users))
 	for _, user := range users {
 		uuid := strings.TrimSpace(user.UUID)
 		if uuid == "" || user.Uplink < 0 || user.Downlink < 0 {
+			continue
+		}
+		if _, ok := provisioned[strings.ToLower(uuid)]; !ok {
 			continue
 		}
 		result = append(result, activeUserPayload{
@@ -152,6 +162,24 @@ func trafficPayload(users []xray.UserTraffic) []activeUserPayload {
 			Uplink:   user.Uplink,
 			Downlink: user.Downlink,
 		})
+	}
+	return result
+}
+
+// provisionedUUIDs takes a fresh snapshot for every push. Xray deliberately
+// keeps monotonic stats after RemoveUser, so its stats inventory is not proof
+// that an identity is still provisioned. The durable store is the desired user
+// inventory for both legacy VLESS and managed Hysteria inbounds.
+func provisionedUUIDs(users userInventory) map[string]struct{} {
+	result := make(map[string]struct{})
+	if users == nil {
+		return result
+	}
+	for _, user := range users.All() {
+		uuid := strings.ToLower(strings.TrimSpace(user.UUID))
+		if uuid != "" {
+			result[uuid] = struct{}{}
+		}
 	}
 	return result
 }

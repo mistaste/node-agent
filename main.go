@@ -83,7 +83,7 @@ func main() {
 	collector := metrics.NewCollector(xrayClient, cfg.MetricsInterval)
 	go collector.Run(ctx)
 
-	p := pusher.NewPusher(cfg, collector)
+	p := pusher.NewPusher(cfg, collector, userStore)
 	go p.Run(ctx)
 
 	srv := api.NewServer(cfg, xrayClient, collector, userStore, inboundManager, userOperations)
