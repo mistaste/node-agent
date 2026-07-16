@@ -21,6 +21,12 @@ const MaxConfigBytes = 1 << 20
 
 var tagPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
+// Keep this in sync with the backend catalogue validator. Xray supports a
+// broader custom-path syntax, but managed profiles deliberately use a simple
+// service identifier so it is safe to carry through URI/query parameters and
+// every supported client implementation.
+var grpcServiceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
+
 var allowedNetworks = map[string]struct{}{
 	"tcp":         {},
 	"raw":         {},
@@ -136,6 +142,20 @@ type realitySettings struct {
 	ShortIDs   []string `json:"shortIds"`
 }
 
+// grpcSettings mirrors the JSON fields understood by the linked Xray config
+// builder. decodeStrict below prevents controller manifests from smuggling
+// unknown transport options past the node trust boundary.
+type grpcSettings struct {
+	Authority           string `json:"authority"`
+	ServiceName         string `json:"serviceName"`
+	MultiMode           bool   `json:"multiMode"`
+	IdleTimeout         int32  `json:"idle_timeout"`
+	HealthCheckTimeout  int32  `json:"health_check_timeout"`
+	PermitWithoutStream bool   `json:"permit_without_stream"`
+	InitialWindowsSize  int32  `json:"initial_windows_size"`
+	UserAgent           string `json:"user_agent"`
+}
+
 // Parse validates an inbound and returns a deterministic JSON representation.
 // Unknown top-level/stream fields are rejected so an authenticated controller
 // still cannot smuggle an unreviewed transport into Xray.
@@ -218,6 +238,24 @@ func Parse(raw []byte) (Config, error) {
 	}
 	if stream.Security == "tls" && len(stream.TLSSettings) > 0 && !isJSONObject(stream.TLSSettings) {
 		return Config{}, errors.New("tlsSettings must be an object")
+	}
+	if stream.Network == "grpc" {
+		if len(stream.GRPCSettings) == 0 || bytes.Equal(bytes.TrimSpace(stream.GRPCSettings), []byte("null")) {
+			return Config{}, errors.New("grpcSettings are required for grpc transport")
+		}
+		if !isJSONObject(stream.GRPCSettings) {
+			return Config{}, errors.New("grpcSettings must be an object")
+		}
+		var settings grpcSettings
+		if err := decodeStrict(stream.GRPCSettings, &settings); err != nil {
+			return Config{}, fmt.Errorf("invalid grpcSettings: %w", err)
+		}
+		if !grpcServiceNamePattern.MatchString(settings.ServiceName) {
+			return Config{}, errors.New("grpc serviceName must be 1-128 letters, digits, dots, underscores, tildes or hyphens")
+		}
+		if settings.IdleTimeout < 0 || settings.HealthCheckTimeout < 0 || settings.InitialWindowsSize < 0 {
+			return Config{}, errors.New("grpc timeout and window settings must not be negative")
+		}
 	}
 
 	canonical, err := canonicalJSON(raw)

@@ -416,11 +416,11 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	if err != nil {
 		return preparedItem{}, err
 	}
-	if keyless.Security != "reality" || (keyless.Network != "raw" && keyless.Network != "xhttp") {
-		return preparedItem{}, errors.New("phase-1 controller supports only RAW/XHTTP with Reality")
+	if keyless.Security != "reality" || (keyless.Network != "raw" && keyless.Network != "xhttp" && keyless.Network != "grpc") {
+		return preparedItem{}, errors.New("controller supports only RAW/XHTTP/gRPC with Reality")
 	}
-	if keyless.Network == "xhttp" && item.UserFlow != "" {
-		return preparedItem{}, errors.New("XHTTP controller inbounds must not use a VLESS flow")
+	if (keyless.Network == "xhttp" || keyless.Network == "grpc") && item.UserFlow != "" {
+		return preparedItem{}, fmt.Errorf("%s controller inbounds must not use a VLESS flow", strings.ToUpper(keyless.Network))
 	}
 	previousRaw := []byte(nil)
 	if previous, ok := r.manager.ManagedConfig(item.EffectiveTag); ok {
@@ -812,7 +812,7 @@ func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport)
 			AgentVersion:        sanitizeText(r.cfg.AgentVersion(), 128),
 			CoreVersion:         sanitizeText(r.cfg.XrayCoreVersion, 128),
 			SupportedProtocols:  []string{"vless"},
-			SupportedTransports: []string{"raw", "xhttp"},
+			SupportedTransports: []string{"raw", "xhttp", "grpc"},
 			SupportedSecurities: []string{"reality"},
 			RawJSON:             rawCapabilities,
 		},
@@ -954,6 +954,9 @@ func safeConnectionMaterial(raw []byte, publicKey, shortID string) (json.RawMess
 		}
 		copyAllowedClientParams(client, settings, "path", "mode", "host")
 		copyAllowedClientParams(client, root.StreamSettings.GRPCSettings, "serviceName", "authority")
+		if multiMode, ok := root.StreamSettings.GRPCSettings["multiMode"].(bool); ok && multiMode {
+			client["mode"] = "multi"
+		}
 		copyAllowedClientParams(client, root.StreamSettings.WebSocketSettings, "path", "host")
 		copyAllowedClientParams(client, root.StreamSettings.HTTPUpgradeSettings, "path", "host")
 		copyHeaderType(client, root.StreamSettings.RawSettings)

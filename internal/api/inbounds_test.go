@@ -33,6 +33,17 @@ type blockingUserRuntime struct {
 
 type notFoundUserRuntime struct{}
 
+type recordingUserRuntime struct {
+	addCalls int
+}
+
+func (r *recordingUserRuntime) AddUser(context.Context, xray.AddUserParams) error {
+	r.addCalls++
+	return nil
+}
+
+func (r *recordingUserRuntime) RemoveUser(context.Context, string, string) error { return nil }
+
 func (notFoundUserRuntime) AddUser(context.Context, xray.AddUserParams) error { return nil }
 
 func (notFoundUserRuntime) RemoveUser(context.Context, string, string) error {
@@ -153,6 +164,58 @@ func TestAddAndListInboundsNeverExposePrivateKey(t *testing.T) {
 	}
 	if !strings.Contains(listResponse.Body.String(), `"controller_polling":false`) {
 		t.Fatalf("GET must describe the not-yet-wired pull capability honestly: %s", listResponse.Body.String())
+	}
+}
+
+func TestInboundCapabilitiesAdvertiseManagedGRPCReality(t *testing.T) {
+	capabilities := inboundCapabilities(&config.Config{})
+	networks, ok := capabilities["stream_networks"].([]string)
+	if !ok || strings.Join(networks, ",") != "raw,xhttp,grpc" {
+		t.Fatalf("stream networks = %#v", capabilities["stream_networks"])
+	}
+	securities, ok := capabilities["stream_securities"].([]string)
+	if !ok || strings.Join(securities, ",") != "reality" {
+		t.Fatalf("stream securities = %#v", capabilities["stream_securities"])
+	}
+}
+
+func TestDirectUserAPIRejectsFlowForManagedXHTTPAndGRPC(t *testing.T) {
+	configs := map[string]string{
+		"xhttp": `{
+			"tag":"api-xhttp","port":2053,"protocol":"vless",
+			"settings":{"clients":[],"decryption":"none"},
+			"streamSettings":{"network":"xhttp","security":"reality","realitySettings":{
+				"dest":"www.example.com:443","serverNames":["www.example.com"]
+			},"xhttpSettings":{"path":"/assets/sync"}}
+		}`,
+		"grpc": `{
+			"tag":"api-grpc","port":8443,"protocol":"vless",
+			"settings":{"clients":[],"decryption":"none"},
+			"streamSettings":{"network":"grpc","security":"reality","realitySettings":{
+				"dest":"www.example.com:443","serverNames":["www.example.com"]
+			},"grpcSettings":{"serviceName":"guardex.sync-v1"}}
+		}`,
+	}
+	for network, configJSON := range configs {
+		t.Run(network, func(t *testing.T) {
+			h, _ := newInboundHandlers(t)
+			apply := httptest.NewRecorder()
+			h.addInbound(apply, httptest.NewRequest(http.MethodPost, "/v1/inbounds", strings.NewReader(configJSON)))
+			if apply.Code != http.StatusOK {
+				t.Fatalf("apply status=%d body=%s", apply.Code, apply.Body.String())
+			}
+			runtime := &recordingUserRuntime{}
+			h.userCore = runtime
+			requestBody := `{"uuid":"6f8d0c5b-6c62-4b35-9231-b2af180b5284","flow":"xtls-rprx-vision","inbound_tag":"api-` + network + `"}`
+			response := httptest.NewRecorder()
+			h.addUser(response, httptest.NewRequest(http.MethodPost, "/v1/users", strings.NewReader(requestBody)))
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if runtime.addCalls != 0 {
+				t.Fatal("invalid flow reached the user runtime")
+			}
+		})
 	}
 }
 

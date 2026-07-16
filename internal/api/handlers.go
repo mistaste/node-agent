@@ -101,6 +101,13 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 	}
 	h.userOps.Lock()
 	defer h.userOps.Unlock()
+	if h.inbounds != nil {
+		if managed, ok := h.inbounds.ManagedConfig(req.InboundTag); ok &&
+			(managed.Network == "xhttp" || managed.Network == "grpc") && strings.TrimSpace(req.Flow) != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": strings.ToUpper(managed.Network) + " inbounds must not use a VLESS flow"})
+			return
+		}
+	}
 
 	err := h.runtimeUsers().AddUser(r.Context(), xray.AddUserParams{
 		InboundTag: req.InboundTag,
@@ -263,7 +270,7 @@ func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
 func inboundCapabilities(cfg *config.Config) map[string]any {
 	return map[string]any{
 		"protocols":                []string{"vless"},
-		"stream_networks":          []string{"raw", "xhttp"},
+		"stream_networks":          []string{"raw", "xhttp", "grpc"},
 		"stream_securities":        []string{"reality"},
 		"controller_tag_namespace": "gx-",
 		"durable_inventory":        true,
