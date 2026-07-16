@@ -1,9 +1,26 @@
 package inbound
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func validHysteriaConfig(t *testing.T, password string, hop string) string {
+	t.Helper()
+	t.Setenv("HYSTERIA_TLS_DIR", filepath.Join(t.TempDir(), "tls"))
+	cert, key := ManagedTLSPaths("gx-hysteria-01")
+	return fmt.Sprintf(`{
+		"tag":"gx-hysteria-01","port":24443,"protocol":"hysteria",
+		"settings":{"version":2,"clients":[]},
+		"streamSettings":{"network":"hysteria","security":"tls",
+			"tlsSettings":{"serverName":"203.0.113.10","alpn":["h3"],"minVersion":"1.3","maxVersion":"1.3","certificates":[{"certificateFile":%q,"keyFile":%q}]},
+			"hysteriaSettings":{"version":2,"auth":"","udpIdleTimeout":60,"masquerade":{}},
+			"finalmask":{"udp":[{"type":"salamander","settings":{"password":%q}}]%s}
+		}
+	}`, cert, key, password, hop)
+}
 
 const validReality = `{
   "tag":"reality-xhttp-01",
@@ -74,6 +91,59 @@ func TestParseValidRealityGRPC(t *testing.T) {
 	}
 	if cfg.Tag != "reality-grpc-01" || cfg.Port != 8443 || cfg.Network != "grpc" || cfg.Security != "reality" {
 		t.Fatalf("unexpected config: %+v", cfg.Public())
+	}
+}
+
+func TestParseValidManagedHysteriaTLSAndSalamander(t *testing.T) {
+	raw := validHysteriaConfig(t, "", `,"quicParams":{"congestion":"bbr","udpHop":{"ports":"24443-24445","interval":30}}`)
+	cfg, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Protocol != "hysteria" || cfg.Network != "hysteria" || cfg.Security != "tls" || cfg.Port != 24443 {
+		t.Fatalf("unexpected Hysteria config: %+v", cfg.Public())
+	}
+}
+
+func TestParseRejectsUnsafeManagedHysteriaShapes(t *testing.T) {
+	valid := validHysteriaConfig(t, "", "")
+	tests := []struct {
+		name, replace, with string
+	}{
+		{"wrong protocol version", `"settings":{"version":2`, `"settings":{"version":1`},
+		{"wrong transport", `"network":"hysteria"`, `"network":"raw"`},
+		{"without TLS", `"security":"tls"`, `"security":"reality"`},
+		{"wrong ALPN", `"alpn":["h3"]`, `"alpn":["h2"]`},
+		{"server name contains port", `"serverName":"203.0.113.10"`, `"serverName":"example.com:443"`},
+		{"invalid dns label", `"serverName":"203.0.113.10"`, `"serverName":"-example.com"`},
+		{"old TLS", `"minVersion":"1.3"`, `"minVersion":"1.2"`},
+		{"automatic chain building", `"certificates":[{`, `"certificates":[{"buildChain":true,`},
+		{"literal certificate", `"certificates":[{`, `"certificates":[{"certificate":["PEM"],`},
+		{"path escape", `/fullchain.pem`, `/../fullchain.pem`},
+		{"shared auth", `"auth":""`, `"auth":"shared"`},
+		{"without Salamander", `"type":"salamander"`, `"type":"noise"`},
+		{"short Salamander secret", `"password":""`, `"password":"short"`},
+		{"non-base64 Salamander secret", `"password":""`, `"password":"*******************************************"`},
+		{"unknown FinalMask field", `"finalmask":{`, `"finalmask":{"tcp":[],`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := strings.Replace(valid, tt.replace, tt.with, 1)
+			if _, err := Parse([]byte(raw)); err == nil {
+				t.Fatalf("Parse accepted unsafe Hysteria config: %s", raw)
+			}
+		})
+	}
+}
+
+func TestParseRejectsUDPHopWithoutListenerAndOversizedRange(t *testing.T) {
+	withoutListener := validHysteriaConfig(t, "", `,"quicParams":{"udpHop":{"ports":"25000-25010","interval":30}}`)
+	if _, err := Parse([]byte(withoutListener)); err == nil {
+		t.Fatal("udpHop without the listener port was accepted")
+	}
+	oversized := validHysteriaConfig(t, "", `,"quicParams":{"udpHop":{"ports":"24443-25000","interval":30}}`)
+	if _, err := Parse([]byte(oversized)); err == nil {
+		t.Fatal("udpHop range over the safety limit was accepted")
 	}
 }
 

@@ -21,6 +21,13 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if len(os.Args) == 2 && os.Args[1] == "check-rollback-v0.2.3" {
+		if err := store.CheckLegacyV3Rollback(cfg.InboundsFile); err != nil {
+			log.Fatalf("[rollback-check] unsafe: %v", err)
+		}
+		log.Printf("[rollback-check] safe: v3 store contains no active Hysteria records")
+		return
+	}
 
 	xrayClient, err := xray.NewClient(cfg.XrayGRPCAddr)
 	if err != nil {

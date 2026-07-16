@@ -68,6 +68,8 @@ type preparedItem struct {
 	desiredDigest   string
 	publicMaterial  json.RawMessage
 	clientParams    json.RawMessage
+	clientSecret    json.RawMessage
+	refreshRuntime  bool
 	clientCount     int
 	clientSetSHA256 string
 }
@@ -80,6 +82,7 @@ type deploymentReport struct {
 	Status                 string          `json:"status"`
 	PublicMaterialJSON     json.RawMessage `json:"public_material_json"`
 	ClientParamsJSON       json.RawMessage `json:"client_params_json"`
+	ClientSecretJSON       json.RawMessage `json:"client_secret_json"`
 	AppliedClientCount     int             `json:"applied_client_count"`
 	AppliedClientSetSHA256 string          `json:"applied_client_set_sha256"`
 	ErrorCode              string          `json:"error_code"`
@@ -272,7 +275,7 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 	errorsByIndex := make(map[int]itemError)
 	inboundIDs := make(map[string]int, len(items))
 	tags := make(map[string]int, len(items))
-	ports := make(map[int]int, len(items))
+	listeners := make(map[string]int, len(items))
 
 	for index, item := range items {
 		item.InboundID = strings.TrimSpace(item.InboundID)
@@ -307,23 +310,11 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 			errorsByIndex[index] = itemError{"protected_inbound", "desired inbound tag is outside the controller namespace"}
 			continue
 		}
-		if item.EffectivePort == 443 {
-			errorsByIndex[index] = itemError{"protected_port", "port 443 belongs to the static baseline inbound"}
-			continue
-		}
 		if previous, duplicate := tags[item.EffectiveTag]; duplicate {
 			errorsByIndex[index] = itemError{"duplicate_tag", "manifest contains a duplicate effective tag"}
 			errorsByIndex[previous] = itemError{"duplicate_tag", "manifest contains a duplicate effective tag"}
 		} else {
 			tags[item.EffectiveTag] = index
-		}
-		if item.Action == "apply" {
-			if previous, duplicate := ports[item.EffectivePort]; duplicate {
-				errorsByIndex[index] = itemError{"duplicate_port", "manifest contains a duplicate effective port"}
-				errorsByIndex[previous] = itemError{"duplicate_port", "manifest contains a duplicate effective port"}
-			} else {
-				ports[item.EffectivePort] = index
-			}
 		}
 	}
 
@@ -340,6 +331,21 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 			continue
 		}
 		prepared[index] = item
+		listenerNetwork := "tcp"
+		if item.config.Protocol == "hysteria" {
+			listenerNetwork = "udp"
+		}
+		if listenerNetwork == "tcp" && item.desired.EffectivePort == 443 {
+			errorsByIndex[index] = itemError{"protected_port", "TCP port 443 belongs to the static baseline inbound"}
+			continue
+		}
+		listenerKey := fmt.Sprintf("%s:%d", listenerNetwork, item.desired.EffectivePort)
+		if previous, duplicate := listeners[listenerKey]; duplicate {
+			errorsByIndex[index] = itemError{"duplicate_port", "manifest contains a duplicate effective listener"}
+			errorsByIndex[previous] = itemError{"duplicate_port", "manifest contains a duplicate effective listener"}
+		} else {
+			listeners[listenerKey] = index
+		}
 	}
 
 	if len(errorsByIndex) == 0 {
@@ -391,21 +397,26 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 		return preparedItem{}, err
 	}
 	protocol, _ := root["protocol"].(string)
-	if protocol != "vless" {
-		return preparedItem{}, errors.New("desired config is not VLESS")
+	if protocol != "vless" && protocol != "hysteria" {
+		return preparedItem{}, errors.New("desired config protocol is unsupported")
 	}
 	root["tag"] = item.EffectiveTag
 	root["port"] = item.EffectivePort
 
 	settings, ok := root["settings"].(map[string]any)
 	if !ok {
-		return preparedItem{}, errors.New("desired VLESS settings are invalid")
+		return preparedItem{}, errors.New("desired protocol settings are invalid")
 	}
 	// UUID membership is intentionally excluded from the structural config.
 	// Client-only manifest changes are reconciled through AlterInbound and must
 	// never recreate the handler or interrupt existing sessions.
 	settings["clients"] = []any{}
-	settings["decryption"] = "none"
+	if protocol == "vless" {
+		settings["decryption"] = "none"
+	} else {
+		settings["version"] = json.Number("2")
+		delete(settings, "users")
+	}
 	root["settings"] = settings
 
 	keylessRaw, err := json.Marshal(root)
@@ -416,11 +427,30 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	if err != nil {
 		return preparedItem{}, err
 	}
-	if keyless.Security != "reality" || (keyless.Network != "raw" && keyless.Network != "xhttp" && keyless.Network != "grpc") {
-		return preparedItem{}, errors.New("controller supports only RAW/XHTTP/gRPC with Reality")
+	if keyless.Protocol == "vless" {
+		if keyless.Security != "reality" || (keyless.Network != "raw" && keyless.Network != "xhttp" && keyless.Network != "grpc") {
+			return preparedItem{}, errors.New("controller VLESS supports only RAW/XHTTP/gRPC with Reality")
+		}
+		if (keyless.Network == "xhttp" || keyless.Network == "grpc") && item.UserFlow != "" {
+			return preparedItem{}, fmt.Errorf("%s controller inbounds must not use a VLESS flow", strings.ToUpper(keyless.Network))
+		}
+	} else if item.UserFlow != "" {
+		return preparedItem{}, errors.New("Hysteria controller inbounds must not use a VLESS flow")
 	}
-	if (keyless.Network == "xhttp" || keyless.Network == "grpc") && item.UserFlow != "" {
-		return preparedItem{}, fmt.Errorf("%s controller inbounds must not use a VLESS flow", strings.ToUpper(keyless.Network))
+	if keyless.Protocol == "hysteria" {
+		// Realize node-local TLS/Salamander material only after the complete
+		// manifest passes validation. This prevents an unrelated invalid item
+		// from rotating disk material without the matching runtime refresh/report.
+		return preparedItem{
+			desired:         item,
+			config:          keyless,
+			desiredDigest:   keyless.Digest,
+			publicMaterial:  json.RawMessage(`{}`),
+			clientParams:    json.RawMessage(`{}`),
+			clientSecret:    json.RawMessage(`{}`),
+			clientCount:     len(clients),
+			clientSetSHA256: clientHash,
+		}, nil
 	}
 	previousRaw := []byte(nil)
 	if previous, ok := r.manager.ManagedConfig(item.EffectiveTag); ok {
@@ -437,16 +467,56 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	if err := xray.ValidateInboundForCore(runtimeConfig.Raw); err != nil {
 		return preparedItem{}, errors.New("desired config is unsupported by the running core")
 	}
-	publicMaterial, clientParams := safeConnectionMaterial(runtimeConfig.Raw, publicKey, shortID)
+	publicMaterial, clientParams, clientSecret := safeConnectionMaterial(runtimeConfig.Raw, publicKey, shortID, xray.HysteriaMaterial{})
 	return preparedItem{
 		desired:         item,
 		config:          runtimeConfig,
 		desiredDigest:   keyless.Digest,
 		publicMaterial:  publicMaterial,
 		clientParams:    clientParams,
+		clientSecret:    clientSecret,
 		clientCount:     len(clients),
 		clientSetSHA256: clientHash,
 	}, nil
+}
+
+func (r *Reconciler) realizeManagedHysteria(item preparedItem) (preparedItem, error) {
+	previousRaw := []byte(nil)
+	if previous, ok := r.manager.ManagedConfig(item.desired.EffectiveTag); ok {
+		previousRaw = previous.Raw
+	}
+	runtimeRaw, material, err := xray.EnsureManagedHysteriaMaterial(item.config.Raw, previousRaw)
+	if err != nil {
+		return item, err
+	}
+	runtimeConfig, err := inbound.Parse(runtimeRaw)
+	if err != nil {
+		return item, err
+	}
+	publicMaterial, clientParams, clientSecret := safeConnectionMaterial(runtimeConfig.Raw, "", "", material)
+	item.config = runtimeConfig
+	item.publicMaterial = publicMaterial
+	item.clientParams = clientParams
+	item.clientSecret = clientSecret
+	item.refreshRuntime = material.CertificateRotated || r.durableHysteriaPinDiffers(item.desired.EffectiveTag, material.PinSHA256)
+	if err := xray.ValidateInboundForCore(runtimeConfig.Raw); err != nil {
+		return item, errors.New("desired config is unsupported by the running core")
+	}
+	return item, nil
+}
+
+func (r *Reconciler) durableHysteriaPinDiffers(tag, pin string) bool {
+	state, ok := r.manager.ControllerState(tag)
+	if !ok || pin == "" {
+		return false
+	}
+	var params struct {
+		PinSHA256 string `json:"pin_sha256"`
+	}
+	if json.Unmarshal(state.ClientParamsJSON, &params) != nil || params.PinSHA256 == "" {
+		return false
+	}
+	return !strings.EqualFold(params.PinSHA256, pin)
 }
 
 func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploymentReport {
@@ -481,7 +551,15 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 			Status:                 "deleted",
 			PublicMaterialJSON:     json.RawMessage(`{}`),
 			ClientParamsJSON:       json.RawMessage(`{}`),
+			ClientSecretJSON:       json.RawMessage(`{}`),
 			AppliedClientSetSHA256: emptyClientSetHash(),
+		}
+	}
+	if item.config.Protocol == "hysteria" {
+		var err error
+		item, err = r.realizeManagedHysteria(item)
+		if err != nil {
+			return r.failedPreparedReport(item, itemError{"material_realization_failed", "node could not realize the managed Hysteria material"}, true)
 		}
 	}
 
@@ -493,10 +571,11 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 		Status:                 "degraded",
 		PublicMaterialJSON:     item.publicMaterial,
 		ClientParamsJSON:       item.clientParams,
+		ClientSecretJSON:       item.clientSecret,
 		AppliedClientCount:     currentCount,
 		AppliedClientSetSHA256: currentHash,
 	}
-	structuralChanged, err := r.manager.ApplyControllerDesiredWithResult(ctx, item.config, item.desiredDigest, controllerState)
+	structuralChanged, err := r.manager.ApplyControllerDesiredWithRefresh(ctx, item.config, item.desiredDigest, controllerState, item.refreshRuntime)
 	if err != nil {
 		code := "apply_failed"
 		message := "node could not apply the desired inbound"
@@ -510,7 +589,18 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 		case errors.Is(err, inboundsync.ErrRevisionConflict):
 			code, message = "revision_conflict", "structural desired state changed without incrementing revision"
 		}
-		return r.failedReportPreservingLKG(desired, itemError{code, message}, code != "stale_revision")
+		if item.refreshRuntime && code == "apply_failed" {
+			code = "certificate_reload_failed"
+			message = "node rotated managed TLS material but the immediate handler reload requires retry"
+		}
+		if item.refreshRuntime {
+			// A failed forced reload may have restored the structural handler with
+			// settings.clients=[]; immediately rebuild users from the desired/durable
+			// snapshot. If no handler exists, reconcileUsers returns before deleting
+			// that durable snapshot, so the next poll can retry safely.
+			_ = r.reconcileUsers(ctx, item, false)
+		}
+		return r.failedPreparedReport(item, itemError{code, message}, code != "stale_revision")
 	}
 	if err := r.reconcileUsers(ctx, item, structuralChanged); err != nil {
 		actualCount, actualHash := r.currentClientSet(desired.EffectiveTag)
@@ -526,6 +616,7 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 			Status:                 "degraded",
 			PublicMaterialJSON:     item.publicMaterial,
 			ClientParamsJSON:       item.clientParams,
+			ClientSecretJSON:       item.clientSecret,
 			AppliedClientCount:     actualCount,
 			AppliedClientSetSHA256: actualHash,
 			ErrorCode:              "client_reconcile_incomplete",
@@ -547,6 +638,7 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 			Status:                 "degraded",
 			PublicMaterialJSON:     item.publicMaterial,
 			ClientParamsJSON:       item.clientParams,
+			ClientSecretJSON:       item.clientSecret,
 			AppliedClientCount:     item.clientCount,
 			AppliedClientSetSHA256: item.clientSetSHA256,
 			ErrorCode:              "observed_state_persist_failed",
@@ -561,6 +653,7 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 		Status:                 "active",
 		PublicMaterialJSON:     item.publicMaterial,
 		ClientParamsJSON:       item.clientParams,
+		ClientSecretJSON:       item.clientSecret,
 		AppliedClientCount:     item.clientCount,
 		AppliedClientSetSHA256: item.clientSetSHA256,
 	}
@@ -573,7 +666,7 @@ func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, stru
 	desired := make(map[string]store.User, item.clientCount)
 	for _, uuid := range item.desired.ClientUUIDs {
 		uuid = strings.ToLower(strings.TrimSpace(uuid))
-		desired[uuid] = store.User{UUID: uuid, InboundTag: item.desired.EffectiveTag, Flow: item.desired.UserFlow}
+		desired[uuid] = store.User{UUID: uuid, InboundTag: item.desired.EffectiveTag, Protocol: item.config.Protocol, Flow: item.desired.UserFlow}
 	}
 
 	if structuralChanged {
@@ -605,7 +698,7 @@ func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, stru
 	for uuid := range runtime {
 		wanted, keep := desired[uuid]
 		persisted, persistedOK := existing[uuid]
-		if keep && persistedOK && persisted.Flow == wanted.Flow {
+		if keep && persistedOK && persisted.Flow == wanted.Flow && normalizedUserProtocol(persisted.Protocol) == normalizedUserProtocol(wanted.Protocol) {
 			continue
 		}
 		if err := r.userCore.RemoveUser(ctx, item.desired.EffectiveTag, uuid); err != nil && !xray.IsNotFound(err) {
@@ -619,7 +712,7 @@ func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, stru
 	}
 	for uuid, persisted := range existing {
 		wanted, keep := desired[uuid]
-		if keep && wanted.Flow == persisted.Flow {
+		if keep && wanted.Flow == persisted.Flow && normalizedUserProtocol(wanted.Protocol) == normalizedUserProtocol(persisted.Protocol) {
 			continue
 		}
 		if err := r.users.Remove(item.desired.EffectiveTag, persisted.UUID); err != nil {
@@ -632,6 +725,7 @@ func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, stru
 			err := r.userCore.AddUser(ctx, xray.AddUserParams{
 				InboundTag: item.desired.EffectiveTag,
 				UUID:       wanted.UUID,
+				Protocol:   wanted.Protocol,
 				Flow:       wanted.Flow,
 			})
 			if err != nil && !xray.IsAlreadyExists(err) {
@@ -639,7 +733,7 @@ func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, stru
 			}
 			runtime[uuid] = struct{}{}
 		}
-		if current, exists := existing[uuid]; !exists || current.Flow != wanted.Flow {
+		if current, exists := existing[uuid]; !exists || current.Flow != wanted.Flow || normalizedUserProtocol(current.Protocol) != normalizedUserProtocol(wanted.Protocol) {
 			if err := r.users.Add(wanted); err != nil {
 				return err
 			}
@@ -668,7 +762,7 @@ func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, stru
 	}
 	for _, user := range actual {
 		wanted, ok := desired[strings.ToLower(strings.TrimSpace(user.UUID))]
-		if !ok || wanted.Flow != user.Flow {
+		if !ok || wanted.Flow != user.Flow || normalizedUserProtocol(wanted.Protocol) != normalizedUserProtocol(user.Protocol) {
 			return errors.New("durable client set mismatch")
 		}
 	}
@@ -702,6 +796,22 @@ func (r *Reconciler) previousRevision(tag, inboundID string) int64 {
 	return state.AppliedRevision
 }
 
+func (r *Reconciler) failedPreparedReport(item preparedItem, problem itemError, forceDegraded bool) deploymentReport {
+	report := r.failedReportPreservingLKG(item.desired, problem, forceDegraded)
+	if item.config.Protocol != "hysteria" || !item.refreshRuntime {
+		return report
+	}
+	// The atomic bundle is already the only certificate/key source and Xray's
+	// paths resolve to it. Never report the old durable pin after a successful
+	// on-disk rotation, even when the immediate handler reload degraded; the
+	// next retry uses the pin difference to force another reload.
+	report.PublicMaterialJSON = jsonObjectOrEmpty(item.publicMaterial)
+	report.ClientParamsJSON = jsonObjectOrEmpty(item.clientParams)
+	report.ClientSecretJSON = jsonObjectOrEmpty(item.clientSecret)
+	report.AppliedClientCount, report.AppliedClientSetSHA256 = r.currentClientSet(item.desired.EffectiveTag)
+	return report
+}
+
 func (r *Reconciler) failedReportPreservingLKG(item desiredItem, problem itemError, forceDegraded bool) deploymentReport {
 	if state, ok := r.manager.ControllerState(item.EffectiveTag); ok && state.InboundID == item.InboundID {
 		port := item.EffectivePort
@@ -726,6 +836,7 @@ func (r *Reconciler) failedReportPreservingLKG(item desiredItem, problem itemErr
 			Status:                 status,
 			PublicMaterialJSON:     jsonObjectOrEmpty(state.PublicMaterialJSON),
 			ClientParamsJSON:       jsonObjectOrEmpty(state.ClientParamsJSON),
+			ClientSecretJSON:       jsonObjectOrEmpty(state.ClientSecretJSON),
 			AppliedClientCount:     state.AppliedClientCount,
 			AppliedClientSetSHA256: state.AppliedClientSetSHA256,
 		}
@@ -747,6 +858,7 @@ func (r *Reconciler) failedReportPreservingLKG(item desiredItem, problem itemErr
 			Status:                 "deleted",
 			PublicMaterialJSON:     json.RawMessage(`{}`),
 			ClientParamsJSON:       json.RawMessage(`{}`),
+			ClientSecretJSON:       json.RawMessage(`{}`),
 			AppliedClientSetSHA256: emptyClientSetHash(),
 		}
 	}
@@ -785,6 +897,7 @@ func failedReport(item desiredItem, appliedRevision int64, problem itemError) de
 		Status:                 "failed",
 		PublicMaterialJSON:     json.RawMessage(`{}`),
 		ClientParamsJSON:       json.RawMessage(`{}`),
+		ClientSecretJSON:       json.RawMessage(`{}`),
 		AppliedClientSetSHA256: emptyClientSetHash(),
 		ErrorCode:              sanitizeText(problem.code, 128),
 		ErrorMessage:           sanitizeText(problem.message, 512),
@@ -806,14 +919,21 @@ func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport)
 		"durable_inventory":        true,
 		"startup_reconciliation":   true,
 		"desired_manifest_store":   true,
+		"listener_networks":        []string{"tcp", "udp"},
+		"hysteria_version":         2,
+		"hysteria_tls_mode":        "node_local_pinned_self_signed",
+		"hysteria_tls_root":        inbound.ManagedTLSRoot(),
+		"hysteria_salamander":      true,
+		"udp_firewall_managed":     false,
+		"udp_hop_external_dnat":    true,
 	})
 	payload := observedReport{
 		Capabilities: capabilitiesReport{
 			AgentVersion:        sanitizeText(r.cfg.AgentVersion(), 128),
 			CoreVersion:         sanitizeText(r.cfg.XrayCoreVersion, 128),
-			SupportedProtocols:  []string{"vless"},
-			SupportedTransports: []string{"raw", "xhttp", "grpc"},
-			SupportedSecurities: []string{"reality"},
+			SupportedProtocols:  []string{"vless", "hysteria"},
+			SupportedTransports: []string{"raw", "xhttp", "grpc", "hysteria"},
+			SupportedSecurities: []string{"reality", "tls"},
 			RawJSON:             rawCapabilities,
 		},
 		Deployments: deployments,
@@ -892,6 +1012,14 @@ func emptyClientSetHash() string {
 	return hex.EncodeToString(digest[:])
 }
 
+func normalizedUserProtocol(protocol string) string {
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "" {
+		return "vless"
+	}
+	return protocol
+}
+
 func rejectControllerKeyMaterial(value any) error {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -905,6 +1033,12 @@ func rejectControllerKeyMaterial(value any) error {
 			switch normalized.String() {
 			case "privatekey", "privatekeyfile", "shortids":
 				return errors.New("controller Reality key material must be generated by the node")
+			case "certificate", "key":
+				return errors.New("controller must use node-local TLS file references, not literal key material")
+			case "password":
+				if secret, ok := child.(string); ok && strings.TrimSpace(secret) != "" {
+					return errors.New("controller Salamander material must be generated by the node")
+				}
 			}
 			if err := rejectControllerKeyMaterial(child); err != nil {
 				return err
@@ -920,9 +1054,10 @@ func rejectControllerKeyMaterial(value any) error {
 	return nil
 }
 
-func safeConnectionMaterial(raw []byte, publicKey, shortID string) (json.RawMessage, json.RawMessage) {
+func safeConnectionMaterial(raw []byte, publicKey, shortID string, hysteriaMaterial xray.HysteriaMaterial) (json.RawMessage, json.RawMessage, json.RawMessage) {
 	public := make(map[string]any)
 	client := make(map[string]any)
+	secret := make(map[string]any)
 	if publicKey != "" {
 		public["public_key"] = publicKey
 	}
@@ -930,8 +1065,14 @@ func safeConnectionMaterial(raw []byte, publicKey, shortID string) (json.RawMess
 		public["short_id"] = shortID
 	}
 	var root struct {
+		Protocol       string `json:"protocol"`
 		StreamSettings struct {
-			Network             string         `json:"network"`
+			Network     string `json:"network"`
+			TLSSettings struct {
+				ServerName  string   `json:"serverName"`
+				ALPN        []string `json:"alpn"`
+				Fingerprint string   `json:"fingerprint"`
+			} `json:"tlsSettings"`
 			RealitySettings     map[string]any `json:"realitySettings"`
 			XHTTPSettings       map[string]any `json:"xhttpSettings"`
 			SplitHTTPSettings   map[string]any `json:"splithttpSettings"`
@@ -940,6 +1081,14 @@ func safeConnectionMaterial(raw []byte, publicKey, shortID string) (json.RawMess
 			HTTPUpgradeSettings map[string]any `json:"httpupgradeSettings"`
 			RawSettings         map[string]any `json:"rawSettings"`
 			TCPSettings         map[string]any `json:"tcpSettings"`
+			FinalMask           struct {
+				QuicParams struct {
+					UDPHop struct {
+						Ports    json.RawMessage `json:"ports"`
+						Interval json.RawMessage `json:"interval"`
+					} `json:"udpHop"`
+				} `json:"quicParams"`
+			} `json:"finalmask"`
 		} `json:"streamSettings"`
 	}
 	if json.Unmarshal(raw, &root) == nil {
@@ -961,10 +1110,45 @@ func safeConnectionMaterial(raw []byte, publicKey, shortID string) (json.RawMess
 		copyAllowedClientParams(client, root.StreamSettings.HTTPUpgradeSettings, "path", "host")
 		copyHeaderType(client, root.StreamSettings.RawSettings)
 		copyHeaderType(client, root.StreamSettings.TCPSettings)
+		if root.Protocol == "hysteria" {
+			client["sni"] = root.StreamSettings.TLSSettings.ServerName
+			if len(root.StreamSettings.TLSSettings.ALPN) > 0 {
+				client["alpn"] = root.StreamSettings.TLSSettings.ALPN[0]
+			}
+			fingerprint := root.StreamSettings.TLSSettings.Fingerprint
+			if fingerprint == "" {
+				fingerprint = "chrome"
+			}
+			client["fingerprint"] = fingerprint
+			client["pin_sha256"] = hysteriaMaterial.PinSHA256
+			if value := canonicalScalar(root.StreamSettings.FinalMask.QuicParams.UDPHop.Ports); value != "" {
+				client["udp_hop_ports"] = value
+			}
+			if value := canonicalScalar(root.StreamSettings.FinalMask.QuicParams.UDPHop.Interval); value != "" {
+				client["udp_hop_interval"] = value
+			}
+			secret["salamander_password"] = hysteriaMaterial.SalamanderPassword
+		}
 	}
 	publicJSON, _ := json.Marshal(public)
 	clientJSON, _ := json.Marshal(client)
-	return publicJSON, clientJSON
+	secretJSON, _ := json.Marshal(secret)
+	return publicJSON, clientJSON, secretJSON
+}
+
+func canonicalScalar(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		return number.String()
+	}
+	return ""
 }
 
 func copyAllowedClientParams(target, source map[string]any, keys ...string) {

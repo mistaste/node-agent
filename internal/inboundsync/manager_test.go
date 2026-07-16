@@ -129,6 +129,31 @@ func TestManagerApplyIsDurableIdempotentAndReplaceable(t *testing.T) {
 	}
 }
 
+func TestManagerForcedRefreshReallyRemovesAndReaddsSameDigest(t *testing.T) {
+	inventory := store.NewInboundStore(filepath.Join(t.TempDir(), "inbounds.json"))
+	core := newFakeCore()
+	manager := New(core, inventory, time.Minute)
+	ctx := context.Background()
+	cfg := managerConfig(t, "gx-refresh-same-digest", 8444)
+	state := managerControllerState("catalog-refresh", 3, "clients-a")
+	if _, err := manager.ApplyControllerDesiredWithResult(ctx, cfg, cfg.Digest, state); err != nil {
+		t.Fatal(err)
+	}
+	structuralChanged, err := manager.ApplyControllerDesiredWithRefresh(ctx, cfg, cfg.Digest, state, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !structuralChanged {
+		t.Fatal("forced same-digest refresh did not report structural recreation")
+	}
+	if len(core.removeCalls) != 1 || core.removeCalls[0] != cfg.Tag {
+		t.Fatalf("forced same-digest refresh remove calls = %+v", core.removeCalls)
+	}
+	if got, exists := core.inbounds[cfg.Tag]; !exists || string(got) != string(cfg.Raw) {
+		t.Fatalf("forced same-digest refresh did not re-add config: exists=%v raw=%s", exists, got)
+	}
+}
+
 func TestManagerBootstrapRestoresBeforeUsersCanSync(t *testing.T) {
 	inventory := store.NewInboundStore(filepath.Join(t.TempDir(), "inbounds.json"))
 	cfg := managerConfig(t, "restore-me", 8443)
