@@ -22,6 +22,11 @@ services:
     build: .
     restart: unless-stopped
     network_mode: host
+    # Controller machine traffic must not traverse Cloudflare's browser/WAF
+    # challenge. Keep the public hostname for SNI and certificate validation,
+    # but resolve it directly to the Guardex API origin inside this container.
+    extra_hosts:
+      - "api.guardex-vpn.com:${CONTROLLER_ORIGIN_IP:-80.241.216.139}"
     env_file: .env
     environment:
       XRAY_CORE_VERSION: "26.6.1"
