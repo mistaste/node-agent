@@ -40,7 +40,7 @@ services:
       - no-new-privileges:true
     pids_limit: 128
     mem_limit: 768m
-    cpus: 1.5
+    cpus: 0.75
     logging:
       driver: json-file
       options:
