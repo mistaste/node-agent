@@ -2,10 +2,9 @@ name: guardex-node
 
 services:
   xray:
-    # Pin close to the xray-core the Flutter app's proxy_core bundles
-    # (GFW-knocker fork v1.26.5-mahsa, based on upstream 26.5). Reality handshakes
-    # only succeed when client and server speak the same protocol generation —
-    # bump this in lockstep with proxy_core's xray-core.
+    # Keep the server on the exact Xray build validated against Guardex clients.
+    # The clients use a separate embedded core, so every server upgrade must go
+    # through compatibility tests and a canary instead of following `latest`.
     image: ghcr.io/xtls/xray-core:26.6.1@sha256:3943bddece5fab72308a4415917f0391917b7b81ddbf50708988b89e6e2bd213
     restart: unless-stopped
     network_mode: host
