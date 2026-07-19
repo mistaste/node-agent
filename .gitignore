@@ -8,6 +8,20 @@ node-agent-*
 /dist/
 /build/
 
+# Node-local credentials and generated runtime state
+.env
+.env.*
+!.env.example
+data/
+xray-config.json
+users.json
+inbounds.json
+*.key
+*.pem
+*.p8
+*.p12
+*.jks
+
 # IDE
 .idea/
 .vscode/
