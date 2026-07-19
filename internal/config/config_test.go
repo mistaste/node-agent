@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLoadUsesSeparateDurableInboundStore(t *testing.T) {
 	t.Setenv("INBOUNDS_FILE", "")
@@ -39,5 +42,16 @@ func TestLoadCanonicalizesOnlyOfficialLegacyControllerPort(t *testing.T) {
 	t.Setenv("CONTROLLER_URL", "https://staging.example.com:2096")
 	if got := Load().ControllerURL; got != "https://staging.example.com:2096" {
 		t.Fatalf("unrelated controller URL was rewritten: %q", got)
+	}
+}
+
+func TestAgentAPISecretValid(t *testing.T) {
+	for _, invalid := range []string{"", "change-me-secret", "too-short"} {
+		if (&Config{Secret: invalid}).AgentAPISecretValid() {
+			t.Fatalf("secret %q unexpectedly accepted", invalid)
+		}
+	}
+	if !(&Config{Secret: strings.Repeat("a", 32)}).AgentAPISecretValid() {
+		t.Fatal("strong agent secret rejected")
 	}
 }

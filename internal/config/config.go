@@ -88,6 +88,13 @@ func (c *Config) AgentVersion() string {
 	return "unknown"
 }
 
+// AgentAPISecretValid prevents the privileged management API from starting
+// with the documented placeholder or a trivially brute-forceable credential.
+func (c *Config) AgentAPISecretValid() bool {
+	secret := strings.TrimSpace(c.Secret)
+	return len(secret) >= 32 && secret != "change-me-secret"
+}
+
 // ControllerPollingEnabled is true only when the complete mutually
 // authenticated controller configuration is present and uses verified HTTPS.
 func (c *Config) ControllerPollingEnabled() bool {
