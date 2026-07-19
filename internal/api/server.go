@@ -1,7 +1,10 @@
 package api
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"net/http"
+	"time"
 
 	"github.com/guardex/node-agent/internal/config"
 	"github.com/guardex/node-agent/internal/inboundsync"
@@ -40,14 +43,27 @@ func NewServer(cfg *config.Config, xrayClient *xray.Client, collector *metrics.C
 }
 
 func (s *Server) Run() error {
-	return http.ListenAndServe(s.cfg.ListenAddr, s.auth(s.mux))
+	server := &http.Server{
+		Addr:              s.cfg.ListenAddr,
+		Handler:           s.auth(s.mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+	return server.ListenAndServe()
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("Authorization")
-		expected := "Bearer " + s.cfg.Secret
-		if token != expected {
+		if !s.cfg.AgentAPISecretValid() {
+			http.Error(w, `{"error":"management API unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		providedHash := sha256.Sum256([]byte(r.Header.Get("Authorization")))
+		expectedHash := sha256.Sum256([]byte("Bearer " + s.cfg.Secret))
+		if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}

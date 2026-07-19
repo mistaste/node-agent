@@ -21,6 +21,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if !cfg.AgentAPISecretValid() {
+		log.Fatal("[agent] AGENT_SECRET must be a non-placeholder secret of at least 32 characters")
+	}
 	if len(os.Args) == 2 && os.Args[1] == "check-rollback-v0.2.3" {
 		if err := store.CheckLegacyV3Rollback(cfg.InboundsFile); err != nil {
 			log.Fatalf("[rollback-check] unsafe: %v", err)
