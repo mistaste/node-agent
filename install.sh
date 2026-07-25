@@ -141,7 +141,11 @@ write_xray_config() {
     }
   ],
   "outbounds": [
-    { "protocol": "freedom", "tag": "direct" },
+    {
+      "protocol": "freedom",
+      "tag": "direct",
+      "settings": { "domainStrategy": "UseIPv4" }
+    },
     { "protocol": "blackhole", "tag": "blocked" }
   ],
   "routing": {
