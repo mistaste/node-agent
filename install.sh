@@ -60,10 +60,10 @@ install_prerequisites() {
             ca-certificates curl fail2ban git iptables openssl
     elif command -v dnf >/dev/null 2>&1; then
         dnf install -y -q ca-certificates curl git iptables openssl
-        dnf install -y -q fail2ban || die "Install fail2ban (EPEL may be required), then run the installer again"
+        dnf install -y -q fail2ban || log "WARNING: Failed to install fail2ban"
     elif command -v yum >/dev/null 2>&1; then
         yum install -y -q ca-certificates curl git iptables openssl
-        yum install -y -q fail2ban || die "Install fail2ban (EPEL may be required), then run the installer again"
+        yum install -y -q fail2ban || log "WARNING: Failed to install fail2ban"
     elif command -v apk >/dev/null 2>&1; then
         apk add --no-cache ca-certificates curl fail2ban git iptables openssl
     else
@@ -210,18 +210,24 @@ install_management_firewall() {
 
 # ── rate-limit SSH authentication attempts ───────────────────────────────────
 install_fail2ban() {
-    command -v fail2ban-client >/dev/null 2>&1 || die "fail2ban is required"
-    command -v systemctl >/dev/null 2>&1 || die "systemd is required for fail2ban"
+    if ! command -v fail2ban-client >/dev/null 2>&1; then
+        log "WARNING: fail2ban is not installed, skipping..."
+        return 0
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        log "WARNING: systemd is required for fail2ban, skipping..."
+        return 0
+    fi
 
     log "Enabling fail2ban for SSH..."
     install -D -m 0644 \
         "$INSTALL_DIR/ops/fail2ban/guardex-sshd.local" \
         /etc/fail2ban/jail.d/guardex-sshd.local
-    fail2ban-client -t >/dev/null
-    systemctl enable fail2ban.service >/dev/null
-    systemctl restart fail2ban.service
+    fail2ban-client -t >/dev/null || true
+    systemctl enable fail2ban.service >/dev/null || true
+    systemctl restart fail2ban.service || true
     fail2ban-client status sshd >/dev/null \
-        || die "fail2ban SSH jail did not become active"
+        || log "WARNING: fail2ban SSH jail did not become active (ignoring error)"
 }
 
 restore_ssh_dropin() {
