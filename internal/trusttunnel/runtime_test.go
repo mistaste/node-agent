@@ -249,3 +249,26 @@ func TestRuntimeRemoveRequiresOwnershipAndStopsBeforeCleanup(t *testing.T) {
 		t.Fatalf("endpoint was not stopped: %d", starter.process.stops)
 	}
 }
+
+func TestRuntimeRejectsOccupiedPortBeforeStartingEndpoint(t *testing.T) {
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	starter := &fixedStarter{port: listener.Addr().(*net.TCPAddr).Port}
+	runtime := testRuntime(t, starter)
+	request := requestForPort(starter.port)
+	request.Endpoint.CertificateFile = filepath.Join(runtime.root, "certs", "fullchain.pem")
+	request.Endpoint.PrivateKeyFile = filepath.Join(runtime.root, "certs", "privkey.pem")
+
+	if _, err := runtime.Apply(context.Background(), request); err == nil {
+		t.Fatal("expected occupied listener port to be rejected")
+	}
+	if starter.starts != 0 {
+		t.Fatalf("endpoint started despite occupied port: %d", starter.starts)
+	}
+	if _, ok := runtime.State(); ok {
+		t.Fatal("failed deployment persisted active state")
+	}
+}

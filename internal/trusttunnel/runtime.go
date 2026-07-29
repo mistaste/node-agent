@@ -214,6 +214,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 }
 
 func (r *Runtime) startAndCheckLocked(ctx context.Context, port int) error {
+	if err := ensurePortAvailable(port); err != nil {
+		return err
+	}
 	process, err := r.starter.Start(r.binary, filepath.Join(r.root, "vpn.toml"), filepath.Join(r.root, "hosts.toml"))
 	if err != nil {
 		return fmt.Errorf("start TrustTunnel endpoint: %w", err)
@@ -241,6 +244,17 @@ func (r *Runtime) startAndCheckLocked(ctx context.Context, port int) error {
 	}
 	_ = r.stopLocked(context.Background())
 	return errors.New("TrustTunnel endpoint did not open its port")
+}
+
+func ensurePortAvailable(port int) error {
+	listener, err := net.Listen("tcp4", net.JoinHostPort("0.0.0.0", fmt.Sprint(port)))
+	if err != nil {
+		return errors.New("TrustTunnel listener port is already in use")
+	}
+	if err := listener.Close(); err != nil {
+		return errors.New("TrustTunnel listener port availability could not be verified")
+	}
+	return nil
 }
 
 func (r *Runtime) stopLocked(ctx context.Context) error {
