@@ -155,8 +155,24 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	}
 	digest := bundleDigest(files)
 	state := State{Version: stateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: digest, Port: request.Endpoint.Port, ClientCount: len(normalizeUUIDs(request.Endpoint.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
-	if current, ok := r.State(); ok && current.InboundID == state.InboundID && current.Tag == state.Tag && current.Revision == state.Revision && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256 && r.process != nil && r.process.Running() {
-		return current, nil
+	if current, ok := r.State(); ok {
+		unchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Revision == state.Revision && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
+		healthy := r.process != nil && r.process.Running()
+		if unchanged && healthy {
+			return current, nil
+		}
+		// Only categorical mismatch flags are logged. Digests, identities,
+		// credentials and desired payloads remain private.
+		log.Printf(
+			"[trusttunnel] endpoint reconcile restart: identity=%t revision=%t config=%t clients=%t healthy=%t",
+			current.InboundID == state.InboundID && current.Tag == state.Tag,
+			current.Revision == state.Revision,
+			current.Digest == state.Digest,
+			current.ClientSetSHA256 == state.ClientSetSHA256,
+			healthy,
+		)
+	} else {
+		log.Printf("[trusttunnel] endpoint reconcile start: durable_state=false")
 	}
 	if err := os.MkdirAll(r.root, 0700); err != nil {
 		return State{}, fmt.Errorf("create TrustTunnel root: %w", err)
