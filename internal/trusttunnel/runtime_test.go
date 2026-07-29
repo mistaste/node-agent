@@ -164,6 +164,23 @@ func TestRuntimeAppliesAtomicBundleAndReportsState(t *testing.T) {
 	}
 }
 
+func TestRuntimeCloseStopsProcessAndKeepsDesiredState(t *testing.T) {
+	runtime, starter, request := newFixedRuntime(t)
+	defer starter.close()
+	if _, err := runtime.Apply(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if starter.process == nil || starter.process.running || starter.process.stops != 1 {
+		t.Fatalf("endpoint was not stopped on runtime close: %+v", starter.process)
+	}
+	if state, ok := runtime.State(); !ok || state.InboundID != request.InboundID {
+		t.Fatalf("runtime close removed durable desired state: state=%+v ok=%v", state, ok)
+	}
+}
+
 func TestRuntimeRollsBackFilesWhenStartFails(t *testing.T) {
 	runtime, starter, request := newFixedRuntime(t)
 	if _, err := runtime.Apply(context.Background(), request); err != nil {

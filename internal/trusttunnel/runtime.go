@@ -205,6 +205,14 @@ func (r *Runtime) Remove(ctx context.Context, inboundID string, revision int64) 
 	return nil
 }
 
+// Close stops the endpoint without deleting durable desired state. A restarted
+// node-agent will reconcile the same state and launch it again if still desired.
+func (r *Runtime) Close(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopLocked(ctx)
+}
+
 func (r *Runtime) startAndCheckLocked(ctx context.Context, port int) error {
 	process, err := r.starter.Start(r.binary, filepath.Join(r.root, "vpn.toml"), filepath.Join(r.root, "hosts.toml"))
 	if err != nil {

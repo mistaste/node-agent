@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/guardex/node-agent/internal/api"
 	"github.com/guardex/node-agent/internal/config"
@@ -61,6 +62,7 @@ func main() {
 		log.Printf("[agent] failed to load user store: %v", err)
 	}
 	userOperations := userops.New()
+	var trustTunnelRuntime *trusttunnel.Runtime
 
 	// Restore durable users before the first controller pull. Both loops share
 	// userOperations afterwards, so an old usersync snapshot can never race an
@@ -78,6 +80,7 @@ func main() {
 					log.Printf("[trusttunnel] disabled: runtime configuration is invalid")
 				} else {
 					controllerReconciler.EnableTrustTunnel(runtime)
+					trustTunnelRuntime = runtime
 					log.Printf("[trusttunnel] runtime enabled; availability will be reported after binary verification")
 				}
 			}
@@ -111,4 +114,12 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("[agent] shutting down")
+	cancel()
+	if trustTunnelRuntime != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 6*time.Second)
+		if err := trustTunnelRuntime.Close(shutdownCtx); err != nil {
+			log.Printf("[trusttunnel] shutdown cleanup failed: %v", err)
+		}
+		shutdownCancel()
+	}
 }
