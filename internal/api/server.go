@@ -15,28 +15,40 @@ import (
 )
 
 type Server struct {
-	cfg       *config.Config
-	xray      *xray.Client
-	collector *metrics.Collector
-	store     *store.Store
-	inbounds  *inboundsync.Manager
-	userOps   *userops.Coordinator
-	mux       *http.ServeMux
+	cfg        *config.Config
+	xray       *xray.Client
+	collector  *metrics.Collector
+	store      *store.Store
+	inbounds   *inboundsync.Manager
+	userOps    *userops.Coordinator
+	reconciler desiredStateReconciler
+	mux        *http.ServeMux
 }
 
-func NewServer(cfg *config.Config, xrayClient *xray.Client, collector *metrics.Collector, st *store.Store, inbounds *inboundsync.Manager, coordinators ...*userops.Coordinator) *Server {
+func NewServer(cfg *config.Config, xrayClient *xray.Client, collector *metrics.Collector, st *store.Store, inbounds *inboundsync.Manager, options ...any) *Server {
 	coordinator := userops.New()
-	if len(coordinators) > 0 && coordinators[0] != nil {
-		coordinator = coordinators[0]
+	var reconciler desiredStateReconciler
+	for _, option := range options {
+		switch value := option.(type) {
+		case *userops.Coordinator:
+			if value != nil {
+				coordinator = value
+			}
+		case desiredStateReconciler:
+			if value != nil {
+				reconciler = value
+			}
+		}
 	}
 	s := &Server{
-		cfg:       cfg,
-		xray:      xrayClient,
-		collector: collector,
-		store:     st,
-		inbounds:  inbounds,
-		userOps:   coordinator,
-		mux:       http.NewServeMux(),
+		cfg:        cfg,
+		xray:       xrayClient,
+		collector:  collector,
+		store:      st,
+		inbounds:   inbounds,
+		userOps:    coordinator,
+		reconciler: reconciler,
+		mux:        http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
@@ -73,18 +85,20 @@ func (s *Server) auth(next http.Handler) http.Handler {
 
 func (s *Server) registerRoutes() {
 	h := &handlers{
-		cfg:       s.cfg,
-		xray:      s.xray,
-		collector: s.collector,
-		store:     s.store,
-		inbounds:  s.inbounds,
-		userOps:   s.userOps,
+		cfg:        s.cfg,
+		xray:       s.xray,
+		collector:  s.collector,
+		store:      s.store,
+		inbounds:   s.inbounds,
+		userOps:    s.userOps,
+		reconciler: s.reconciler,
 	}
 
 	s.mux.HandleFunc("GET /v1/health", h.health)
 	s.mux.HandleFunc("GET /v1/metrics", h.getMetrics)
 
 	s.mux.HandleFunc("POST /v1/users", h.addUser)
+	s.mux.HandleFunc("POST /v1/controller/reconcile", h.reconcileDesiredState)
 	s.mux.HandleFunc("DELETE /v1/users/{uuid}", h.removeUser)
 
 	s.mux.HandleFunc("POST /v1/inbounds", h.addInbound)

@@ -28,13 +28,31 @@ import (
 )
 
 type handlers struct {
-	cfg       *config.Config
-	xray      *xray.Client
-	collector *metrics.Collector
-	store     *store.Store
-	inbounds  *inboundsync.Manager
-	userOps   *userops.Coordinator
-	userCore  userRuntime
+	cfg        *config.Config
+	xray       *xray.Client
+	collector  *metrics.Collector
+	store      *store.Store
+	inbounds   *inboundsync.Manager
+	userOps    *userops.Coordinator
+	userCore   userRuntime
+	reconciler desiredStateReconciler
+}
+
+type desiredStateReconciler interface {
+	SyncOnce(context.Context) error
+}
+
+func (h *handlers) reconcileDesiredState(w http.ResponseWriter, r *http.Request) {
+	if h.reconciler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "controller reconciliation is unavailable"})
+		return
+	}
+	if err := h.reconciler.SyncOnce(r.Context()); err != nil {
+		log.Printf("[api] requested controller reconciliation failed")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "controller reconciliation failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reconciled"})
 }
 
 type userRuntime interface {

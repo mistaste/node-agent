@@ -63,6 +63,8 @@ func main() {
 	}
 	userOperations := userops.New()
 	var trustTunnelRuntime *trusttunnel.Runtime
+	var controllerReconciler *controller.Reconciler
+	var controllerErr error
 
 	// Restore durable users before the first controller pull. Both loops share
 	// userOperations afterwards, so an old usersync snapshot can never race an
@@ -70,7 +72,7 @@ func main() {
 	syncer := usersync.New(xrayClient, userStore, cfg.ResyncInterval, userOperations)
 	syncer.Bootstrap(ctx)
 	if cfg.ControllerPollingEnabled() {
-		controllerReconciler, controllerErr := controller.New(cfg, inboundManager, userStore, xrayClient, userOperations)
+		controllerReconciler, controllerErr = controller.New(cfg, inboundManager, userStore, xrayClient, userOperations)
 		if controllerErr != nil {
 			log.Printf("[controller-inbounds] disabled: invalid controller configuration")
 		} else {
@@ -102,7 +104,11 @@ func main() {
 	p := pusher.NewPusher(cfg, collector, userStore)
 	go p.Run(ctx)
 
-	srv := api.NewServer(cfg, xrayClient, collector, userStore, inboundManager, userOperations)
+	serverOptions := []any{userOperations}
+	if controllerReconciler != nil {
+		serverOptions = append(serverOptions, controllerReconciler)
+	}
+	srv := api.NewServer(cfg, xrayClient, collector, userStore, inboundManager, serverOptions...)
 	go func() {
 		if err := srv.Run(); err != nil {
 			log.Printf("[agent] HTTP server error: %v", err)
