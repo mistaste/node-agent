@@ -30,6 +30,10 @@ services:
     environment:
       XRAY_CORE_VERSION: "26.6.1"
       HYSTERIA_TLS_DIR: "/etc/guardex/tls"
+      TRUSTTUNNEL_ENABLED: "${TRUSTTUNNEL_ENABLED:-false}"
+      TRUSTTUNNEL_VERSION: "1.0.33"
+      TRUSTTUNNEL_BINARY: "/opt/trusttunnel/trusttunnel_endpoint"
+      TRUSTTUNNEL_ROOT: "/data/trusttunnel"
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777

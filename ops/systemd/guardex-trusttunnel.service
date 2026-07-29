@@ -1,0 +1,25 @@
+[Unit]
+Description=Guardex TrustTunnel endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/etc/guardex/trusttunnel
+ExecStart=/opt/trusttunnel/trusttunnel_endpoint /etc/guardex/trusttunnel/vpn.toml /etc/guardex/trusttunnel/hosts.toml
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/trusttunnel
+ReadOnlyPaths=/etc/guardex/trusttunnel
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

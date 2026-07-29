@@ -14,6 +14,7 @@ import (
 	"github.com/guardex/node-agent/internal/metrics"
 	"github.com/guardex/node-agent/internal/pusher"
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/trusttunnel"
 	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/usersync"
 	"github.com/guardex/node-agent/internal/xray"
@@ -71,6 +72,15 @@ func main() {
 		if controllerErr != nil {
 			log.Printf("[controller-inbounds] disabled: invalid controller configuration")
 		} else {
+			if cfg.TrustTunnelEnabled {
+				runtime, runtimeErr := trusttunnel.NewRuntime(cfg.TrustTunnelRoot, cfg.TrustTunnelBinary, cfg.TrustTunnelService, cfg.Secret)
+				if runtimeErr != nil {
+					log.Printf("[trusttunnel] disabled: runtime configuration is invalid")
+				} else {
+					controllerReconciler.EnableTrustTunnel(runtime)
+					log.Printf("[trusttunnel] runtime enabled; availability will be reported after binary verification")
+				}
+			}
 			// Run performs the first pull immediately after the durable inbound
 			// bootstrap, then retries at RESYNC_INTERVAL while offline.
 			go controllerReconciler.Run(ctx)

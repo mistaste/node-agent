@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/guardex/node-agent/internal/inbound"
 	"github.com/guardex/node-agent/internal/inboundsync"
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/trusttunnel"
 	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/xray"
 )
@@ -50,6 +52,7 @@ type desiredResponse struct {
 
 type desiredItem struct {
 	InboundID       string          `json:"inbound_id"`
+	Engine          string          `json:"engine,omitempty"`
 	Code            string          `json:"code,omitempty"`
 	Action          string          `json:"action"`
 	DesiredRevision int64           `json:"desired_revision"`
@@ -72,6 +75,7 @@ type preparedItem struct {
 	refreshRuntime  bool
 	clientCount     int
 	clientSetSHA256 string
+	trustTunnel     *trusttunnel.Endpoint
 }
 
 type deploymentReport struct {
@@ -95,6 +99,7 @@ type capabilitiesReport struct {
 	SupportedProtocols  []string        `json:"supported_protocols"`
 	SupportedTransports []string        `json:"supported_transports"`
 	SupportedSecurities []string        `json:"supported_securities"`
+	SupportedEngines    []string        `json:"supported_engines"`
 	RawJSON             json.RawMessage `json:"raw_json"`
 }
 
@@ -106,20 +111,34 @@ type observedReport struct {
 // Reconciler owns no inbound state itself. The Manager remains the single
 // serialized runtime/durable mutation boundary shared with legacy push routes.
 type Reconciler struct {
-	cfg      *config.Config
-	manager  *inboundsync.Manager
-	users    *store.Store
-	userCore userCore
-	http     *http.Client
-	baseURL  string
-	interval time.Duration
-	userOps  *userops.Coordinator
+	cfg         *config.Config
+	manager     *inboundsync.Manager
+	users       *store.Store
+	userCore    userCore
+	http        *http.Client
+	baseURL     string
+	interval    time.Duration
+	userOps     *userops.Coordinator
+	trustTunnel trustTunnelRuntime
+}
+
+type trustTunnelRuntime interface {
+	Available(context.Context) bool
+	Apply(context.Context, trusttunnel.ApplyRequest) (trusttunnel.State, error)
+	Remove(context.Context, string, int64) error
+	State() (trusttunnel.State, bool)
 }
 
 type userCore interface {
 	AddUser(context.Context, xray.AddUserParams) error
 	RemoveUser(context.Context, string, string) error
 	ListInboundUserIDs(context.Context, string) ([]string, error)
+}
+
+// EnableTrustTunnel adds the independent endpoint runtime. It is intentionally
+// opt-in so older installations keep advertising and applying Xray only.
+func (r *Reconciler) EnableTrustTunnel(runtime trustTunnelRuntime) {
+	r.trustTunnel = runtime
 }
 
 func New(cfg *config.Config, manager *inboundsync.Manager, users *store.Store, usersRuntime userCore, coordinators ...*userops.Coordinator) (*Reconciler, error) {
@@ -276,10 +295,15 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 	inboundIDs := make(map[string]int, len(items))
 	tags := make(map[string]int, len(items))
 	listeners := make(map[string]int, len(items))
+	trustTunnelItems := make([]int, 0, 1)
 
 	for index, item := range items {
 		item.InboundID = strings.TrimSpace(item.InboundID)
 		item.Action = strings.ToLower(strings.TrimSpace(item.Action))
+		item.Engine = strings.ToLower(strings.TrimSpace(item.Engine))
+		if item.Engine == "" {
+			item.Engine = "xray"
+		}
 		item.EffectiveTag = strings.TrimSpace(item.EffectiveTag)
 		item.UserFlow = strings.TrimSpace(item.UserFlow)
 		prepared[index].desired = item
@@ -297,6 +321,17 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 		if item.Action != "apply" && item.Action != "delete" {
 			errorsByIndex[index] = itemError{"unsupported_action", "desired inbound action is unsupported"}
 			continue
+		}
+		if item.Engine != "xray" && item.Engine != "trusttunnel" {
+			errorsByIndex[index] = itemError{"unsupported_engine", "desired tunnel engine is unsupported"}
+			continue
+		}
+		if item.Engine == "trusttunnel" && r.trustTunnel == nil {
+			errorsByIndex[index] = itemError{"engine_unavailable", "TrustTunnel runtime is not enabled on this node"}
+			continue
+		}
+		if item.Engine == "trusttunnel" && item.Action == "apply" {
+			trustTunnelItems = append(trustTunnelItems, index)
 		}
 		if item.DesiredRevision < 1 {
 			errorsByIndex[index] = itemError{"invalid_revision", "desired inbound revision is invalid"}
@@ -317,6 +352,11 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 			tags[item.EffectiveTag] = index
 		}
 	}
+	if len(trustTunnelItems) > 1 {
+		for _, index := range trustTunnelItems {
+			errorsByIndex[index] = itemError{"engine_instance_conflict", "node supports one TrustTunnel endpoint instance"}
+		}
+	}
 
 	for index := range prepared {
 		if _, invalid := errorsByIndex[index]; invalid {
@@ -332,10 +372,12 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 		}
 		prepared[index] = item
 		listenerNetwork := "tcp"
-		if item.config.Protocol == "hysteria" {
+		if item.trustTunnel != nil && item.trustTunnel.EnableHTTP3 && !item.trustTunnel.EnableHTTP1 && !item.trustTunnel.EnableHTTP2 {
+			listenerNetwork = "udp"
+		} else if item.trustTunnel == nil && item.config.Protocol == "hysteria" {
 			listenerNetwork = "udp"
 		}
-		if listenerNetwork == "tcp" && item.desired.EffectivePort == 443 {
+		if item.trustTunnel == nil && listenerNetwork == "tcp" && item.desired.EffectivePort == 443 {
 			errorsByIndex[index] = itemError{"protected_port", "TCP port 443 belongs to the static baseline inbound"}
 			continue
 		}
@@ -382,6 +424,9 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	}
 	if len(item.ConfigJSON) == 0 || len(item.ConfigJSON) > inbound.MaxConfigBytes {
 		return preparedItem{}, errors.New("desired config is empty or too large")
+	}
+	if item.Engine == "trusttunnel" {
+		return r.prepareTrustTunnelApply(item, clients, clientHash)
 	}
 
 	var root map[string]any
@@ -480,6 +525,68 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	}, nil
 }
 
+func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string, clientHash string) (preparedItem, error) {
+	var config struct {
+		Protocol                 string   `json:"protocol"`
+		Hostname                 string   `json:"hostname"`
+		DNSUpstreams             []string `json:"dns_upstreams"`
+		HasIPv6                  *bool    `json:"has_ipv6"`
+		UpstreamFallbackProtocol string   `json:"upstream_fallback_protocol"`
+		UpstreamProtocol         string   `json:"upstream_protocol"`
+		CertificateFile          string   `json:"certificate_file"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(item.ConfigJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
+		// Desired state also contains the generic identity fields. Decode through
+		// an allowlisted map below while rejecting every unknown operational key.
+		var root map[string]any
+		if json.Unmarshal(item.ConfigJSON, &root) != nil {
+			return preparedItem{}, errors.New("TrustTunnel config is invalid")
+		}
+		allowed := map[string]bool{"protocol": true, "hostname": true, "dns_upstreams": true, "has_ipv6": true, "upstream_protocol": true, "upstream_fallback_protocol": true, "certificate_file": true, "tls_hosts_file": true, "anti_dpi": true, "tag": true, "port": true}
+		for key := range root {
+			if !allowed[strings.ToLower(strings.TrimSpace(key))] {
+				return preparedItem{}, errors.New("TrustTunnel config contains an unsupported field")
+			}
+		}
+		raw, _ := json.Marshal(root)
+		if json.Unmarshal(raw, &config) != nil {
+			return preparedItem{}, errors.New("TrustTunnel config is invalid")
+		}
+	}
+	if strings.ToLower(strings.TrimSpace(config.Protocol)) != "trusttunnel" {
+		return preparedItem{}, errors.New("TrustTunnel config protocol is invalid")
+	}
+	hostname := strings.ToLower(strings.TrimSpace(config.Hostname))
+	if hostname == "" {
+		return preparedItem{}, errors.New("TrustTunnel config omitted TLS hostname")
+	}
+	root := strings.TrimSpace(r.cfg.TrustTunnelRoot)
+	cert := strings.TrimSpace(config.CertificateFile)
+	if cert == "" {
+		cert = filepath.Join(root, "certs", "fullchain.pem")
+	}
+	ipv6 := true
+	if config.HasIPv6 != nil {
+		ipv6 = *config.HasIPv6
+	}
+	upstream := strings.ToLower(strings.TrimSpace(config.UpstreamProtocol))
+	if upstream != "http2" && upstream != "http3" {
+		return preparedItem{}, errors.New("TrustTunnel upstream protocol is invalid")
+	}
+	fallback := strings.ToLower(strings.TrimSpace(config.UpstreamFallbackProtocol))
+	http2 := upstream == "http2" || fallback == "http2"
+	http3 := upstream == "http3" || fallback == "http3"
+	endpoint := trusttunnel.Endpoint{Port: item.EffectivePort, Hostname: hostname, CertificateFile: cert, PrivateKeyFile: filepath.Join(root, "certs", "privkey.pem"), ClientUUIDs: clients, EnableHTTP1: true, EnableHTTP2: http2, EnableHTTP3: http3, IPv6Available: ipv6}
+	digestRaw, _ := json.Marshal(struct {
+		Config  json.RawMessage `json:"config"`
+		Clients []string        `json:"clients"`
+	}{Config: item.ConfigJSON, Clients: clients})
+	digest := sha256.Sum256(digestRaw)
+	return preparedItem{desired: item, desiredDigest: hex.EncodeToString(digest[:]), publicMaterial: json.RawMessage(`{}`), clientParams: json.RawMessage(`{}`), clientSecret: json.RawMessage(`{}`), clientCount: len(clients), clientSetSHA256: clientHash, trustTunnel: &endpoint}, nil
+}
+
 func (r *Reconciler) realizeManagedHysteria(item preparedItem) (preparedItem, error) {
 	previousRaw := []byte(nil)
 	if previous, ok := r.manager.ManagedConfig(item.desired.EffectiveTag); ok {
@@ -521,6 +628,9 @@ func (r *Reconciler) durableHysteriaPinDiffers(tag, pin string) bool {
 
 func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploymentReport {
 	desired := item.desired
+	if desired.Engine == "trusttunnel" {
+		return r.reconcileTrustTunnel(ctx, item)
+	}
 	if desired.Action == "delete" {
 		previousRevision := r.previousRevision(desired.EffectiveTag, desired.InboundID)
 		if err := r.manager.RemoveControllerDesired(ctx, desired.EffectiveTag, desired.InboundID, desired.DesiredRevision); err != nil {
@@ -657,6 +767,31 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 		AppliedClientCount:     item.clientCount,
 		AppliedClientSetSHA256: item.clientSetSHA256,
 	}
+}
+
+func (r *Reconciler) reconcileTrustTunnel(ctx context.Context, item preparedItem) deploymentReport {
+	desired := item.desired
+	if r.trustTunnel == nil {
+		return failedReport(desired, 0, itemError{"engine_unavailable", "TrustTunnel runtime is not enabled"})
+	}
+	if desired.Action == "delete" {
+		if err := r.trustTunnel.Remove(ctx, desired.InboundID, desired.DesiredRevision); err != nil {
+			return failedReport(desired, 0, itemError{"delete_failed", "node could not remove the TrustTunnel endpoint"})
+		}
+		return deploymentReport{InboundID: desired.InboundID, AppliedRevision: desired.DesiredRevision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "deleted", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientSetSHA256: emptyClientSetHash()}
+	}
+	if item.trustTunnel == nil {
+		return failedReport(desired, 0, itemError{"invalid_desired_config", "TrustTunnel endpoint settings are unavailable"})
+	}
+	state, err := r.trustTunnel.Apply(ctx, trusttunnel.ApplyRequest{InboundID: desired.InboundID, Tag: desired.EffectiveTag, Revision: desired.DesiredRevision, Endpoint: *item.trustTunnel, ClientSetSHA256: item.clientSetSHA256})
+	if err != nil {
+		previous := int64(0)
+		if current, ok := r.trustTunnel.State(); ok && current.InboundID == desired.InboundID {
+			previous = current.Revision
+		}
+		return failedReport(desired, previous, itemError{"apply_failed", "node could not activate the TrustTunnel endpoint"})
+	}
+	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: state.Port, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
 }
 
 func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, structuralChanged bool) error {
@@ -913,6 +1048,11 @@ func sanitizedTag(tag string) string {
 }
 
 func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport) error {
+	supportedEngines := []string{"xray"}
+	trustTunnelAvailable := r.trustTunnel != nil && r.trustTunnel.Available(ctx)
+	if trustTunnelAvailable {
+		supportedEngines = append(supportedEngines, "trusttunnel")
+	}
 	rawCapabilities, _ := json.Marshal(map[string]any{
 		"controller_polling":       true,
 		"controller_tag_namespace": "gx-",
@@ -926,6 +1066,7 @@ func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport)
 		"hysteria_salamander":      true,
 		"udp_firewall_managed":     false,
 		"udp_hop_external_dnat":    true,
+		"trusttunnel_available":    trustTunnelAvailable,
 	})
 	payload := observedReport{
 		Capabilities: capabilitiesReport{
@@ -934,6 +1075,7 @@ func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport)
 			SupportedProtocols:  []string{"vless", "hysteria"},
 			SupportedTransports: []string{"raw", "xhttp", "grpc", "hysteria"},
 			SupportedSecurities: []string{"reality", "tls"},
+			SupportedEngines:    supportedEngines,
 			RawJSON:             rawCapabilities,
 		},
 		Deployments: deployments,

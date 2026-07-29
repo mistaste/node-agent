@@ -1,0 +1,329 @@
+package trusttunnel
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+const stateVersion = 1
+
+type endpointProcess interface {
+	Stop(context.Context) error
+	Running() bool
+}
+
+type processStarter interface {
+	Start(string, ...string) (endpointProcess, error)
+}
+
+type osProcessStarter struct{}
+
+type osEndpointProcess struct {
+	cmd     *exec.Cmd
+	done    chan struct{}
+	mu      sync.RWMutex
+	running bool
+}
+
+func (osProcessStarter) Start(name string, args ...string) (endpointProcess, error) {
+	cmd := exec.Command(name, args...)
+	// The endpoint must never inherit the agent's logs because they can contain
+	// protocol details. The controller receives only allow-listed health data.
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	process := &osEndpointProcess{cmd: cmd, done: make(chan struct{}), running: true}
+	go func() {
+		_ = cmd.Wait()
+		process.mu.Lock()
+		process.running = false
+		process.mu.Unlock()
+		close(process.done)
+	}()
+	return process, nil
+}
+
+func (p *osEndpointProcess) Running() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.running
+}
+
+func (p *osEndpointProcess) Stop(ctx context.Context) error {
+	if !p.Running() {
+		return nil
+	}
+	if err := p.cmd.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		_ = p.cmd.Process.Kill()
+	}
+	select {
+	case <-p.done:
+		return nil
+	case <-ctx.Done():
+		_ = p.cmd.Process.Kill()
+		return ctx.Err()
+	}
+}
+
+type Runtime struct {
+	root       string
+	binary     string
+	nodeSecret string
+	starter    processStarter
+	mu         sync.Mutex
+	process    endpointProcess
+}
+
+type State struct {
+	Version         int    `json:"version"`
+	InboundID       string `json:"inbound_id"`
+	Tag             string `json:"tag"`
+	Revision        int64  `json:"revision"`
+	Digest          string `json:"digest"`
+	Port            int    `json:"port"`
+	ClientCount     int    `json:"client_count"`
+	ClientSetSHA256 string `json:"client_set_sha256"`
+}
+
+type ApplyRequest struct {
+	InboundID       string
+	Tag             string
+	Revision        int64
+	Endpoint        Endpoint
+	ClientSetSHA256 string
+}
+
+// NewRuntime keeps the former service argument for source compatibility with
+// deployed configuration. The endpoint is intentionally owned by node-agent:
+// production node-agent runs in a container and cannot safely control host
+// systemd. Docker stops both processes as one lifecycle unit.
+func NewRuntime(root, binary, _ string, nodeSecret string) (*Runtime, error) {
+	root = filepath.Clean(strings.TrimSpace(root))
+	binary = filepath.Clean(strings.TrimSpace(binary))
+	if !filepath.IsAbs(root) || !filepath.IsAbs(binary) {
+		return nil, errors.New("TrustTunnel paths must be absolute")
+	}
+	if len(strings.TrimSpace(nodeSecret)) < 32 {
+		return nil, errors.New("TrustTunnel requires the provisioned node secret")
+	}
+	return &Runtime{root: root, binary: binary, nodeSecret: nodeSecret, starter: osProcessStarter{}}, nil
+}
+
+func (r *Runtime) Available(ctx context.Context) bool {
+	if info, err := os.Stat(r.binary); err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+		return false
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return exec.CommandContext(checkCtx, r.binary, "--version").Run() == nil
+}
+
+func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if strings.TrimSpace(request.InboundID) == "" || strings.TrimSpace(request.Tag) == "" || request.Revision < 1 {
+		return State{}, errors.New("TrustTunnel desired identity is invalid")
+	}
+	files, err := BuildFiles(r.root, r.nodeSecret, request.Endpoint)
+	if err != nil {
+		return State{}, err
+	}
+	digest := bundleDigest(files)
+	state := State{Version: stateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: digest, Port: request.Endpoint.Port, ClientCount: len(normalizeUUIDs(request.Endpoint.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
+	if current, ok := r.State(); ok && current.InboundID == state.InboundID && current.Tag == state.Tag && current.Revision == state.Revision && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256 && r.process != nil && r.process.Running() {
+		return current, nil
+	}
+	if err := os.MkdirAll(r.root, 0700); err != nil {
+		return State{}, fmt.Errorf("create TrustTunnel root: %w", err)
+	}
+	previous := r.snapshot()
+	if err := r.stopLocked(ctx); err != nil {
+		return State{}, fmt.Errorf("stop previous TrustTunnel endpoint: %w", err)
+	}
+	for name, content := range map[string][]byte{"vpn.toml": files.Settings, "hosts.toml": files.Hosts, "credentials.toml": files.Credentials} {
+		if err := writeAtomic(filepath.Join(r.root, name), content, 0600); err != nil {
+			r.restore(previous)
+			return State{}, err
+		}
+	}
+	if err := r.startAndCheckLocked(ctx, request.Endpoint.Port); err != nil {
+		r.restore(previous)
+		if old, ok := decodeState(previous["state.json"]); ok {
+			_ = r.startAndCheckLocked(context.Background(), old.Port)
+		}
+		return State{}, err
+	}
+	stateRaw, err := json.Marshal(state)
+	if err != nil {
+		_ = r.stopLocked(context.Background())
+		r.restore(previous)
+		return State{}, errors.New("TrustTunnel state could not be encoded")
+	}
+	if err := writeAtomic(filepath.Join(r.root, "state.json"), stateRaw, 0600); err != nil {
+		_ = r.stopLocked(context.Background())
+		r.restore(previous)
+		return State{}, err
+	}
+	return state, nil
+}
+
+func (r *Runtime) Remove(ctx context.Context, inboundID string, revision int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state, ok := r.State()
+	if !ok {
+		return r.stopLocked(ctx)
+	}
+	if state.InboundID != strings.TrimSpace(inboundID) {
+		return errors.New("TrustTunnel tombstone does not own the deployment")
+	}
+	if revision < state.Revision {
+		return errors.New("TrustTunnel tombstone revision is stale")
+	}
+	if err := r.stopLocked(ctx); err != nil {
+		return err
+	}
+	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml", "state.json"} {
+		if err := os.Remove(filepath.Join(r.root, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove managed TrustTunnel file: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) startAndCheckLocked(ctx context.Context, port int) error {
+	process, err := r.starter.Start(r.binary, filepath.Join(r.root, "vpn.toml"), filepath.Join(r.root, "hosts.toml"))
+	if err != nil {
+		return fmt.Errorf("start TrustTunnel endpoint: %w", err)
+	}
+	r.process = process
+	deadline := time.Now().Add(12 * time.Second)
+	for time.Now().Before(deadline) {
+		if !process.Running() {
+			r.process = nil
+			return errors.New("TrustTunnel endpoint exited during startup")
+		}
+		probe, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		conn, dialErr := (&net.Dialer{}).DialContext(probe, "tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+		cancel()
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			_ = r.stopLocked(context.Background())
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	_ = r.stopLocked(context.Background())
+	return errors.New("TrustTunnel endpoint did not open its port")
+}
+
+func (r *Runtime) stopLocked(ctx context.Context) error {
+	if r.process == nil {
+		return nil
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	err := r.process.Stop(stopCtx)
+	r.process = nil
+	return err
+}
+
+func (r *Runtime) State() (State, bool) {
+	raw, err := os.ReadFile(filepath.Join(r.root, "state.json"))
+	if err != nil {
+		return State{}, false
+	}
+	return decodeState(raw)
+}
+
+func decodeState(raw []byte) (State, bool) {
+	var state State
+	if json.Unmarshal(raw, &state) != nil || state.Version != stateVersion || state.InboundID == "" || state.Tag == "" || state.Revision < 1 || state.Port < 1 {
+		return State{}, false
+	}
+	return state, true
+}
+
+func (r *Runtime) snapshot() map[string][]byte {
+	previous := make(map[string][]byte)
+	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml", "state.json"} {
+		if raw, err := os.ReadFile(filepath.Join(r.root, name)); err == nil {
+			previous[name] = raw
+		}
+	}
+	return previous
+}
+
+func (r *Runtime) restore(previous map[string][]byte) {
+	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml", "state.json"} {
+		path := filepath.Join(r.root, name)
+		if content, ok := previous[name]; ok {
+			_ = writeAtomic(path, content, 0600)
+		} else {
+			_ = os.Remove(path)
+		}
+	}
+}
+
+func writeAtomic(path string, content []byte, mode os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".guardex-trusttunnel-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(mode); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(content); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func bundleDigest(files Files) string {
+	hash := sha256.New()
+	for _, raw := range [][]byte{files.Settings, files.Hosts, files.Credentials} {
+		_, _ = hash.Write(raw)
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func safeCommandError(output []byte) string {
+	value := strings.TrimSpace(string(bytes.ToValidUTF8(output, []byte("?"))))
+	if value == "" {
+		return "command returned a non-zero status"
+	}
+	if len(value) > 256 {
+		value = value[:256]
+	}
+	return value
+}

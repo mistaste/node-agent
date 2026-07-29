@@ -19,11 +19,34 @@ import (
 	"github.com/guardex/node-agent/internal/inbound"
 	"github.com/guardex/node-agent/internal/inboundsync"
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/trusttunnel"
 	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/xray"
 )
 
 const testClientUUID = "6f8d0c5b-6c62-4b35-9231-b2af180b5284"
+
+type fakeTrustTunnelRuntime struct {
+	available bool
+	state     trusttunnel.State
+	applied   []trusttunnel.ApplyRequest
+	removed   []string
+}
+
+func (f *fakeTrustTunnelRuntime) Available(context.Context) bool { return f.available }
+func (f *fakeTrustTunnelRuntime) Apply(_ context.Context, request trusttunnel.ApplyRequest) (trusttunnel.State, error) {
+	f.applied = append(f.applied, request)
+	f.state = trusttunnel.State{Version: 1, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Port: request.Endpoint.Port, ClientCount: len(request.Endpoint.ClientUUIDs), ClientSetSHA256: request.ClientSetSHA256}
+	return f.state, nil
+}
+func (f *fakeTrustTunnelRuntime) Remove(_ context.Context, inboundID string, _ int64) error {
+	f.removed = append(f.removed, inboundID)
+	f.state = trusttunnel.State{}
+	return nil
+}
+func (f *fakeTrustTunnelRuntime) State() (trusttunnel.State, bool) {
+	return f.state, f.state.InboundID != ""
+}
 
 type controllerFakeCore struct {
 	mu              sync.Mutex
@@ -1140,6 +1163,59 @@ func TestControllerReportsManagedRealityCapabilities(t *testing.T) {
 	}
 	if !strings.Contains(string(capabilities.RawJSON), `"controller_tag_namespace":"gx-"`) || !strings.Contains(string(capabilities.RawJSON), `"udp_firewall_managed":false`) {
 		t.Fatalf("controller namespace missing from capabilities = %s", capabilities.RawJSON)
+	}
+}
+
+func TestControllerAppliesTrustTunnelOnlyWhenRuntimeEnabled(t *testing.T) {
+	item := desiredItem{InboundID: "catalog-tt", Engine: "trusttunnel", Action: "apply", DesiredRevision: 3, EffectiveTag: "gx-trusttunnel", EffectivePort: 8443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","tag":"gx-trusttunnel","port":8443,"hostname":"vpn.example.com","upstream_protocol":"http2","upstream_fallback_protocol":"http3"}`), ClientUUIDs: []string{testClientUUID}}
+	count := 1
+	item.ClientCount = &count
+	_, item.ClientSetSHA256, _ = normalizeClientUUIDs(item.ClientUUIDs)
+	h := newControllerHarness(t, []desiredItem{item})
+	runtime := &fakeTrustTunnelRuntime{available: true}
+	h.reconciler.EnableTrustTunnel(runtime)
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.applied) != 1 || !runtime.applied[0].Endpoint.EnableHTTP2 || !runtime.applied[0].Endpoint.EnableHTTP3 {
+		t.Fatalf("TrustTunnel apply = %+v", runtime.applied)
+	}
+	report := h.latestReport()
+	if len(report.Deployments) != 1 || report.Deployments[0].Status != "active" || report.Deployments[0].AppliedClientCount != 1 {
+		t.Fatalf("deployment report = %+v", report.Deployments)
+	}
+	if strings.Join(report.Capabilities.SupportedEngines, ",") != "xray,trusttunnel" {
+		t.Fatalf("engines = %+v", report.Capabilities.SupportedEngines)
+	}
+}
+
+func TestControllerRejectsTrustTunnelWithoutRuntimeBeforeMutation(t *testing.T) {
+	item := desiredItem{InboundID: "catalog-tt", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-trusttunnel", EffectivePort: 8443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"vpn.example.com","upstream_protocol":"http2"}`)}
+	h := newControllerHarness(t, []desiredItem{item})
+	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+		t.Fatal("expected unavailable engine rejection")
+	}
+	if got := h.latestReport().Deployments[0].ErrorCode; got != "engine_unavailable" {
+		t.Fatalf("error code = %q", got)
+	}
+}
+
+func TestControllerRejectsMultipleTrustTunnelRoutesBeforeMutation(t *testing.T) {
+	first := desiredItem{InboundID: "catalog-tt-1", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-trusttunnel-1", EffectivePort: 8443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"one.example.com","upstream_protocol":"http2"}`)}
+	second := desiredItem{InboundID: "catalog-tt-2", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-trusttunnel-2", EffectivePort: 9443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"two.example.com","upstream_protocol":"http2"}`)}
+	h := newControllerHarness(t, []desiredItem{first, second})
+	runtime := &fakeTrustTunnelRuntime{available: true}
+	h.reconciler.EnableTrustTunnel(runtime)
+	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+		t.Fatal("expected multiple runtime instance rejection")
+	}
+	if len(runtime.applied) != 0 {
+		t.Fatalf("manifest partially mutated runtime: %+v", runtime.applied)
+	}
+	for _, deployment := range h.latestReport().Deployments {
+		if deployment.ErrorCode != "engine_instance_conflict" {
+			t.Fatalf("deployment = %+v", deployment)
+		}
 	}
 }
 

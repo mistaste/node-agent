@@ -23,6 +23,11 @@ type Config struct {
 	ResyncInterval       time.Duration
 	Version              string
 	XrayCoreVersion      string
+	TrustTunnelEnabled   bool
+	TrustTunnelBinary    string
+	TrustTunnelRoot      string
+	TrustTunnelService   string
+	TrustTunnelVersion   string
 	RepoDir              string
 	UpdateRef            string
 }
@@ -42,9 +47,19 @@ func Load() *Config {
 		ResyncInterval:       parseDuration(getenv("RESYNC_INTERVAL", "30s")),
 		Version:              getenv("AGENT_VERSION", "git"),
 		XrayCoreVersion:      getenv("XRAY_CORE_VERSION", "unknown"),
+		TrustTunnelEnabled:   parseBool(getenv("TRUSTTUNNEL_ENABLED", "false")),
+		TrustTunnelBinary:    getenv("TRUSTTUNNEL_BINARY", "/opt/trusttunnel/trusttunnel_endpoint"),
+		TrustTunnelRoot:      getenv("TRUSTTUNNEL_ROOT", "/etc/guardex/trusttunnel"),
+		TrustTunnelService:   getenv("TRUSTTUNNEL_SERVICE", "guardex-trusttunnel.service"),
+		TrustTunnelVersion:   getenv("TRUSTTUNNEL_VERSION", "unknown"),
 		RepoDir:              getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
 		UpdateRef:            getenv("AGENT_UPDATE_REF", "master"),
 	}
+}
+
+func parseBool(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func canonicalControllerURL(value string) string {
