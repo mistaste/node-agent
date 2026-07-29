@@ -1200,6 +1200,29 @@ func TestControllerRejectsTrustTunnelWithoutRuntimeBeforeMutation(t *testing.T) 
 	}
 }
 
+func TestControllerRemovesAppliedTrustTunnelAfterCapabilityLoss(t *testing.T) {
+	item := desiredItem{InboundID: "catalog-tt", Engine: "trusttunnel", Action: "delete", DesiredRevision: 4, EffectiveTag: "gx-trusttunnel", EffectivePort: 8443}
+	h := newControllerHarness(t, []desiredItem{item})
+	runtime := &fakeTrustTunnelRuntime{
+		available: false,
+		state:     trusttunnel.State{Version: 1, InboundID: item.InboundID, Tag: item.EffectiveTag, Revision: 3, Port: item.EffectivePort},
+	}
+	h.reconciler.EnableTrustTunnel(runtime)
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.removed) != 1 || runtime.removed[0] != item.InboundID {
+		t.Fatalf("TrustTunnel capability-loss cleanup = %+v", runtime.removed)
+	}
+	report := h.latestReport()
+	if len(report.Deployments) != 1 || report.Deployments[0].Status != "deleted" {
+		t.Fatalf("deployment report = %+v", report.Deployments)
+	}
+	if strings.Join(report.Capabilities.SupportedEngines, ",") != "xray" {
+		t.Fatalf("engines after capability loss = %+v", report.Capabilities.SupportedEngines)
+	}
+}
+
 func TestControllerRejectsMultipleTrustTunnelRoutesBeforeMutation(t *testing.T) {
 	first := desiredItem{InboundID: "catalog-tt-1", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-trusttunnel-1", EffectivePort: 8443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"one.example.com","upstream_protocol":"http2"}`)}
 	second := desiredItem{InboundID: "catalog-tt-2", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-trusttunnel-2", EffectivePort: 9443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"two.example.com","upstream_protocol":"http2"}`)}
