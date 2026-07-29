@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -46,13 +47,23 @@ func (osProcessStarter) Start(name string, args ...string) (endpointProcess, err
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	startedAt := time.Now()
 	process := &osEndpointProcess{cmd: cmd, done: make(chan struct{}), running: true}
 	go func() {
-		_ = cmd.Wait()
+		err := cmd.Wait()
 		process.mu.Lock()
 		process.running = false
 		process.mu.Unlock()
 		close(process.done)
+		// Wait errors contain only the local exit status/signal. Never attach
+		// command arguments because their configuration files contain client
+		// credentials. Unexpected exits must be visible to the controller logs;
+		// otherwise the next reconciliation silently masks a crashing endpoint.
+		if err != nil {
+			log.Printf("[trusttunnel] endpoint exited after %s: %v", time.Since(startedAt).Round(time.Millisecond), err)
+		} else {
+			log.Printf("[trusttunnel] endpoint stopped after %s", time.Since(startedAt).Round(time.Millisecond))
+		}
 	}()
 	return process, nil
 }
