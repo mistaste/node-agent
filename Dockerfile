@@ -6,7 +6,9 @@ COPY . .
 RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /node-agent .
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS trusttunnel
-ARG TARGETARCH=amd64
+# BuildKit supplies TARGETARCH for the selected image platform. Do not set a
+# default here: doing so can silently put an amd64 endpoint in an arm64 image.
+ARG TARGETARCH
 RUN apk add --no-cache ca-certificates wget tar \
     && case "$TARGETARCH" in \
          amd64) tt_arch="x86_64"; tt_sha="48802662bc745aed60207c6ed6465d9fed428b1e53532045689d89bcad19bdd9" ;; \
