@@ -567,7 +567,9 @@ func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string,
 	if cert == "" {
 		cert = filepath.Join(root, "certs", "fullchain.pem")
 	}
-	ipv6 := true
+	// IPv6 is opt-in. Claiming it on an IPv4-only node produces a tunnel that
+	// appears connected while silently black-holing IPv6 destinations.
+	ipv6 := false
 	if config.HasIPv6 != nil {
 		ipv6 = *config.HasIPv6
 	}

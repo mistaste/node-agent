@@ -1177,7 +1177,7 @@ func TestControllerAppliesTrustTunnelOnlyWhenRuntimeEnabled(t *testing.T) {
 	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.applied) != 1 || !runtime.applied[0].Endpoint.EnableHTTP2 || !runtime.applied[0].Endpoint.EnableHTTP3 {
+	if len(runtime.applied) != 1 || !runtime.applied[0].Endpoint.EnableHTTP2 || !runtime.applied[0].Endpoint.EnableHTTP3 || runtime.applied[0].Endpoint.IPv6Available {
 		t.Fatalf("TrustTunnel apply = %+v", runtime.applied)
 	}
 	report := h.latestReport()
@@ -1197,6 +1197,22 @@ func TestControllerRejectsTrustTunnelWithoutRuntimeBeforeMutation(t *testing.T) 
 	}
 	if got := h.latestReport().Deployments[0].ErrorCode; got != "engine_unavailable" {
 		t.Fatalf("error code = %q", got)
+	}
+}
+
+func TestControllerEnablesTrustTunnelIPv6OnlyWhenExplicit(t *testing.T) {
+	item := desiredItem{InboundID: "catalog-tt-ipv6", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-trusttunnel-ipv6", EffectivePort: 8443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"vpn.example.com","upstream_protocol":"http2","has_ipv6":true}`), ClientUUIDs: []string{testClientUUID}}
+	count := 1
+	item.ClientCount = &count
+	_, item.ClientSetSHA256, _ = normalizeClientUUIDs(item.ClientUUIDs)
+	h := newControllerHarness(t, []desiredItem{item})
+	runtime := &fakeTrustTunnelRuntime{available: true}
+	h.reconciler.EnableTrustTunnel(runtime)
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.applied) != 1 || !runtime.applied[0].Endpoint.IPv6Available {
+		t.Fatalf("explicit IPv6 capability was not applied: %+v", runtime.applied)
 	}
 }
 
