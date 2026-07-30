@@ -464,6 +464,14 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 		delete(settings, "users")
 	}
 	root["settings"] = settings
+	desiredRaw, err := json.Marshal(root)
+	if err != nil {
+		return preparedItem{}, errors.New("desired config could not be normalized")
+	}
+	desiredConfig, err := inbound.Parse(desiredRaw)
+	if err != nil {
+		return preparedItem{}, err
+	}
 	if err := secureForwardedFor(root, r.cfg.Secret); err != nil {
 		return preparedItem{}, err
 	}
@@ -493,7 +501,7 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 		return preparedItem{
 			desired:         item,
 			config:          keyless,
-			desiredDigest:   keyless.Digest,
+			desiredDigest:   desiredConfig.Digest,
 			publicMaterial:  json.RawMessage(`{}`),
 			clientParams:    json.RawMessage(`{}`),
 			clientSecret:    json.RawMessage(`{}`),
@@ -520,7 +528,7 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	return preparedItem{
 		desired:         item,
 		config:          runtimeConfig,
-		desiredDigest:   keyless.Digest,
+		desiredDigest:   desiredConfig.Digest,
 		publicMaterial:  publicMaterial,
 		clientParams:    clientParams,
 		clientSecret:    clientSecret,

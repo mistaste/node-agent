@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -228,6 +229,21 @@ func TestSecureForwardedForRejectsInvalidSocketSettings(t *testing.T) {
 	}
 	if err := secureForwardedFor(root, "node-secret"); err == nil {
 		t.Fatal("expected invalid socket settings to be rejected")
+	}
+}
+
+func TestNodeLocalForwardedForMarkerDoesNotChangeDesiredDigest(t *testing.T) {
+	harness := newControllerHarness(t, nil)
+	item := applyItem("catalog-xhttp", "xhttp", 2053, 1, testClientUUID)
+	prepared, err := harness.reconciler.prepareApply(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.desiredDigest == prepared.config.Digest {
+		t.Fatal("node-local marker must not become part of the controller desired digest")
+	}
+	if !bytes.Contains(prepared.config.Raw, []byte(`"trustedXForwardedFor"`)) {
+		t.Fatal("runtime config omitted the node-local trusted marker")
 	}
 }
 
