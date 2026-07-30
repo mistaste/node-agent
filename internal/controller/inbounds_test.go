@@ -185,6 +185,52 @@ func applyItem(id, tag string, port int, revision int64, clients ...string) desi
 	}
 }
 
+func TestSecureForwardedForUsesNodeLocalMarker(t *testing.T) {
+	root := map[string]any{
+		"streamSettings": map[string]any{
+			"network": "xhttp",
+			"sockopt": map[string]any{"tcpFastOpen": true},
+		},
+	}
+	if err := secureForwardedFor(root, "node-secret"); err != nil {
+		t.Fatal(err)
+	}
+	stream := root["streamSettings"].(map[string]any)
+	sockopt := stream["sockopt"].(map[string]any)
+	markers, ok := sockopt["trustedXForwardedFor"].([]any)
+	if !ok || len(markers) != 1 {
+		t.Fatalf("unexpected trusted marker: %#v", sockopt["trustedXForwardedFor"])
+	}
+	marker, _ := markers[0].(string)
+	if !strings.HasPrefix(marker, "X-Guardex-Trusted-") || marker == "X-Forwarded-For" || marker == "X-Real-IP" {
+		t.Fatalf("unsafe trusted marker: %q", marker)
+	}
+	if sockopt["tcpFastOpen"] != true {
+		t.Fatal("existing socket settings were not preserved")
+	}
+
+	other := map[string]any{"streamSettings": map[string]any{"network": "xhttp"}}
+	if err := secureForwardedFor(other, "different-node-secret"); err != nil {
+		t.Fatal(err)
+	}
+	otherMarker := other["streamSettings"].(map[string]any)["sockopt"].(map[string]any)["trustedXForwardedFor"].([]any)[0]
+	if otherMarker == marker {
+		t.Fatal("different node secrets must produce different trusted markers")
+	}
+}
+
+func TestSecureForwardedForRejectsInvalidSocketSettings(t *testing.T) {
+	root := map[string]any{
+		"streamSettings": map[string]any{
+			"network": "xhttp",
+			"sockopt": "invalid",
+		},
+	}
+	if err := secureForwardedFor(root, "node-secret"); err == nil {
+		t.Fatal("expected invalid socket settings to be rejected")
+	}
+}
+
 func grpcApplyItem(id, tag string, port int, revision int64, clients ...string) desiredItem {
 	item := applyItem(id, tag, port, revision, clients...)
 	item.ConfigJSON = json.RawMessage(`{

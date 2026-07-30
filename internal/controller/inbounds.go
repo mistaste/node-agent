@@ -7,6 +7,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -463,6 +464,9 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 		delete(settings, "users")
 	}
 	root["settings"] = settings
+	if err := secureForwardedFor(root, r.cfg.Secret); err != nil {
+		return preparedItem{}, err
+	}
 
 	keylessRaw, err := json.Marshal(root)
 	if err != nil {
@@ -523,6 +527,39 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 		clientCount:     len(clients),
 		clientSetSHA256: clientHash,
 	}, nil
+}
+
+// secureForwardedFor prevents HTTP transports from accepting a forged
+// X-Forwarded-For value on their public listener. Xray only honors that value
+// when one of the configured marker headers is also present. The marker is
+// derived from the node-local secret, is never published to clients, and is
+// therefore suitable for direct listeners that do not sit behind a trusted
+// reverse proxy.
+func secureForwardedFor(root map[string]any, nodeSecret string) error {
+	stream, ok := root["streamSettings"].(map[string]any)
+	if !ok {
+		return errors.New("desired stream settings are invalid")
+	}
+	network, _ := stream["network"].(string)
+	if network != "xhttp" && network != "grpc" {
+		return nil
+	}
+
+	sockopt := map[string]any{}
+	if existing, exists := stream["sockopt"]; exists {
+		var valid bool
+		sockopt, valid = existing.(map[string]any)
+		if !valid {
+			return errors.New("desired socket settings are invalid")
+		}
+	}
+	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(nodeSecret)))
+	_, _ = mac.Write([]byte("guardex/xray/trusted-forwarded-for/v1"))
+	marker := "X-Guardex-Trusted-" + hex.EncodeToString(mac.Sum(nil)[:12])
+	sockopt["trustedXForwardedFor"] = []any{marker}
+	stream["sockopt"] = sockopt
+	root["streamSettings"] = stream
+	return nil
 }
 
 func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string, clientHash string) (preparedItem, error) {
