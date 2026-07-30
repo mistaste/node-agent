@@ -1285,7 +1285,7 @@ func TestControllerRemovesAppliedTrustTunnelAfterCapabilityLoss(t *testing.T) {
 		available: false,
 		state:     trusttunnel.State{Version: 1, InboundID: item.InboundID, Tag: item.EffectiveTag, Revision: 3, Port: item.EffectivePort},
 	}
-	h.reconciler.EnableTrustTunnel(runtime)
+	h.reconciler.EnableTrustTunnelCleanup(runtime)
 	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -76,14 +76,17 @@ func main() {
 		if controllerErr != nil {
 			log.Printf("[controller-inbounds] disabled: invalid controller configuration")
 		} else {
-			if cfg.TrustTunnelEnabled {
-				runtime, runtimeErr := trusttunnel.NewRuntime(cfg.TrustTunnelRoot, cfg.TrustTunnelBinary, cfg.TrustTunnelService, cfg.Secret)
-				if runtimeErr != nil {
-					log.Printf("[trusttunnel] disabled: runtime configuration is invalid")
-				} else {
+			runtime, runtimeErr := trusttunnel.NewRuntime(cfg.TrustTunnelRoot, cfg.TrustTunnelBinary, cfg.TrustTunnelService, cfg.Secret)
+			if runtimeErr != nil {
+				log.Printf("[trusttunnel] disabled: runtime configuration is invalid")
+			} else {
+				trustTunnelRuntime = runtime
+				if cfg.TrustTunnelEnabled {
 					controllerReconciler.EnableTrustTunnel(runtime)
-					trustTunnelRuntime = runtime
 					log.Printf("[trusttunnel] runtime enabled; availability will be reported after binary verification")
+				} else {
+					controllerReconciler.EnableTrustTunnelCleanup(runtime)
+					log.Printf("[trusttunnel] endpoint apply disabled; tombstone cleanup remains enabled")
 				}
 			}
 			// Run performs the first pull immediately after the durable inbound

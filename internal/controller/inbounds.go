@@ -112,15 +112,16 @@ type observedReport struct {
 // Reconciler owns no inbound state itself. The Manager remains the single
 // serialized runtime/durable mutation boundary shared with legacy push routes.
 type Reconciler struct {
-	cfg         *config.Config
-	manager     *inboundsync.Manager
-	users       *store.Store
-	userCore    userCore
-	http        *http.Client
-	baseURL     string
-	interval    time.Duration
-	userOps     *userops.Coordinator
-	trustTunnel trustTunnelRuntime
+	cfg                     *config.Config
+	manager                 *inboundsync.Manager
+	users                   *store.Store
+	userCore                userCore
+	http                    *http.Client
+	baseURL                 string
+	interval                time.Duration
+	userOps                 *userops.Coordinator
+	trustTunnel             trustTunnelRuntime
+	trustTunnelApplyEnabled bool
 }
 
 type trustTunnelRuntime interface {
@@ -140,6 +141,15 @@ type userCore interface {
 // opt-in so older installations keep advertising and applying Xray only.
 func (r *Reconciler) EnableTrustTunnel(runtime trustTunnelRuntime) {
 	r.trustTunnel = runtime
+	r.trustTunnelApplyEnabled = true
+}
+
+// EnableTrustTunnelCleanup keeps tombstone processing available on nodes
+// where new TrustTunnel endpoints are disabled. This prevents a previously
+// active endpoint from surviving a feature-flag rollback.
+func (r *Reconciler) EnableTrustTunnelCleanup(runtime trustTunnelRuntime) {
+	r.trustTunnel = runtime
+	r.trustTunnelApplyEnabled = false
 }
 
 func New(cfg *config.Config, manager *inboundsync.Manager, users *store.Store, usersRuntime userCore, coordinators ...*userops.Coordinator) (*Reconciler, error) {
@@ -327,7 +337,7 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 			errorsByIndex[index] = itemError{"unsupported_engine", "desired tunnel engine is unsupported"}
 			continue
 		}
-		if item.Engine == "trusttunnel" && r.trustTunnel == nil {
+		if item.Engine == "trusttunnel" && item.Action == "apply" && (!r.trustTunnelApplyEnabled || r.trustTunnel == nil) {
 			errorsByIndex[index] = itemError{"engine_unavailable", "TrustTunnel runtime is not enabled on this node"}
 			continue
 		}
@@ -1096,7 +1106,7 @@ func sanitizedTag(tag string) string {
 
 func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport) error {
 	supportedEngines := []string{"xray"}
-	trustTunnelAvailable := r.trustTunnel != nil && r.trustTunnel.Available(ctx)
+	trustTunnelAvailable := r.trustTunnelApplyEnabled && r.trustTunnel != nil && r.trustTunnel.Available(ctx)
 	if trustTunnelAvailable {
 		supportedEngines = append(supportedEngines, "trusttunnel")
 	}
