@@ -336,6 +336,27 @@ install_certbot_hook() {
         /etc/letsencrypt/renewal-hooks/deploy/guardex-trusttunnel
 }
 
+sync_existing_trusttunnel_certificate() {
+    local hosts_file="${INSTALL_DIR}/data/trusttunnel/hosts.toml"
+    local hook=/etc/letsencrypt/renewal-hooks/deploy/guardex-trusttunnel
+    local hostname lineage
+
+    # An upgraded node can already have a newer Certbot lineage while its
+    # endpoint directory still contains the bootstrap/previous-hostname
+    # certificate.  Deploy hooks run only when Certbot renews, so install the
+    # current lineage immediately instead of waiting up to 90 days.
+    [ -r "$hosts_file" ] || return
+    [ -x "$hook" ] || return
+    hostname=$(sed -n 's/^hostname = "\([A-Za-z0-9.-]*\)"$/\1/p' "$hosts_file" | head -n 1)
+    [ -n "$hostname" ] || return
+    lineage="/etc/letsencrypt/live/${hostname}"
+    [ -r "${lineage}/fullchain.pem" ] || return
+    [ -r "${lineage}/privkey.pem" ] || return
+
+    log "Synchronizing the current TrustTunnel certificate..."
+    RENEWED_LINEAGE="$lineage" RENEWED_DOMAINS="$hostname" "$hook"
+}
+
 # ── start containers ──────────────────────────────────────────────────────────
 start_containers() {
     log "Starting containers with Docker Compose..."
@@ -432,6 +453,7 @@ main() {
     install_fail2ban
     harden_ssh
     start_containers
+    sync_existing_trusttunnel_certificate
     register_node
     print_summary
 }
