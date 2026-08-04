@@ -39,6 +39,10 @@ services:
       - /tmp:size=32m,mode=1777
     cap_drop:
       - ALL
+    # TrustTunnel is intentionally the only agent-managed endpoint allowed on
+    # the standard HTTPS port. Keep every other Linux capability dropped.
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     pids_limit: 128
