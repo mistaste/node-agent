@@ -325,6 +325,17 @@ clone_repo() {
     fi
 }
 
+install_certbot_hook() {
+    if ! command -v certbot >/dev/null 2>&1; then
+        return
+    fi
+    log "Installing TrustTunnel certificate renewal hook..."
+    install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
+    install -m 0755 \
+        "$INSTALL_DIR/ops/certbot/guardex-trusttunnel-deploy-hook.sh" \
+        /etc/letsencrypt/renewal-hooks/deploy/guardex-trusttunnel
+}
+
 # ── start containers ──────────────────────────────────────────────────────────
 start_containers() {
     log "Starting containers with Docker Compose..."
@@ -414,6 +425,7 @@ main() {
     install_docker
     generate_reality_keys
     clone_repo
+    install_certbot_hook
     write_xray_config
     write_env
     install_management_firewall
