@@ -42,4 +42,4 @@ mv "$temporary/fullchain.pem" "${TT_ROOT}/certs/fullchain.pem"
 mv "$temporary/privkey.pem" "${TT_ROOT}/certs/privkey.pem"
 
 cd "$NODE_ROOT"
-docker compose restart node-agent >/dev/null
+docker compose restart node-agent >/dev/null 2>&1
