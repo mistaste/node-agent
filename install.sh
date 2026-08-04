@@ -4,7 +4,10 @@ set -Eeo pipefail
 # Guardex Node Agent — one-command Docker setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
 
-XRAY_PORT="${XRAY_PORT:-443}"
+# Keep the compatibility VLESS listener away from the standard HTTPS socket.
+# TrustTunnel owns TCP+UDP 443 on managed nodes; legacy VLESS remains available
+# on an explicit fallback port until the catalogue fully retires it.
+XRAY_PORT="${XRAY_PORT:-10443}"
 AGENT_PORT="${AGENT_PORT:-8099}"
 XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
 INBOUND_TAG="${INBOUND_TAG:-vless-in}"
