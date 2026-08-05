@@ -80,8 +80,11 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		}
 		return a.saveState(state)
 	}
+	var rollback func(context.Context)
+	var err error
 	if state.Backbone != nil {
-		if err := a.applyWireGuard(ctx, state); err != nil {
+		rollback, err = a.applyWireGuard(ctx, state, current)
+		if err != nil {
 			return err
 		}
 	}
@@ -95,28 +98,44 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 	}
 	transaction += rules
 	if err := a.runner.Run(ctx, []byte(transaction), "nft", "-c", "-f", "-"); err != nil {
+		if rollback != nil {
+			rollback(ctx)
+		}
 		return err
 	}
 	if err := a.runner.Run(ctx, []byte(transaction), "nft", "-f", "-"); err != nil {
+		if rollback != nil {
+			rollback(ctx)
+		}
 		return err
 	}
 	return a.saveState(state)
 }
 
-func (a *Applier) applyWireGuard(ctx context.Context, state DesiredState) error {
+func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredState) (func(context.Context), error) {
 	b := state.Backbone
 	private, err := a.ensurePrivateKey()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	keyPath := filepath.Join(a.root, "wireguard.key")
 	if err := os.WriteFile(keyPath, []byte(base64.StdEncoding.EncodeToString(private)+"\n"), 0600); err != nil {
-		return err
+		return nil, err
 	}
+	created := false
 	if a.runner.Run(ctx, nil, "ip", "link", "show", "dev", b.InterfaceName) != nil {
 		if err := a.runner.Run(ctx, nil, "ip", "link", "add", "dev", b.InterfaceName, "type", "wireguard"); err != nil {
-			return err
+			return nil, err
 		}
+		created = true
+	}
+	rollback := func(rollbackCtx context.Context) {
+		if created || previous.Backbone == nil {
+			_ = a.runner.Run(rollbackCtx, nil, "ip", "rule", "del", "priority", "100")
+			_ = a.runner.Run(rollbackCtx, nil, "ip", "link", "del", "dev", b.InterfaceName)
+			return
+		}
+		_, _ = a.applyWireGuard(rollbackCtx, previous, DesiredState{})
 	}
 	commands := [][]string{
 		{"ip", "address", "replace", b.TunnelAddress.String(), "dev", b.InterfaceName},
@@ -124,18 +143,22 @@ func (a *Applier) applyWireGuard(ctx context.Context, state DesiredState) error 
 		{"ip", "link", "set", "up", "dev", b.InterfaceName},
 	}
 	if state.Role == RoleIngress {
+		// `ip rule replace` is not supported consistently across iproute2
+		// versions. Delete only our fixed priority and add the exact rule back.
+		_ = a.runner.Run(ctx, nil, "ip", "rule", "del", "priority", "100")
 		commands = append(commands,
 			[]string{"ip", "route", "replace", "default", "dev", b.InterfaceName, "table", policyTable},
-			[]string{"ip", "rule", "replace", "priority", "100", "uidrange", fmt.Sprintf("%d-%d", b.IngressUID, b.IngressUID), "lookup", policyTable})
+			[]string{"ip", "rule", "add", "priority", "100", "uidrange", fmt.Sprintf("%d-%d", b.IngressUID, b.IngressUID), "lookup", policyTable})
 	} else {
 		commands = append(commands, []string{"sysctl", "-w", "net.ipv4.ip_forward=1"})
 	}
 	for _, command := range commands {
 		if err := a.runner.Run(ctx, nil, command[0], command[1:]...); err != nil {
-			return err
+			rollback(ctx)
+			return nil, err
 		}
 	}
-	return nil
+	return rollback, nil
 }
 
 func (a *Applier) removeOwned(ctx context.Context, current DesiredState) error {
