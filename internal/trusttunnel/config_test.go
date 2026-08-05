@@ -43,6 +43,9 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 	if !bytes.Contains(files.Settings, []byte("[listen_protocols.http2]")) || !bytes.Contains(files.Settings, []byte("[listen_protocols.quic]")) {
 		t.Fatalf("protocol configuration missing: %s", files.Settings)
 	}
+	if bytes.Contains(files.Settings, []byte("[listen_protocols.http1]")) {
+		t.Fatalf("HTTP/1 listener must stay disabled for Stage 1: %s", files.Settings)
+	}
 }
 
 func TestBuildFilesRejectsEscapedPrivateKey(t *testing.T) {
