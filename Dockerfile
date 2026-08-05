@@ -25,7 +25,7 @@ RUN apk add --no-cache ca-certificates wget tar \
     && test -x /trusttunnel_endpoint
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
-RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git
+RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git iproute2 nftables wireguard-tools
 COPY --from=builder /node-agent /usr/local/bin/node-agent
 COPY --from=builder /topology-agent /usr/local/bin/topology-agent
 COPY --from=trusttunnel /trusttunnel_endpoint /opt/trusttunnel/trusttunnel_endpoint
