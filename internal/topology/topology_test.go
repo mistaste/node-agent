@@ -38,6 +38,9 @@ func TestRelayHasOnlyFixed443Destination(t *testing.T) {
 	if strings.Count(rules, "dnat to 93.184.216.34:443") != 2 || strings.Contains(rules, "redirect") {
 		t.Fatalf("relay is not fixed:\n%s", rules)
 	}
+	if !strings.Contains(rules, "ct state established,related accept") {
+		t.Fatalf("relay would drop return packets without conntrack accept:\n%s", rules)
+	}
 	if !strings.Contains(rules, "\n  reject\n") ||
 		strings.Contains(rules, "ip daddr 93.184.216.34 masquerade") {
 		t.Fatalf("relay permits traffic outside the fixed protocol/port:\n%s", rules)

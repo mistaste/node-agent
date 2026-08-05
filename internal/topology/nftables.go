@@ -33,6 +33,7 @@ func RenderNFTables(state DesiredState) (string, error) {
 			fmt.Sprintf("  iifname %q oifname %q masquerade", b.InterfaceName, b.EgressInterface), " }", "}")
 	case RoleRelay:
 		r := state.Relay
+		body = append(body, "  ct state established,related accept")
 		if r.TCPEnabled {
 			body = append(body, fmt.Sprintf("  ip daddr %s tcp dport 443 accept", r.IngressAddress))
 		}
