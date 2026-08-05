@@ -20,6 +20,14 @@ type Controller struct {
 	applier                           *Applier
 }
 
+type NodeReport struct {
+	Role               string `json:"role"`
+	WireGuardPublicKey string `json:"wireguard_public_key"`
+	ObservedRevision   int64  `json:"observed_revision"`
+	Status             string `json:"status"`
+	ErrorCode          string `json:"error_code"`
+}
+
 func NewController(baseURL, serviceToken, nodeSecret string, interval time.Duration, applier *Applier) (*Controller, error) {
 	if applier == nil || !strings.HasPrefix(baseURL, "https://") || strings.TrimSpace(serviceToken) == "" || len(strings.TrimSpace(nodeSecret)) < 32 {
 		return nil, errors.New("topology controller configuration is incomplete")
@@ -59,11 +67,7 @@ func (c *Controller) SyncOnce(ctx context.Context) error {
 	if state.Role == "" {
 		return c.applier.Apply(ctx, state)
 	}
-	report := struct {
-		Role, WireGuardPublicKey string
-		ObservedRevision         int64
-		Status, ErrorCode        string
-	}{Role: string(state.Role), ObservedRevision: state.Revision, Status: "applied"}
+	report := NodeReport{Role: string(state.Role), ObservedRevision: state.Revision, Status: "applied"}
 	if state.Role == RoleIngress || state.Role == RoleExit {
 		report.WireGuardPublicKey, err = c.applier.PublicKey()
 		if err != nil {
@@ -108,11 +112,7 @@ func (c *Controller) fetch(ctx context.Context) (DesiredState, error) {
 	}
 	return state, nil
 }
-func (c *Controller) report(ctx context.Context, report struct {
-	Role, WireGuardPublicKey string
-	ObservedRevision         int64
-	Status, ErrorCode        string
-}, code string, cause error) error {
+func (c *Controller) report(ctx context.Context, report NodeReport, code string, cause error) error {
 	if code != "" {
 		report.Status = "degraded"
 		report.ErrorCode = code
