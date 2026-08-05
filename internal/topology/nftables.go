@@ -33,15 +33,29 @@ func RenderNFTables(state DesiredState) (string, error) {
 			fmt.Sprintf("  iifname %q oifname %q masquerade", b.InterfaceName, b.EgressInterface), " }", "}")
 	case RoleRelay:
 		r := state.Relay
-		body = append(body, " }", " chain prerouting { type nat hook prerouting priority dstnat; policy accept;")
+		if r.TCPEnabled {
+			body = append(body, fmt.Sprintf("  ip daddr %s tcp dport 443 accept", r.IngressAddress))
+		}
+		if r.UDPEnabled {
+			body = append(body, fmt.Sprintf("  ip daddr %s udp dport 443 accept", r.IngressAddress))
+		}
+		body = append(body,
+			fmt.Sprintf("  ip daddr %s reject", r.IngressAddress),
+			" }", " chain prerouting { type nat hook prerouting priority dstnat; policy accept;")
 		if r.TCPEnabled {
 			body = append(body, fmt.Sprintf("  tcp dport 443 dnat to %s:%d", r.IngressAddress, r.IngressPort))
 		}
 		if r.UDPEnabled {
 			body = append(body, fmt.Sprintf("  udp dport 443 dnat to %s:%d", r.IngressAddress, r.IngressPort))
 		}
-		body = append(body, " }", " chain postrouting { type nat hook postrouting priority srcnat; policy accept;",
-			fmt.Sprintf("  ip daddr %s masquerade", r.IngressAddress), " }", "}")
+		body = append(body, " }", " chain postrouting { type nat hook postrouting priority srcnat; policy accept;")
+		if r.TCPEnabled {
+			body = append(body, fmt.Sprintf("  ip daddr %s tcp dport 443 masquerade", r.IngressAddress))
+		}
+		if r.UDPEnabled {
+			body = append(body, fmt.Sprintf("  ip daddr %s udp dport 443 masquerade", r.IngressAddress))
+		}
+		body = append(body, " }", "}")
 	}
 	return strings.Join(body, "\n") + "\n", nil
 }

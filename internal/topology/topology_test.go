@@ -38,6 +38,10 @@ func TestRelayHasOnlyFixed443Destination(t *testing.T) {
 	if strings.Count(rules, "dnat to 203.0.113.10:443") != 2 || strings.Contains(rules, "redirect") {
 		t.Fatalf("relay is not fixed:\n%s", rules)
 	}
+	if !strings.Contains(rules, "ip daddr 203.0.113.10 reject") ||
+		strings.Contains(rules, "ip daddr 203.0.113.10 masquerade") {
+		t.Fatalf("relay permits traffic outside the fixed protocol/port:\n%s", rules)
+	}
 	state.Relay.IngressPort = 8443
 	if _, err := RenderNFTables(state); !errors.Is(err, ErrUnsafeDesiredState) {
 		t.Fatalf("unsafe relay accepted: %v", err)
