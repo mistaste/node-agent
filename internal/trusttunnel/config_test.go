@@ -46,6 +46,20 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 	if bytes.Contains(files.Settings, []byte("[listen_protocols.http1]")) {
 		t.Fatalf("HTTP/1 listener must stay disabled for Stage 1: %s", files.Settings)
 	}
+	for _, expected := range []string{
+		"connection_establishment_timeout_secs = 30",
+		"tcp_connections_timeout_secs = 86400",
+		"udp_connections_timeout_secs = 300",
+		"speedtest_enable = false",
+		"ping_enable = false",
+		"auth_failure_status_code = 405",
+		"[metrics]",
+		"address = \"127.0.0.1:1987\"",
+	} {
+		if !strings.Contains(string(files.Settings), expected) {
+			t.Fatalf("Stage 1 TrustTunnel setting %q missing: %s", expected, files.Settings)
+		}
+	}
 }
 
 func TestBuildFilesRejectsEscapedPrivateKey(t *testing.T) {
