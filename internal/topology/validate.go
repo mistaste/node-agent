@@ -51,17 +51,17 @@ func validateBackbone(role Role, value Backbone) error {
 		return fmt.Errorf("%w: invalid backbone", ErrUnsafeDesiredState)
 	}
 	if role == RoleIngress {
-		if !interfacePattern.MatchString(value.IngressInterface) || value.EgressInterface != "" {
-			return fmt.Errorf("%w: ingress must name only its packet source", ErrUnsafeDesiredState)
+		if value.IngressUID < 100 || value.IngressUID > 65535 || value.EgressInterface != "" {
+			return fmt.Errorf("%w: ingress must identify only its endpoint uid", ErrUnsafeDesiredState)
 		}
-	} else if !interfacePattern.MatchString(value.EgressInterface) || value.IngressInterface != "" {
+	} else if !interfacePattern.MatchString(value.EgressInterface) || value.IngressUID != 0 {
 		return fmt.Errorf("%w: exit must name only its public egress", ErrUnsafeDesiredState)
 	}
 	return nil
 }
 
 func validateRelay(value Relay) error {
-	if !value.IngressAddress.IsValid() || !value.IngressAddress.IsGlobalUnicast() ||
+	if !value.IngressAddress.IsValid() || !value.IngressAddress.Is4() || !value.IngressAddress.IsGlobalUnicast() ||
 		value.IngressAddress.IsPrivate() || value.IngressPort != 443 ||
 		(!value.TCPEnabled && !value.UDPEnabled) {
 		return fmt.Errorf("%w: relay target must be one public ingress on 443", ErrUnsafeDesiredState)

@@ -21,8 +21,9 @@ func RenderNFTables(state DesiredState) (string, error) {
 	case RoleIngress:
 		b := state.Backbone
 		body = append(body,
-			fmt.Sprintf("  iifname %q oifname %q accept", b.IngressInterface, b.InterfaceName),
-			fmt.Sprintf("  iifname %q reject", b.IngressInterface), " }", "}")
+			" }", " chain output { type filter hook output priority -5; policy accept;",
+			fmt.Sprintf("  meta skuid %d oifname %q accept", b.IngressUID, b.InterfaceName),
+			fmt.Sprintf("  meta skuid %d reject", b.IngressUID), " }", "}")
 	case RoleExit:
 		b := state.Backbone
 		body = append(body,

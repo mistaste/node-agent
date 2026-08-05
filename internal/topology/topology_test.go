@@ -12,7 +12,7 @@ const testPeerKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 func backboneState(role Role) DesiredState {
 	b := &Backbone{InterfaceName: "gxwg0", TunnelAddress: netip.MustParsePrefix("10.91.0.1/30"), PeerTunnelAddress: netip.MustParseAddr("10.91.0.2"), PeerPublicKey: testPeerKey, PeerEndpoint: netip.MustParseAddrPort("203.0.113.20:51820"), ListenPort: 51820}
 	if role == RoleIngress {
-		b.IngressInterface = "gxtt0"
+		b.IngressUID = 65532
 	} else {
 		b.EgressInterface = "eth0"
 	}
@@ -24,7 +24,7 @@ func TestIngressRulesAreFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(rules, `iifname "gxtt0" oifname "gxwg0" accept`) || !strings.Contains(rules, `iifname "gxtt0" reject`) {
+	if !strings.Contains(rules, `meta skuid 65532 oifname "gxwg0" accept`) || !strings.Contains(rules, `meta skuid 65532 reject`) {
 		t.Fatalf("missing fail-closed ingress rules:\n%s", rules)
 	}
 }

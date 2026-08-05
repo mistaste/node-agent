@@ -30,7 +30,7 @@ type Backbone struct {
 	PeerPublicKey     string         `json:"peer_public_key"`
 	PeerEndpoint      netip.AddrPort `json:"peer_endpoint"`
 	ListenPort        int            `json:"listen_port"`
-	IngressInterface  string         `json:"ingress_interface,omitempty"`
+	IngressUID        uint32         `json:"ingress_uid,omitempty"`
 	EgressInterface   string         `json:"egress_interface,omitempty"`
 }
 
