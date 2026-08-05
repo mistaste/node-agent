@@ -105,6 +105,11 @@ Build the three Stage 1 node binaries with:
 GUARDEX_STAGE1_ARTIFACT_DIR=/tmp/guardex-stage1-artifacts ./ops/build-stage1-artifacts.sh
 ```
 
+The build writes `/tmp/guardex-stage1-artifacts/stage1-artifacts-manifest.txt`
+with the git commit, target and SHA-256 for every binary. Keep that manifest
+with the files copied to nodes; do not canary binaries whose manifest commit is
+not the intended reviewed commit.
+
 The backend exposes the operator-only Stage 1 intent API under the admin
 session:
 
