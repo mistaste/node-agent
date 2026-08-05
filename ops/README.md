@@ -40,6 +40,13 @@ Before enabling topology roles on a node, run:
 GUARDEX_NODE_ROOT=/opt/guardex-node ./ops/transport-stage1-preflight.sh
 ```
 
+The activation services live in `docker-compose.stage1.yml` and are not applied
+by the default installer. Use it only during the Stage 1 canary:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.stage1.yml up -d --build
+```
+
 Do not enable the legacy `guardex-trusttunnel.service` for Stage 1. It is kept
 only for older manual endpoint installs and runs with a broader capability set
 than the containerized runner design.
@@ -61,7 +68,7 @@ Activation order:
 Rollback:
 
 ```sh
-docker compose stop topology-agent trusttunnel-runner
+docker compose -f docker-compose.yml -f docker-compose.stage1.yml stop topology-agent trusttunnel-runner
 docker compose exec node-agent node-agent check-rollback-v0.2.3
 docker compose restart node-agent
 ```

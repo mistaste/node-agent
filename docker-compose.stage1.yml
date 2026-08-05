@@ -1,0 +1,74 @@
+name: guardex-node
+
+# Stage 1 transport override. This file is intentionally inert unless the
+# operator runs:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.stage1.yml up -d --build
+#
+# Keep the base compose file compatible with existing nodes until Stage 1 is
+# explicitly authorized and canaried.
+
+services:
+  node-agent:
+    cap_add: !reset []
+    environment:
+      TRUSTTUNNEL_PROCESS_MODE: "external"
+
+  trusttunnel-runner:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    command: trusttunnel-runner
+    environment:
+      TRUSTTUNNEL_BINARY: "/opt/trusttunnel/trusttunnel_endpoint"
+      TRUSTTUNNEL_ROOT: "/data/trusttunnel"
+      TRUSTTUNNEL_RUNNER_INTERVAL: "2s"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.35
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+    volumes:
+      - ./data/trusttunnel:/data/trusttunnel
+
+  topology-agent:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    command: topology-agent
+    extra_hosts:
+      - "api.guardex-vpn.com:${CONTROLLER_ORIGIN_IP:-80.241.216.139}"
+    env_file: .env
+    environment:
+      TOPOLOGY_ROOT: "/data/topology"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.35
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+    volumes:
+      - ./data/topology:/data/topology
