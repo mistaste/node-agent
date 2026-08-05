@@ -48,5 +48,8 @@ for script in "$ROOT/ops/render-stage1-intent-curl.sh" "$ROOT/ops/render-stage1-
     env INGRESS_TUNNEL_CIDR="8.8.8.8/30" "$script"
 done
 
+assert_fails "missing artifact manifest rejected by verifier" \
+  "$ROOT/ops/verify-stage1-artifacts.sh" /tmp/guardex-stage1-missing-artifacts
+
 rm -f /tmp/guardex-stage1-renderer-test.out /tmp/guardex-stage1-renderer-test.err
 echo "stage1 renderer smoke tests passed"

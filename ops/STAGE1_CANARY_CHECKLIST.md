@@ -54,11 +54,19 @@ Before exposing relay addresses to testers:
    sh ./ops/test-stage1-renderers.sh
    ```
 
-2. Render activation commands. `INGRESS_SERVER_ID`, `EXIT_SERVER_ID` and
+2. Build and verify the exact node artifacts to be copied to all Stage 1 nodes:
+
+   ```sh
+   GUARDEX_STAGE1_ARTIFACT_DIR=/tmp/guardex-stage1-artifacts ./ops/build-stage1-artifacts.sh
+   ./ops/verify-stage1-artifacts.sh /tmp/guardex-stage1-artifacts
+   ```
+
+3. Render activation commands. `INGRESS_SERVER_ID`, `EXIT_SERVER_ID` and
    `RELAY_SERVER_ID` must be three different servers:
 
    ```sh
-   # INGRESS_PUBLIC_IPV4 must be an ordinary public IPv4, not private/reserved.
+   # INGRESS_PUBLIC_IPV4 must match the selected ingress server host in the DB.
+   # It must be an ordinary public IPv4, not private/reserved.
    ADMIN_COOKIE_FILE=/tmp/guardex-admin-cookies.txt \
    ADMIN_CSRF_TOKEN=... \
    INGRESS_SERVER_ID=... \
@@ -68,23 +76,24 @@ Before exposing relay addresses to testers:
    ./ops/render-stage1-intent-curl.sh
    ```
 
-3. Create disabled ingress/exit roles and verify both nodes report WireGuard
+4. Create disabled ingress/exit roles and verify both nodes report WireGuard
    public keys.
-4. Create disabled backbone link.
-5. Enable ingress/exit roles, then enable backbone.
-6. Verify `/admin/transport`:
+5. Create disabled backbone link.
+6. Enable ingress/exit roles, then enable backbone.
+7. Verify `/admin/transport`:
    - ingress role `Ready`;
    - exit role `Ready`;
    - backbone link `Ready`.
-7. Create disabled relay role and route.
-8. Enable relay role and route.
-9. Verify `/admin/transport`:
+8. Create disabled relay role and route.
+9. Enable relay role and route.
+10. Verify `/admin/transport`:
    - relay role `Ready`;
    - relay route `Ready`;
+   - no `relay_target_mismatch` reason exists;
    - no `*_revision_not_applied` reasons remain.
-10. Verify tester account receives signed TrustTunnel methods with
+11. Verify tester account receives signed TrustTunnel methods with
    `relay_addresses`.
-11. Verify regular user accounts do not receive tester-only TrustTunnel canary
+12. Verify regular user accounts do not receive tester-only TrustTunnel canary
     routes if the rollout is tester-gated.
 
 ## Physical test evidence

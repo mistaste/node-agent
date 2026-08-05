@@ -108,12 +108,15 @@ Build the three Stage 1 node binaries with:
 
 ```sh
 GUARDEX_STAGE1_ARTIFACT_DIR=/tmp/guardex-stage1-artifacts ./ops/build-stage1-artifacts.sh
+./ops/verify-stage1-artifacts.sh /tmp/guardex-stage1-artifacts
 ```
 
 The build writes `/tmp/guardex-stage1-artifacts/stage1-artifacts-manifest.txt`
 with the git commit, target and SHA-256 for every binary. Keep that manifest
 with the files copied to nodes; do not canary binaries whose manifest commit is
-not the intended reviewed commit.
+not the intended reviewed commit. The verifier fails if any binary is missing,
+the SHA-256 does not match the manifest, or the manifest commit differs from
+the current reviewed checkout.
 
 The backend exposes the operator-only Stage 1 intent API under the admin
 session:
@@ -132,7 +135,8 @@ Use `/summary` after every change. A route is canary-ready only when:
 - the relay role shows `ready: true`;
 - the relay route shows `ready: true`, which also requires a ready backbone for
   the same ingress;
-- the relay route targets the ingress public IPv4 on TCP/UDP `443`;
+- the relay route targets the exact ingress public IPv4 stored in the selected
+  ingress server's `host` field on TCP/UDP `443`;
 - tester profiles receive relay addresses in the signed mobile catalogue.
 
 To reduce operator mistakes, render the intended admin API calls before a
