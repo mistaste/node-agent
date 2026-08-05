@@ -53,6 +53,20 @@ func TestRelayHasOnlyFixed443Destination(t *testing.T) {
 	}
 }
 
+func TestBackboneRequiresPointToPointCIDR(t *testing.T) {
+	state := backboneState(RoleIngress)
+	state.Backbone.TunnelAddress = netip.MustParsePrefix("10.91.0.1/24")
+	if _, err := RenderNFTables(state); !errors.Is(err, ErrUnsafeDesiredState) {
+		t.Fatalf("non-/30 backbone accepted: %v", err)
+	}
+
+	state = backboneState(RoleIngress)
+	state.Backbone.PeerTunnelAddress = netip.MustParseAddr("10.91.0.6")
+	if _, err := RenderNFTables(state); !errors.Is(err, ErrUnsafeDesiredState) {
+		t.Fatalf("peer outside /30 backbone accepted: %v", err)
+	}
+}
+
 func TestDisabledStateIsEmptyTombstone(t *testing.T) {
 	rules, err := RenderNFTables(DesiredState{SchemaVersion: 1, Revision: 3, Role: RoleRelay})
 	if err != nil {

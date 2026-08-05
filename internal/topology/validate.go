@@ -45,6 +45,7 @@ func validateBackbone(role Role, value Backbone) error {
 		!value.TunnelAddress.Addr().Is4() || !value.PeerTunnelAddress.IsValid() ||
 		!value.PeerTunnelAddress.IsPrivate() || !value.PeerTunnelAddress.Is4() ||
 		value.TunnelAddress.Addr() == value.PeerTunnelAddress ||
+		value.TunnelAddress.Bits() != 30 ||
 		!value.TunnelAddress.Contains(value.PeerTunnelAddress) ||
 		!wgKeyPattern.MatchString(strings.TrimSpace(value.PeerPublicKey)) ||
 		!value.PeerEndpoint.IsValid() || !usablePublicIPv4(value.PeerEndpoint.Addr()) ||
