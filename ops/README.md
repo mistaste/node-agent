@@ -120,6 +120,8 @@ Use `/summary` after every change. A route is canary-ready only when:
 - both ingress and exit roles show `ready: true`;
 - the backbone link shows `ready: true`;
 - the relay role shows `ready: true`;
+- the relay route shows `ready: true`, which also requires a ready backbone for
+  the same ingress;
 - the relay route targets the ingress public IPv4 on TCP/UDP `443`;
 - tester profiles receive relay addresses in the signed mobile catalogue.
 
