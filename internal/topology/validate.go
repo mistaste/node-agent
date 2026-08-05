@@ -42,7 +42,8 @@ func Validate(state DesiredState) error {
 func validateBackbone(role Role, value Backbone) error {
 	if !interfacePattern.MatchString(value.InterfaceName) || value.InterfaceName == "lo" ||
 		!value.TunnelAddress.IsValid() || !value.TunnelAddress.Addr().IsPrivate() ||
-		!value.PeerTunnelAddress.IsValid() || !value.PeerTunnelAddress.IsPrivate() ||
+		!value.TunnelAddress.Addr().Is4() || !value.PeerTunnelAddress.IsValid() ||
+		!value.PeerTunnelAddress.IsPrivate() || !value.PeerTunnelAddress.Is4() ||
 		value.TunnelAddress.Addr() == value.PeerTunnelAddress ||
 		!value.TunnelAddress.Contains(value.PeerTunnelAddress) ||
 		!wgKeyPattern.MatchString(strings.TrimSpace(value.PeerPublicKey)) ||

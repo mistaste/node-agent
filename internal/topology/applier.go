@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,9 +138,13 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 		}
 		_, _ = a.applyWireGuard(rollbackCtx, previous, DesiredState{})
 	}
+	allowedIPs := "0.0.0.0/0"
+	if state.Role == RoleExit {
+		allowedIPs = netip.PrefixFrom(b.PeerTunnelAddress, 32).String()
+	}
 	commands := [][]string{
 		{"ip", "address", "replace", b.TunnelAddress.String(), "dev", b.InterfaceName},
-		{"wg", "set", b.InterfaceName, "private-key", keyPath, "listen-port", strconv.Itoa(b.ListenPort), "peer", b.PeerPublicKey, "endpoint", b.PeerEndpoint.String(), "allowed-ips", "0.0.0.0/0,::/0", "persistent-keepalive", "25"},
+		{"wg", "set", b.InterfaceName, "private-key", keyPath, "listen-port", strconv.Itoa(b.ListenPort), "peer", b.PeerPublicKey, "endpoint", b.PeerEndpoint.String(), "allowed-ips", allowedIPs, "persistent-keepalive", "25"},
 		{"ip", "link", "set", "up", "dev", b.InterfaceName},
 	}
 	if state.Role == RoleIngress {

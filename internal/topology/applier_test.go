@@ -96,6 +96,28 @@ func TestBackboneConfigNeverPlacesPrivateKeyOnCommandLine(t *testing.T) {
 	}
 }
 
+func TestExitPeerIsLimitedToIngressTunnelAddress(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	if err := applier.Apply(context.Background(), backboneState(RoleExit)); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, command := range runner.commands {
+		joined := strings.Join(command.args, " ")
+		if command.name == "wg" && strings.Contains(joined, "allowed-ips 10.91.0.2/32") {
+			found = true
+		}
+		if command.name == "wg" && strings.Contains(joined, "allowed-ips 0.0.0.0/0") {
+			t.Fatalf("exit accepted an unrestricted ingress peer: %s", joined)
+		}
+	}
+	if !found {
+		t.Fatalf("exit peer tunnel restriction missing: %#v", runner.commands)
+	}
+}
+
 func TestBackboneIsRemovedWhenFirewallTransactionFails(t *testing.T) {
 	runner := &failingRunner{failNFTCheck: true}
 	applier, _ := NewApplier(t.TempDir())
