@@ -47,8 +47,8 @@ func validateBackbone(role Role, value Backbone) error {
 		value.TunnelAddress.Addr() == value.PeerTunnelAddress ||
 		!value.TunnelAddress.Contains(value.PeerTunnelAddress) ||
 		!wgKeyPattern.MatchString(strings.TrimSpace(value.PeerPublicKey)) ||
-		!value.PeerEndpoint.IsValid() || !value.PeerEndpoint.Addr().IsGlobalUnicast() ||
-		value.PeerEndpoint.Addr().IsPrivate() || value.ListenPort < 1 || value.ListenPort > 65535 {
+		!value.PeerEndpoint.IsValid() || !usablePublicIPv4(value.PeerEndpoint.Addr()) ||
+		value.ListenPort < 1 || value.ListenPort > 65535 {
 		return fmt.Errorf("%w: invalid backbone", ErrUnsafeDesiredState)
 	}
 	if role == RoleIngress {
@@ -62,8 +62,7 @@ func validateBackbone(role Role, value Backbone) error {
 }
 
 func validateRelay(value Relay) error {
-	if !value.IngressAddress.IsValid() || !value.IngressAddress.Is4() || !value.IngressAddress.IsGlobalUnicast() ||
-		value.IngressAddress.IsPrivate() || value.IngressPort != 443 ||
+	if !usablePublicIPv4(value.IngressAddress) || value.IngressPort != 443 ||
 		(!value.TCPEnabled && !value.UDPEnabled) {
 		return fmt.Errorf("%w: relay target must be one public ingress on 443", ErrUnsafeDesiredState)
 	}

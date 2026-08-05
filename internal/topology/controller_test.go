@@ -58,7 +58,7 @@ func TestControllerCleansUnassignedNodeWithoutInvalidReport(t *testing.T) {
 }
 
 func TestControllerReportsAppliedRelayRevision(t *testing.T) {
-	state := DesiredState{SchemaVersion: 1, Revision: 7, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("203.0.113.10"), IngressPort: 443, TCPEnabled: true}}
+	state := DesiredState{SchemaVersion: 1, Revision: 7, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("93.184.216.34"), IngressPort: 443, TCPEnabled: true}}
 	var reported NodeReport
 	controller, _ := testController(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		requireNodeAuth(t, request)

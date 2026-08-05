@@ -44,13 +44,13 @@ func TestApplierValidatesThenAtomicallyChecksAndAppliesRelay(t *testing.T) {
 	runner := &recordingRunner{}
 	applier, _ := NewApplier(t.TempDir())
 	applier.runner = runner
-	state := DesiredState{SchemaVersion: 1, Revision: 2, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("203.0.113.10"), IngressPort: 443, TCPEnabled: true, UDPEnabled: true}}
+	state := DesiredState{SchemaVersion: 1, Revision: 2, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("93.184.216.34"), IngressPort: 443, TCPEnabled: true, UDPEnabled: true}}
 	if err := applier.Apply(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
 	var check, apply bool
 	for _, command := range runner.commands {
-		if command.name == "nft" && strings.Contains(command.stdin, "dnat to 203.0.113.10:443") {
+		if command.name == "nft" && strings.Contains(command.stdin, "dnat to 93.184.216.34:443") {
 			if len(command.args) > 0 && command.args[0] == "-c" {
 				check = true
 			} else {
@@ -67,11 +67,11 @@ func TestApplierRejectsSameRevisionMutation(t *testing.T) {
 	runner := &recordingRunner{}
 	applier, _ := NewApplier(t.TempDir())
 	applier.runner = runner
-	first := DesiredState{SchemaVersion: 1, Revision: 3, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("203.0.113.10"), IngressPort: 443, TCPEnabled: true}}
+	first := DesiredState{SchemaVersion: 1, Revision: 3, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("93.184.216.34"), IngressPort: 443, TCPEnabled: true}}
 	if err := applier.Apply(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
-	first.Relay.IngressAddress = netip.MustParseAddr("203.0.113.11")
+	first.Relay.IngressAddress = netip.MustParseAddr("93.184.216.35")
 	if err := applier.Apply(context.Background(), first); !errors.Is(err, ErrUnsafeDesiredState) {
 		t.Fatalf("same revision mutation accepted: %v", err)
 	}
