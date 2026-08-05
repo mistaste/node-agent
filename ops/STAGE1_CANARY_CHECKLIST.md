@@ -51,6 +51,7 @@ Before exposing relay addresses to testers:
 1. Render activation commands:
 
    ```sh
+   # INGRESS_PUBLIC_IPV4 must be an ordinary public IPv4, not private/reserved.
    ADMIN_COOKIE_FILE=/tmp/guardex-admin-cookies.txt \
    ADMIN_CSRF_TOKEN=... \
    INGRESS_SERVER_ID=... \

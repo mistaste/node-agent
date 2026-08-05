@@ -93,8 +93,9 @@ Activation order:
    then enable the backbone. Verify `gxwg0`, nftables and fail-closed rules on
    both nodes before exposing any relay address.
 6. Assign the `relay` role disabled, create one disabled relay route to the
-   ingress public IPv4 on port `443`, then enable the relay role and route only
-   for the canary window.
+   ingress ordinary public IPv4 on port `443`, then enable the relay role and
+   route only for the canary window. Private, CGNAT, benchmarking and
+   documentation ranges are rejected by the renderer, backend and node-agent.
 7. Test TCP and UDP 443 through the relay, then check that the
    mobile signed catalog contains relay addresses only for tester accounts.
 
