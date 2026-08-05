@@ -35,6 +35,68 @@ require() {
   fi
 }
 
+is_uuid_like() {
+  case "$1" in
+    ????????-????-????-????-????????????) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *[!0-9A-Fa-f-]*) return 1 ;;
+  esac
+  return 0
+}
+
+is_safe_token() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._~+=:@/-]*) return 1 ;;
+  esac
+  return 0
+}
+
+is_safe_url_base() {
+  case "$1" in
+    https://*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *"'"*|*'"'*|*'`'*|*"\\"*|*";"*|*"|"*|*"<"*|*">"*|*" "*) return 1 ;;
+  esac
+  return 0
+}
+
+is_port() {
+  case "$1" in
+    ''|*[!0-9]*|0[0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+is_stage1_tunnel_cidr() {
+  value="$1"
+  ip="${value%/*}"
+  prefix="${value#*/}"
+  [ "$prefix" = "30" ] || return 1
+  old_ifs="$IFS"
+  IFS=.
+  # shellcheck disable=SC2086
+  set -- $ip
+  IFS="$old_ifs"
+  [ "$#" -eq 4 ] || return 1
+  for octet in "$@"; do
+    case "$octet" in
+      ''|*[!0-9]*) return 1 ;;
+      0[0-9]*) return 1 ;;
+    esac
+    [ "$octet" -le 255 ] || return 1
+  done
+  a="$1"
+  b="$2"
+  [ "$a" -eq 10 ] && return 0
+  [ "$a" -eq 172 ] && [ "$b" -ge 16 ] && [ "$b" -le 31 ] && return 0
+  [ "$a" -eq 192 ] && [ "$b" -eq 168 ] && return 0
+  return 1
+}
+
 is_usable_public_ipv4() {
   value="$1"
   old_ifs="$IFS"
@@ -120,6 +182,44 @@ require INGRESS_SERVER_ID
 require EXIT_SERVER_ID
 require RELAY_SERVER_ID
 require INGRESS_PUBLIC_IPV4
+
+for id_name in INGRESS_SERVER_ID EXIT_SERVER_ID RELAY_SERVER_ID; do
+  eval "id_value=\${$id_name}"
+  if ! is_uuid_like "$id_value"; then
+    echo "$id_name must look like a UUID: $id_value" >&2
+    exit 2
+  fi
+done
+
+if [ "$INGRESS_SERVER_ID" = "$EXIT_SERVER_ID" ] || [ "$INGRESS_SERVER_ID" = "$RELAY_SERVER_ID" ] || [ "$EXIT_SERVER_ID" = "$RELAY_SERVER_ID" ]; then
+  echo "INGRESS_SERVER_ID, EXIT_SERVER_ID and RELAY_SERVER_ID must be three different servers" >&2
+  exit 2
+fi
+
+if ! is_safe_token "$ADMIN_CSRF_TOKEN"; then
+  echo "ADMIN_CSRF_TOKEN contains characters that are unsafe to render into a shell command" >&2
+  exit 2
+fi
+
+if ! is_safe_url_base "$ADMIN_API_BASE"; then
+  echo "ADMIN_API_BASE must be an https URL with shell-safe characters: $ADMIN_API_BASE" >&2
+  exit 2
+fi
+
+if ! is_port "$BACKBONE_LISTEN_PORT"; then
+  echo "BACKBONE_LISTEN_PORT must be a TCP/UDP port from 1 to 65535: $BACKBONE_LISTEN_PORT" >&2
+  exit 2
+fi
+
+if ! is_stage1_tunnel_cidr "$INGRESS_TUNNEL_CIDR" || ! is_stage1_tunnel_cidr "$EXIT_TUNNEL_CIDR"; then
+  echo "INGRESS_TUNNEL_CIDR and EXIT_TUNNEL_CIDR must be private IPv4 /30 addresses" >&2
+  exit 2
+fi
+
+if [ "$INGRESS_TUNNEL_CIDR" = "$EXIT_TUNNEL_CIDR" ]; then
+  echo "INGRESS_TUNNEL_CIDR and EXIT_TUNNEL_CIDR must be different addresses" >&2
+  exit 2
+fi
 
 if ! is_usable_public_ipv4 "$INGRESS_PUBLIC_IPV4"; then
   echo "INGRESS_PUBLIC_IPV4 must be an ordinary public IPv4 address, not private/reserved/documentation: $INGRESS_PUBLIC_IPV4" >&2
