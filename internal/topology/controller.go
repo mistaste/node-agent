@@ -54,6 +54,11 @@ func (c *Controller) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// An unassigned node receives a signed-by-channel empty tombstone. Apply
+	// cleanup locally, but do not post an observed role that does not exist.
+	if state.Role == "" {
+		return c.applier.Apply(ctx, state)
+	}
 	report := struct {
 		Role, WireGuardPublicKey string
 		ObservedRevision         int64
