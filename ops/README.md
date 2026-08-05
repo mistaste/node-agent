@@ -49,10 +49,10 @@ tester app
 Roles:
 
 - `relay` is a fixed L4 forwarder only. It DNAT/SNATs TCP/UDP `443` to one
-  configured ingress address and rejects that destination when the route is not
-  explicitly enabled. It never receives TrustTunnel certificates, VPN profile
-  credentials, WireGuard keys or arbitrary upstream targets, so it cannot become
-  an open proxy.
+  configured ingress address and rejects every other forwarded packet. When the
+  route is disabled, no DNAT/SNAT rule is rendered at all. It never receives
+  TrustTunnel certificates, VPN profile credentials, WireGuard keys or
+  arbitrary upstream targets, so it cannot become an open proxy.
 - `ingress` is the IP-hiding layer for the exit node. TrustTunnel terminates
   here, but packets from the endpoint process are policy-routed into `gxwg0`.
   If the WireGuard backbone is missing, nftables rejects the endpoint UID's
