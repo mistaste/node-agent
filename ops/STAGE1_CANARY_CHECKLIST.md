@@ -48,7 +48,14 @@ Do not start canary until these are done intentionally:
 
 Before exposing relay addresses to testers:
 
-1. Render activation commands:
+1. Run the local renderer smoke test:
+
+   ```sh
+   sh ./ops/test-stage1-renderers.sh
+   ```
+
+2. Render activation commands. `INGRESS_SERVER_ID`, `EXIT_SERVER_ID` and
+   `RELAY_SERVER_ID` must be three different servers:
 
    ```sh
    # INGRESS_PUBLIC_IPV4 must be an ordinary public IPv4, not private/reserved.
@@ -61,23 +68,23 @@ Before exposing relay addresses to testers:
    ./ops/render-stage1-intent-curl.sh
    ```
 
-2. Create disabled ingress/exit roles and verify both nodes report WireGuard
+3. Create disabled ingress/exit roles and verify both nodes report WireGuard
    public keys.
-3. Create disabled backbone link.
-4. Enable ingress/exit roles, then enable backbone.
-5. Verify `/admin/transport`:
+4. Create disabled backbone link.
+5. Enable ingress/exit roles, then enable backbone.
+6. Verify `/admin/transport`:
    - ingress role `Ready`;
    - exit role `Ready`;
    - backbone link `Ready`.
-6. Create disabled relay role and route.
-7. Enable relay role and route.
-8. Verify `/admin/transport`:
+7. Create disabled relay role and route.
+8. Enable relay role and route.
+9. Verify `/admin/transport`:
    - relay role `Ready`;
    - relay route `Ready`;
    - no `*_revision_not_applied` reasons remain.
-9. Verify tester account receives signed TrustTunnel methods with
+10. Verify tester account receives signed TrustTunnel methods with
    `relay_addresses`.
-10. Verify regular user accounts do not receive tester-only TrustTunnel canary
+11. Verify regular user accounts do not receive tester-only TrustTunnel canary
     routes if the rollout is tester-gated.
 
 ## Physical test evidence
