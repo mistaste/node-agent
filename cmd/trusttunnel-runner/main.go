@@ -1,0 +1,176 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+type state struct {
+	Version         int    `json:"version"`
+	InboundID       string `json:"inbound_id"`
+	Revision        int64  `json:"revision"`
+	Digest          string `json:"digest"`
+	ClientSetSHA256 string `json:"client_set_sha256"`
+}
+
+type runner struct {
+	root    string
+	binary  string
+	process *exec.Cmd
+	done    chan struct{}
+	key     string
+}
+
+func main() {
+	root := getenv("TRUSTTUNNEL_ROOT", "/data/trusttunnel")
+	binary := getenv("TRUSTTUNNEL_BINARY", "/opt/trusttunnel/trusttunnel_endpoint")
+	interval := parseDuration(getenv("TRUSTTUNNEL_RUNNER_INTERVAL", "2s"))
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	r := &runner{root: filepath.Clean(root), binary: filepath.Clean(binary)}
+	if !filepath.IsAbs(r.root) || !filepath.IsAbs(r.binary) {
+		log.Fatal("[trusttunnel-runner] root and binary must be absolute")
+	}
+	log.Printf("[trusttunnel-runner] watching %s", r.root)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := r.reconcile(ctx); err != nil {
+			log.Printf("[trusttunnel-runner] reconcile failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			r.stop(context.Background())
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *runner) reconcile(ctx context.Context) error {
+	current, ok, err := r.loadState()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		r.stop(ctx)
+		r.key = ""
+		return nil
+	}
+	key := current.InboundID + ":" + current.Digest + ":" + current.ClientSetSHA256 + ":" + strconv.FormatInt(current.Revision, 10)
+	if r.running() && r.key == key {
+		return nil
+	}
+	r.stop(ctx)
+	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml"} {
+		if err := requireManagedFile(r.root, name); err != nil {
+			return err
+		}
+	}
+	cmd := exec.CommandContext(ctx, r.binary, filepath.Join(r.root, "vpn.toml"), filepath.Join(r.root, "hosts.toml"))
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	r.process = cmd
+	r.done = make(chan struct{})
+	r.key = key
+	go func(startedAt time.Time) {
+		err := cmd.Wait()
+		if err != nil {
+			log.Printf("[trusttunnel-runner] endpoint exited after %s: %v", time.Since(startedAt).Round(time.Millisecond), err)
+		} else {
+			log.Printf("[trusttunnel-runner] endpoint stopped after %s", time.Since(startedAt).Round(time.Millisecond))
+		}
+		close(r.done)
+	}(time.Now())
+	log.Printf("[trusttunnel-runner] endpoint started")
+	return nil
+}
+
+func (r *runner) stop(ctx context.Context) {
+	if !r.running() {
+		r.process = nil
+		r.done = nil
+		return
+	}
+	_ = r.process.Process.Signal(os.Interrupt)
+	select {
+	case <-r.done:
+	case <-ctx.Done():
+		_ = r.process.Process.Kill()
+	case <-time.After(5 * time.Second):
+		_ = r.process.Process.Kill()
+	}
+	r.process = nil
+	r.done = nil
+}
+
+func (r *runner) running() bool {
+	if r.process == nil || r.done == nil {
+		return false
+	}
+	select {
+	case <-r.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (r *runner) loadState() (state, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(r.root, "state.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return state{}, false, nil
+	}
+	if err != nil {
+		return state{}, false, err
+	}
+	var value state
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return state{}, false, err
+	}
+	if value.Version != 1 || strings.TrimSpace(value.InboundID) == "" || value.Revision < 1 || len(value.Digest) != 64 {
+		return state{}, false, errors.New("invalid durable TrustTunnel state")
+	}
+	return value, true, nil
+}
+
+func requireManagedFile(root, name string) error {
+	path := filepath.Join(root, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return errors.New("managed TrustTunnel file has unsafe permissions")
+	}
+	return nil
+}
+
+func getenv(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func parseDuration(value string) time.Duration {
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration < 500*time.Millisecond {
+		return 2 * time.Second
+	}
+	return duration
+}

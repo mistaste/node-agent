@@ -95,6 +95,7 @@ type Runtime struct {
 	binary     string
 	nodeSecret string
 	starter    processStarter
+	external   bool
 	mu         sync.Mutex
 	process    endpointProcess
 }
@@ -134,6 +135,13 @@ func NewRuntime(root, binary, _ string, nodeSecret string) (*Runtime, error) {
 	return &Runtime{root: root, binary: binary, nodeSecret: nodeSecret, starter: osProcessStarter{}}, nil
 }
 
+func (r *Runtime) UseExternalProcess() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.external = true
+	r.process = nil
+}
+
 func (r *Runtime) Available(ctx context.Context) bool {
 	if info, err := os.Stat(r.binary); err != nil || info.IsDir() || info.Mode()&0111 == 0 {
 		return false
@@ -157,7 +165,7 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	state := State{Version: stateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: digest, Port: request.Endpoint.Port, ClientCount: len(normalizeUUIDs(request.Endpoint.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
 	if current, ok := r.State(); ok {
 		unchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Revision == state.Revision && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
-		healthy := r.process != nil && r.process.Running()
+		healthy := r.external || (r.process != nil && r.process.Running())
 		if unchanged && healthy {
 			return current, nil
 		}
@@ -187,12 +195,14 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 			return State{}, err
 		}
 	}
-	if err := r.startAndCheckLocked(ctx, request.Endpoint.Port); err != nil {
-		r.restore(previous)
-		if old, ok := decodeState(previous["state.json"]); ok {
-			_ = r.startAndCheckLocked(context.Background(), old.Port)
+	if !r.external {
+		if err := r.startAndCheckLocked(ctx, request.Endpoint.Port); err != nil {
+			r.restore(previous)
+			if old, ok := decodeState(previous["state.json"]); ok {
+				_ = r.startAndCheckLocked(context.Background(), old.Port)
+			}
+			return State{}, err
 		}
-		return State{}, err
 	}
 	stateRaw, err := json.Marshal(state)
 	if err != nil {
@@ -241,6 +251,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 }
 
 func (r *Runtime) startAndCheckLocked(ctx context.Context, port int) error {
+	if r.external {
+		return nil
+	}
 	if err := ensurePortAvailable(port); err != nil {
 		return err
 	}
@@ -285,6 +298,10 @@ func ensurePortAvailable(port int) error {
 }
 
 func (r *Runtime) stopLocked(ctx context.Context) error {
+	if r.external {
+		r.process = nil
+		return nil
+	}
 	if r.process == nil {
 		return nil
 	}

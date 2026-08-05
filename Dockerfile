@@ -4,7 +4,8 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY . .
 RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /node-agent . \
-    && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /topology-agent ./cmd/topology-agent
+    && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /topology-agent ./cmd/topology-agent \
+    && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /trusttunnel-runner ./cmd/trusttunnel-runner
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS trusttunnel
 # BuildKit supplies TARGETARCH for the selected image platform. Do not set a
@@ -28,6 +29,7 @@ FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc
 RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git iproute2 nftables wireguard-tools
 COPY --from=builder /node-agent /usr/local/bin/node-agent
 COPY --from=builder /topology-agent /usr/local/bin/topology-agent
+COPY --from=builder /trusttunnel-runner /usr/local/bin/trusttunnel-runner
 COPY --from=trusttunnel /trusttunnel_endpoint /opt/trusttunnel/trusttunnel_endpoint
 EXPOSE 8099
 CMD ["node-agent"]

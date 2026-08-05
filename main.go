@@ -81,6 +81,10 @@ func main() {
 				log.Printf("[trusttunnel] disabled: runtime configuration is invalid")
 			} else {
 				trustTunnelRuntime = runtime
+				if cfg.TrustTunnelProcessMode == "external" {
+					runtime.UseExternalProcess()
+					log.Printf("[trusttunnel] endpoint process delegated to external runner")
+				}
 				if cfg.TrustTunnelEnabled {
 					controllerReconciler.EnableTrustTunnel(runtime)
 					log.Printf("[trusttunnel] runtime enabled; availability will be reported after binary verification")

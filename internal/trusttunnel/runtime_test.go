@@ -214,6 +214,34 @@ func TestRuntimeDoesNotRestartUnchangedHealthyEndpoint(t *testing.T) {
 	}
 }
 
+func TestRuntimeExternalProcessWritesStateWithoutStartingEndpoint(t *testing.T) {
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	starter := &fixedStarter{port: listener.Addr().(*net.TCPAddr).Port}
+	runtime := testRuntime(t, starter)
+	runtime.UseExternalProcess()
+	request := requestForPort(starter.port)
+	request.Endpoint.CertificateFile = filepath.Join(runtime.root, "certs", "fullchain.pem")
+	request.Endpoint.PrivateKeyFile = filepath.Join(runtime.root, "certs", "privkey.pem")
+
+	state, err := runtime.Apply(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Port != starter.port || starter.starts != 0 {
+		t.Fatalf("external runtime started endpoint or wrote wrong state: state=%+v starts=%d", state, starter.starts)
+	}
+	if err := runtime.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if starter.starts != 0 {
+		t.Fatalf("external runtime managed endpoint process: %d", starter.starts)
+	}
+}
+
 func TestRuntimeRestartsAfterAgentProcessIsMissing(t *testing.T) {
 	runtime, starter, request := newFixedRuntime(t)
 	if _, err := runtime.Apply(context.Background(), request); err != nil {

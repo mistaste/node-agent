@@ -10,50 +10,52 @@ import (
 )
 
 type Config struct {
-	XrayGRPCAddr         string
-	ListenAddr           string
-	Secret               string
-	DefaultInboundTag    string
-	MetricsInterval      time.Duration
-	ControllerURL        string
-	NodeID               string
-	InternalServiceToken string
-	UsersFile            string
-	InboundsFile         string
-	ResyncInterval       time.Duration
-	Version              string
-	XrayCoreVersion      string
-	TrustTunnelEnabled   bool
-	TrustTunnelBinary    string
-	TrustTunnelRoot      string
-	TrustTunnelService   string
-	TrustTunnelVersion   string
-	RepoDir              string
-	UpdateRef            string
+	XrayGRPCAddr           string
+	ListenAddr             string
+	Secret                 string
+	DefaultInboundTag      string
+	MetricsInterval        time.Duration
+	ControllerURL          string
+	NodeID                 string
+	InternalServiceToken   string
+	UsersFile              string
+	InboundsFile           string
+	ResyncInterval         time.Duration
+	Version                string
+	XrayCoreVersion        string
+	TrustTunnelEnabled     bool
+	TrustTunnelProcessMode string
+	TrustTunnelBinary      string
+	TrustTunnelRoot        string
+	TrustTunnelService     string
+	TrustTunnelVersion     string
+	RepoDir                string
+	UpdateRef              string
 }
 
 func Load() *Config {
 	return &Config{
-		XrayGRPCAddr:         getenv("XRAY_GRPC_ADDR", "127.0.0.1:10085"),
-		ListenAddr:           getenv("AGENT_LISTEN_ADDR", "0.0.0.0:8080"),
-		Secret:               getenv("AGENT_SECRET", "change-me-secret"),
-		DefaultInboundTag:    getenv("XRAY_INBOUND_TAG", "vless-in"),
-		MetricsInterval:      parseDuration(getenv("METRICS_INTERVAL", "15s")),
-		ControllerURL:        canonicalControllerURL(getenv("CONTROLLER_URL", "")),
-		NodeID:               getenv("NODE_ID", ""),
-		InternalServiceToken: getenv("INTERNAL_SERVICE_TOKEN", ""),
-		UsersFile:            getenv("USERS_FILE", "/data/users.json"),
-		InboundsFile:         getenv("INBOUNDS_FILE", "/data/inbounds.json"),
-		ResyncInterval:       parseDuration(getenv("RESYNC_INTERVAL", "30s")),
-		Version:              getenv("AGENT_VERSION", "git"),
-		XrayCoreVersion:      getenv("XRAY_CORE_VERSION", "unknown"),
-		TrustTunnelEnabled:   parseBool(getenv("TRUSTTUNNEL_ENABLED", "false")),
-		TrustTunnelBinary:    getenv("TRUSTTUNNEL_BINARY", "/opt/trusttunnel/trusttunnel_endpoint"),
-		TrustTunnelRoot:      getenv("TRUSTTUNNEL_ROOT", "/etc/guardex/trusttunnel"),
-		TrustTunnelService:   getenv("TRUSTTUNNEL_SERVICE", "guardex-trusttunnel.service"),
-		TrustTunnelVersion:   getenv("TRUSTTUNNEL_VERSION", "unknown"),
-		RepoDir:              getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
-		UpdateRef:            getenv("AGENT_UPDATE_REF", "master"),
+		XrayGRPCAddr:           getenv("XRAY_GRPC_ADDR", "127.0.0.1:10085"),
+		ListenAddr:             getenv("AGENT_LISTEN_ADDR", "0.0.0.0:8080"),
+		Secret:                 getenv("AGENT_SECRET", "change-me-secret"),
+		DefaultInboundTag:      getenv("XRAY_INBOUND_TAG", "vless-in"),
+		MetricsInterval:        parseDuration(getenv("METRICS_INTERVAL", "15s")),
+		ControllerURL:          canonicalControllerURL(getenv("CONTROLLER_URL", "")),
+		NodeID:                 getenv("NODE_ID", ""),
+		InternalServiceToken:   getenv("INTERNAL_SERVICE_TOKEN", ""),
+		UsersFile:              getenv("USERS_FILE", "/data/users.json"),
+		InboundsFile:           getenv("INBOUNDS_FILE", "/data/inbounds.json"),
+		ResyncInterval:         parseDuration(getenv("RESYNC_INTERVAL", "30s")),
+		Version:                getenv("AGENT_VERSION", "git"),
+		XrayCoreVersion:        getenv("XRAY_CORE_VERSION", "unknown"),
+		TrustTunnelEnabled:     parseBool(getenv("TRUSTTUNNEL_ENABLED", "false")),
+		TrustTunnelProcessMode: getenv("TRUSTTUNNEL_PROCESS_MODE", "managed"),
+		TrustTunnelBinary:      getenv("TRUSTTUNNEL_BINARY", "/opt/trusttunnel/trusttunnel_endpoint"),
+		TrustTunnelRoot:        getenv("TRUSTTUNNEL_ROOT", "/etc/guardex/trusttunnel"),
+		TrustTunnelService:     getenv("TRUSTTUNNEL_SERVICE", "guardex-trusttunnel.service"),
+		TrustTunnelVersion:     getenv("TRUSTTUNNEL_VERSION", "unknown"),
+		RepoDir:                getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
+		UpdateRef:              getenv("AGENT_UPDATE_REF", "master"),
 	}
 }
 
