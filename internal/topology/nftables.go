@@ -40,7 +40,7 @@ func RenderNFTables(state DesiredState) (string, error) {
 			body = append(body, fmt.Sprintf("  ip daddr %s udp dport 443 accept", r.IngressAddress))
 		}
 		body = append(body,
-			fmt.Sprintf("  ip daddr %s reject", r.IngressAddress),
+			"  reject",
 			" }", " chain prerouting { type nat hook prerouting priority dstnat; policy accept;")
 		if r.TCPEnabled {
 			body = append(body, fmt.Sprintf("  tcp dport 443 dnat to %s:%d", r.IngressAddress, r.IngressPort))
