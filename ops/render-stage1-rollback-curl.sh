@@ -35,6 +35,39 @@ require() {
   fi
 }
 
+is_usable_public_ipv4() {
+  value="$1"
+  old_ifs="$IFS"
+  IFS=.
+  # shellcheck disable=SC2086
+  set -- $value
+  IFS="$old_ifs"
+  [ "$#" -eq 4 ] || return 1
+  for octet in "$@"; do
+    case "$octet" in
+      ''|*[!0-9]*) return 1 ;;
+      0[0-9]*) return 1 ;;
+    esac
+    [ "$octet" -le 255 ] || return 1
+  done
+  a="$1"
+  b="$2"
+  [ "$a" -ne 0 ] || return 1
+  [ "$a" -ne 10 ] || return 1
+  [ "$a" -ne 127 ] || return 1
+  [ "$a" -lt 224 ] || return 1
+  [ "$a" -ne 100 ] || [ "$b" -lt 64 ] || [ "$b" -gt 127 ] || return 1
+  [ "$a" -ne 169 ] || [ "$b" -ne 254 ] || return 1
+  [ "$a" -ne 172 ] || [ "$b" -lt 16 ] || [ "$b" -gt 31 ] || return 1
+  [ "$a" -ne 192 ] || [ "$b" -ne 0 ] || return 1
+  [ "$a" -ne 192 ] || [ "$b" -ne 168 ] || return 1
+  [ "$a" -ne 198 ] || [ "$b" -ne 18 ] || return 1
+  [ "$a" -ne 198 ] || [ "$b" -ne 19 ] || return 1
+  [ "$a" -ne 198 ] || [ "$b" -ne 51 ] || return 1
+  [ "$a" -ne 203 ] || [ "$b" -ne 0 ] || return 1
+  return 0
+}
+
 json_string() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -87,6 +120,11 @@ require INGRESS_SERVER_ID
 require EXIT_SERVER_ID
 require RELAY_SERVER_ID
 require INGRESS_PUBLIC_IPV4
+
+if ! is_usable_public_ipv4 "$INGRESS_PUBLIC_IPV4"; then
+  echo "INGRESS_PUBLIC_IPV4 must be an ordinary public IPv4 address, not private/reserved/documentation: $INGRESS_PUBLIC_IPV4" >&2
+  exit 2
+fi
 
 cat <<EOF
 # Stage 1 rollback intent plan.
