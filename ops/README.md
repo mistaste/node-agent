@@ -65,6 +65,30 @@ Activation order:
 6. Enable one tester-only relay route, test TCP and UDP 443, then check that the
    mobile signed catalog contains relay addresses only for tester accounts.
 
+Build the three Stage 1 node binaries with:
+
+```sh
+GUARDEX_STAGE1_ARTIFACT_DIR=/tmp/guardex-stage1-artifacts ./ops/build-stage1-artifacts.sh
+```
+
+The backend exposes the operator-only Stage 1 intent API under the admin
+session:
+
+```text
+GET  /v1/admin/transport/topology/summary
+POST /v1/admin/transport/topology/roles
+POST /v1/admin/transport/topology/backbone-links
+POST /v1/admin/transport/topology/relay-routes
+```
+
+Use `/summary` after every change. A route is canary-ready only when:
+
+- both ingress and exit roles show `ready: true`;
+- the backbone link shows `ready: true`;
+- the relay role shows `ready: true`;
+- the relay route targets the ingress public IPv4 on TCP/UDP `443`;
+- tester profiles receive relay addresses in the signed mobile catalogue.
+
 Rollback:
 
 ```sh
