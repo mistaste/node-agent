@@ -1239,7 +1239,11 @@ func TestControllerAppliesTrustTunnelOnlyWhenRuntimeEnabled(t *testing.T) {
 	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.applied) != 1 || !runtime.applied[0].Endpoint.EnableHTTP2 || !runtime.applied[0].Endpoint.EnableHTTP3 || runtime.applied[0].Endpoint.IPv6Available {
+	if len(runtime.applied) != 1 ||
+		runtime.applied[0].Endpoint.EnableHTTP1 ||
+		!runtime.applied[0].Endpoint.EnableHTTP2 ||
+		!runtime.applied[0].Endpoint.EnableHTTP3 ||
+		runtime.applied[0].Endpoint.IPv6Available {
 		t.Fatalf("TrustTunnel apply = %+v", runtime.applied)
 	}
 	report := h.latestReport()

@@ -635,7 +635,7 @@ func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string,
 	fallback := strings.ToLower(strings.TrimSpace(config.UpstreamFallbackProtocol))
 	http2 := upstream == "http2" || fallback == "http2"
 	http3 := upstream == "http3" || fallback == "http3"
-	endpoint := trusttunnel.Endpoint{Port: item.EffectivePort, Hostname: hostname, CertificateFile: cert, PrivateKeyFile: filepath.Join(root, "certs", "privkey.pem"), ClientUUIDs: clients, EnableHTTP1: true, EnableHTTP2: http2, EnableHTTP3: http3, IPv6Available: ipv6}
+	endpoint := trusttunnel.Endpoint{Port: item.EffectivePort, Hostname: hostname, CertificateFile: cert, PrivateKeyFile: filepath.Join(root, "certs", "privkey.pem"), ClientUUIDs: clients, EnableHTTP1: false, EnableHTTP2: http2, EnableHTTP3: http3, IPv6Available: ipv6}
 	digestRaw, _ := json.Marshal(struct {
 		Config  json.RawMessage `json:"config"`
 		Clients []string        `json:"clients"`
