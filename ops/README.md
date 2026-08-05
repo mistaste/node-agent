@@ -126,6 +126,7 @@ To reduce operator mistakes, render the intended admin API calls before a
 canary and review them line-by-line:
 
 ```sh
+ADMIN_COOKIE_FILE=/tmp/guardex-admin-cookies.txt \
 ADMIN_CSRF_TOKEN=... \
 INGRESS_SERVER_ID=... \
 EXIT_SERVER_ID=... \
@@ -134,8 +135,10 @@ INGRESS_PUBLIC_IPV4=... \
 ./ops/render-stage1-intent-curl.sh
 ```
 
-The renderer prints commands only. It does not execute them, does not read or
-store cookies, and does not handle credentials.
+The renderer prints commands only. It does not execute them and does not handle
+credentials. `ADMIN_COOKIE_FILE` is optional for rendering, but the generated
+curl commands need an existing admin session cookie to pass Telegram-protected
+admin authentication.
 
 Rollback:
 
@@ -150,6 +153,7 @@ stopping the Stage 1 services. Public exposure must be disabled first, then the
 backbone, then ingress/exit roles:
 
 ```sh
+ADMIN_COOKIE_FILE=/tmp/guardex-admin-cookies.txt \
 ADMIN_CSRF_TOKEN=... \
 INGRESS_SERVER_ID=... \
 EXIT_SERVER_ID=... \

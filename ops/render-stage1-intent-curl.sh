@@ -13,6 +13,7 @@ set -eu
 #
 # Optional:
 #   ADMIN_API_BASE=https://api.guardex-vpn.com/v1/admin
+#   ADMIN_COOKIE_FILE=/path/to/admin-cookies.txt
 #   INGRESS_TUNNEL_CIDR=10.77.0.1/30
 #   EXIT_TUNNEL_CIDR=10.77.0.2/30
 #   BACKBONE_LISTEN_PORT=51820
@@ -33,6 +34,12 @@ require() {
 
 json_string() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
 }
 
 role_body() {
@@ -65,8 +72,11 @@ relay_body() {
 curl_post() {
   path="$1"
   body="$2"
+  printf "curl -fsS %s \\\\\n" "$(shell_quote "${ADMIN_API_BASE}${path}")"
+  if [ -n "${ADMIN_COOKIE_FILE:-}" ]; then
+    printf "  -b %s \\\\\n" "$(shell_quote "$ADMIN_COOKIE_FILE")"
+  fi
   cat <<EOF
-curl -fsS '${ADMIN_API_BASE}${path}' \\
   -H 'Content-Type: application/json' \\
   -H 'X-CSRF-Token: ${ADMIN_CSRF_TOKEN}' \\
   -H "Idempotency-Key: stage1-\$(uuidgen)" \\
@@ -83,9 +93,20 @@ require INGRESS_PUBLIC_IPV4
 cat <<EOF
 # Stage 1 canary intent plan.
 # Review every command before running. These commands require an existing
-# browser/admin session cookie; this script intentionally does not handle
-# credentials or execute anything.
+# browser/admin session cookie. Set ADMIN_COOKIE_FILE to render curl -b safely.
+# This script intentionally does not handle credentials or execute anything.
 
+EOF
+
+if [ -z "${ADMIN_COOKIE_FILE:-}" ]; then
+  cat <<EOF
+# WARNING: ADMIN_COOKIE_FILE is not set. The rendered commands still need an
+# admin session cookie, for example: ADMIN_COOKIE_FILE=/tmp/admin-cookies.txt
+
+EOF
+fi
+
+cat <<EOF
 # 1) Create disabled roles first. Nodes can report WireGuard public keys without
 # exposing relay addresses to tester catalogues.
 EOF

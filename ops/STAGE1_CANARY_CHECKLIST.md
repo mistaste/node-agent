@@ -51,6 +51,7 @@ Before exposing relay addresses to testers:
 1. Render activation commands:
 
    ```sh
+   ADMIN_COOKIE_FILE=/tmp/guardex-admin-cookies.txt \
    ADMIN_CSRF_TOKEN=... \
    INGRESS_SERVER_ID=... \
    EXIT_SERVER_ID=... \
@@ -100,6 +101,7 @@ For each platform:
 If canary fails, render rollback commands:
 
 ```sh
+ADMIN_COOKIE_FILE=/tmp/guardex-admin-cookies.txt \
 ADMIN_CSRF_TOKEN=... \
 INGRESS_SERVER_ID=... \
 EXIT_SERVER_ID=... \
