@@ -34,6 +34,33 @@ Stage 1 separates the transport stack into three duties:
   reads the node-local `vpn.toml`, `hosts.toml` and `credentials.toml` bundle
   written by `node-agent`; the bundle must remain mode `0600`.
 
+The canary topology is intentionally split so the real VPN exit node is not the
+public address a restricted network connects to:
+
+```text
+tester app
+  -> blind relay on 443
+  -> TrustTunnel ingress on 443
+  -> private WireGuard backbone gxwg0
+  -> exit node public egress
+  -> internet
+```
+
+Roles:
+
+- `relay` is a fixed L4 forwarder only. It DNAT/SNATs TCP/UDP `443` to one
+  configured ingress address and rejects that destination when the route is not
+  explicitly enabled. It never receives TrustTunnel certificates, VPN profile
+  credentials, WireGuard keys or arbitrary upstream targets, so it cannot become
+  an open proxy.
+- `ingress` is the IP-hiding layer for the exit node. TrustTunnel terminates
+  here, but packets from the endpoint process are policy-routed into `gxwg0`.
+  If the WireGuard backbone is missing, nftables rejects the endpoint UID's
+  traffic instead of leaking directly from the ingress host.
+- `exit` is the only role allowed to NAT backbone traffic to the public
+  internet. It accepts traffic from `gxwg0` to its configured egress interface
+  and rejects unmatched backbone forwarding.
+
 Before enabling topology roles on a node, run:
 
 ```sh
@@ -59,10 +86,16 @@ Activation order:
    Docker socket.
 3. Start `trusttunnel-runner` as a separate service/container after choosing the
    final file-owner model for the 0600 TrustTunnel bundle.
-4. Wait for each node to report its WireGuard public key to the controller.
-5. Assign one ingress and one exit in the backend, keep relay routes disabled,
-   and verify `gxwg0`, nftables and fail-closed rules on both nodes.
-6. Enable one tester-only relay route, test TCP and UDP 443, then check that the
+4. Assign the candidate `ingress` and `exit` roles in the backend while keeping
+   both disabled. Wait for each node to report its WireGuard public key to the
+   controller.
+5. Create the backbone link disabled first, then enable the ingress/exit roles,
+   then enable the backbone. Verify `gxwg0`, nftables and fail-closed rules on
+   both nodes before exposing any relay address.
+6. Assign the `relay` role disabled, create one disabled relay route to the
+   ingress public IPv4 on port `443`, then enable the relay role and route only
+   for the canary window.
+7. Test TCP and UDP 443 through the relay, then check that the
    mobile signed catalog contains relay addresses only for tester accounts.
 
 Build the three Stage 1 node binaries with:
