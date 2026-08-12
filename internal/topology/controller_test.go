@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,6 +55,38 @@ func TestControllerCleansUnassignedNodeWithoutInvalidReport(t *testing.T) {
 	}
 	if reports.Load() != 0 {
 		t.Fatal("unassigned node emitted a role-less observed report")
+	}
+}
+
+func TestControllerCleansUnassignedNodeAfterHigherStoredRevision(t *testing.T) {
+	var reports atomic.Int32
+	controller, runner := testController(t, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requireNodeAuth(t, request)
+		if request.Method == http.MethodPost {
+			reports.Add(1)
+		}
+		_ = json.NewEncoder(response).Encode(DesiredState{SchemaVersion: 1, Revision: 1})
+	}))
+	state := backboneState(RoleIngress)
+	state.Revision = 8
+	if err := controller.applier.Apply(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	runner.commands = nil
+	if err := controller.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reports.Load() != 0 {
+		t.Fatal("unassigned node emitted a role-less observed report")
+	}
+	removed := false
+	for _, command := range runner.commands {
+		if command.name == "ip" && strings.Join(command.args, " ") == "link del dev gxwg0" {
+			removed = true
+		}
+	}
+	if !removed {
+		t.Fatalf("higher-revision live topology survived unassignment: %#v", runner.commands)
 	}
 }
 

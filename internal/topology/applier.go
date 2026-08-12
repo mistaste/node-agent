@@ -64,6 +64,11 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		return err
 	}
 	current, _ := a.loadState()
+	// A local unassigned tombstone has no controller revision namespace. It
+	// must not prevent a newly created role from starting again at revision 1.
+	if current.Role == "" && !current.Enabled {
+		current = DesiredState{}
+	}
 	if current.Revision > state.Revision {
 		return ErrUnsafeDesiredState
 	}
@@ -80,6 +85,15 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 			return err
 		}
 		return a.saveState(state)
+	}
+	if current.Enabled && topologyOwnershipChanged(current, state) {
+		// A role or interface transition must never retain the previous
+		// Guardex-owned policy route, WireGuard device, or relay table. If the
+		// replacement later fails, the node stays fail-closed and retries from
+		// the last desired revision instead of running two topologies at once.
+		if err := a.removeOwned(ctx, current); err != nil {
+			return err
+		}
 	}
 	var rollback func(context.Context)
 	var err error
@@ -111,6 +125,39 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		return err
 	}
 	return a.saveState(state)
+}
+
+// RemoveUnassigned handles an empty controller assignment independently of
+// its synthetic revision. Losing the database role must withdraw forwarding;
+// an older empty revision can never be allowed to preserve a newer live route.
+func (a *Applier) RemoveUnassigned(ctx context.Context) error {
+	current, err := a.loadState()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if current.Role == "" && !current.Enabled && current.Revision >= 1 {
+		return nil
+	}
+	if current.Enabled {
+		if err := a.removeOwned(ctx, current); err != nil {
+			return err
+		}
+	}
+	revision := current.Revision + 1
+	if revision < 1 {
+		revision = 1
+	}
+	return a.saveState(DesiredState{SchemaVersion: SchemaVersion, Revision: revision})
+}
+
+func topologyOwnershipChanged(current, next DesiredState) bool {
+	if current.Role != next.Role {
+		return true
+	}
+	if current.Backbone == nil || next.Backbone == nil {
+		return current.Backbone != next.Backbone
+	}
+	return current.Backbone.InterfaceName != next.Backbone.InterfaceName
 }
 
 func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredState) (func(context.Context), error) {

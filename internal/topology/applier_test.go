@@ -138,3 +138,117 @@ func TestBackboneIsRemovedWhenFirewallTransactionFails(t *testing.T) {
 		t.Fatalf("failed revision was persisted: %v", err)
 	}
 }
+
+func TestUnassignedNodeRemovesNewerLiveTopology(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	state := backboneState(RoleIngress)
+	state.Revision = 9
+	if err := applier.Apply(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	runner.commands = nil
+
+	if err := applier.RemoveUnassigned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	removedLink := false
+	removedRule := false
+	for _, command := range runner.commands {
+		joined := strings.Join(command.args, " ")
+		removedLink = removedLink || command.name == "ip" && joined == "link del dev gxwg0"
+		removedRule = removedRule || command.name == "ip" && joined == "rule del priority 100"
+	}
+	if !removedLink || !removedRule {
+		t.Fatalf("unassigned cleanup left owned networking active: %#v", runner.commands)
+	}
+	stored, err := applier.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || stored.Role != "" || stored.Revision != 10 {
+		t.Fatalf("unexpected unassigned tombstone: %+v", stored)
+	}
+}
+
+func TestUnassignedTombstoneIsIdempotentAndAllowsFreshAssignment(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	state := backboneState(RoleIngress)
+	state.Revision = 7
+	if err := applier.Apply(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := applier.RemoveUnassigned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := applier.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applier.RemoveUnassigned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := applier.loadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Revision != first.Revision {
+		t.Fatalf("unassigned tombstone advanced repeatedly: %d -> %d", first.Revision, repeated.Revision)
+	}
+
+	fresh := DesiredState{
+		SchemaVersion: 1,
+		Revision:      1,
+		Role:          RoleRelay,
+		Enabled:       true,
+		Relay: &Relay{
+			IngressAddress: netip.MustParseAddr("93.184.216.34"),
+			IngressPort:    443,
+			TCPEnabled:     true,
+		},
+	}
+	if err := applier.Apply(context.Background(), fresh); err != nil {
+		t.Fatalf("fresh assignment was blocked by local tombstone: %v", err)
+	}
+}
+
+func TestRoleTransitionRemovesPreviousBackboneBeforeRelay(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	if err := applier.Apply(context.Background(), backboneState(RoleIngress)); err != nil {
+		t.Fatal(err)
+	}
+	runner.commands = nil
+	relay := DesiredState{
+		SchemaVersion: 1,
+		Revision:      2,
+		Role:          RoleRelay,
+		Enabled:       true,
+		Relay: &Relay{
+			IngressAddress: netip.MustParseAddr("93.184.216.34"),
+			IngressPort:    443,
+			TCPEnabled:     true,
+		},
+	}
+	if err := applier.Apply(context.Background(), relay); err != nil {
+		t.Fatal(err)
+	}
+	removedAt := -1
+	appliedAt := -1
+	for index, command := range runner.commands {
+		joined := strings.Join(command.args, " ")
+		if command.name == "ip" && joined == "link del dev gxwg0" {
+			removedAt = index
+		}
+		if command.name == "nft" && strings.Contains(command.stdin, "dnat to 93.184.216.34:443") && len(command.args) > 0 && command.args[0] == "-c" {
+			appliedAt = index
+		}
+	}
+	if removedAt < 0 || appliedAt < 0 || removedAt >= appliedAt {
+		t.Fatalf("old backbone was not removed before relay validation: %#v", runner.commands)
+	}
+}

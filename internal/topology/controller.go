@@ -65,7 +65,7 @@ func (c *Controller) SyncOnce(ctx context.Context) error {
 	// An unassigned node receives a signed-by-channel empty tombstone. Apply
 	// cleanup locally, but do not post an observed role that does not exist.
 	if state.Role == "" {
-		return c.applier.Apply(ctx, state)
+		return c.applier.RemoveUnassigned(ctx)
 	}
 	report := NodeReport{Role: string(state.Role), ObservedRevision: state.Revision, Status: "applied"}
 	if state.Role == RoleIngress || state.Role == RoleExit {
