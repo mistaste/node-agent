@@ -33,6 +33,49 @@ func TestRunnerRejectsUnsafeManagedFilePermissions(t *testing.T) {
 	}
 }
 
+func TestRunnerPreparesPrivateEndpointTreeForDedicatedIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX ownership")
+	}
+	root := t.TempDir()
+	certs := filepath.Join(root, "certs")
+	if err := os.Mkdir(certs, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "vpn.toml"),
+		filepath.Join(root, "hosts.toml"),
+		filepath.Join(root, "credentials.toml"),
+		filepath.Join(certs, "fullchain.pem"),
+		filepath.Join(certs, "privkey.pem"),
+	} {
+		if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &runner{
+		root: root, endpointUID: uint32(os.Getuid()), endpointGID: uint32(os.Getgid()),
+	}
+	if err := r.prepareEndpointAccess(); err != nil {
+		t.Fatal(err)
+	}
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		want := os.FileMode(0600)
+		if info.IsDir() {
+			want = 0700
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("mode %o for %s, want %o", info.Mode().Perm(), path, want)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunnerRestartsOnlyWhenStateKeyChanges(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell fixture")

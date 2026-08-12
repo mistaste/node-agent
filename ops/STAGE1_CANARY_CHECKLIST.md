@@ -27,7 +27,8 @@ tester app -> blind relay:443 -> TrustTunnel ingress:443 -> gxwg0 WireGuard back
 - Node-agent Stage 1 containers keep capabilities split:
   - `node-agent`: no `NET_ADMIN`;
   - `topology-agent`: `NET_ADMIN`, no Docker socket;
-  - `trusttunnel-runner`: `NET_BIND_SERVICE`, no `NET_ADMIN`.
+  - `trusttunnel-runner`: launches the endpoint as UID/GID `65532`, has only
+    `NET_BIND_SERVICE` plus `CHOWN`/`SETUID`/`SETGID`, and no `NET_ADMIN`.
 
 ## Production prerequisites
 

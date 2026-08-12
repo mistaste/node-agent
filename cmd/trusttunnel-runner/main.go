@@ -24,11 +24,13 @@ type state struct {
 }
 
 type runner struct {
-	root    string
-	binary  string
-	process *exec.Cmd
-	done    chan struct{}
-	key     string
+	root        string
+	binary      string
+	endpointUID uint32
+	endpointGID uint32
+	process     *exec.Cmd
+	done        chan struct{}
+	key         string
 }
 
 func main() {
@@ -38,7 +40,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	r := &runner{root: filepath.Clean(root), binary: filepath.Clean(binary)}
+	r := &runner{
+		root: filepath.Clean(root), binary: filepath.Clean(binary),
+		endpointUID: 65532, endpointGID: 65532,
+	}
 	if !filepath.IsAbs(r.root) || !filepath.IsAbs(r.binary) {
 		log.Fatal("[trusttunnel-runner] root and binary must be absolute")
 	}
@@ -78,7 +83,15 @@ func (r *runner) reconcile(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := r.prepareEndpointAccess(); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, r.binary, filepath.Join(r.root, "vpn.toml"), filepath.Join(r.root, "hosts.toml"))
+	if r.endpointUID != 0 {
+		if err := configureEndpointCommand(cmd, r.endpointUID, r.endpointGID); err != nil {
+			return err
+		}
+	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
@@ -98,6 +111,28 @@ func (r *runner) reconcile(ctx context.Context) error {
 	}(time.Now())
 	log.Printf("[trusttunnel-runner] endpoint started")
 	return nil
+}
+
+func (r *runner) prepareEndpointAccess() error {
+	if r.endpointUID == 0 {
+		return nil
+	}
+	return filepath.Walk(r.root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("managed TrustTunnel tree contains a symlink")
+		}
+		if info.IsDir() {
+			if err := os.Chmod(path, 0700); err != nil {
+				return err
+			}
+		} else if err := os.Chmod(path, 0600); err != nil {
+			return err
+		}
+		return os.Chown(path, int(r.endpointUID), int(r.endpointGID))
+	})
 }
 
 func (r *runner) stop(ctx context.Context) {
