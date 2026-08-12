@@ -63,9 +63,9 @@ func TestRunnerPreparesPrivateEndpointTreeForDedicatedIdentity(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want := os.FileMode(0600)
+		want := os.FileMode(0640)
 		if info.IsDir() {
-			want = 0700
+			want = 0750
 		}
 		if info.Mode().Perm() != want {
 			t.Fatalf("mode %o for %s, want %o", info.Mode().Perm(), path, want)

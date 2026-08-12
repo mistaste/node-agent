@@ -79,7 +79,7 @@ func (r *runner) reconcile(ctx context.Context) error {
 	}
 	r.stop(ctx)
 	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml"} {
-		if err := requireManagedFile(r.root, name); err != nil {
+		if err := requireManagedFile(r.root, name, r.endpointGID); err != nil {
 			return err
 		}
 	}
@@ -124,14 +124,14 @@ func (r *runner) prepareEndpointAccess() error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("managed TrustTunnel tree contains a symlink")
 		}
-		if info.IsDir() {
-			if err := os.Chmod(path, 0700); err != nil {
-				return err
-			}
-		} else if err := os.Chmod(path, 0600); err != nil {
+		owner := os.Geteuid()
+		if err := os.Chown(path, owner, int(r.endpointGID)); err != nil {
 			return err
 		}
-		return os.Chown(path, int(r.endpointUID), int(r.endpointGID))
+		if info.IsDir() {
+			return os.Chmod(path, 0750)
+		}
+		return os.Chmod(path, 0640)
 	})
 }
 
@@ -183,14 +183,20 @@ func (r *runner) loadState() (state, bool, error) {
 	return value, true, nil
 }
 
-func requireManagedFile(root, name string) error {
+func requireManagedFile(root, name string, endpointGID uint32) error {
 	path := filepath.Join(root, name)
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	if info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	if info.IsDir() || info.Mode().Perm()&0007 != 0 {
 		return errors.New("managed TrustTunnel file has unsafe permissions")
+	}
+	if info.Mode().Perm()&0070 != 0 {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || endpointGID == 0 || uint32(stat.Gid) != endpointGID || info.Mode().Perm() != 0640 {
+			return errors.New("managed TrustTunnel file has unsafe group access")
+		}
 	}
 	return nil
 }
