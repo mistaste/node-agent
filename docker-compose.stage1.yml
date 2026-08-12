@@ -18,6 +18,11 @@ services:
     build: .
     restart: unless-stopped
     network_mode: host
+    # Avoid the host loopback resolver: endpoint DNS sockets carry UID 65532
+    # and must follow the same fail-closed policy route through the exit node.
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     command: trusttunnel-runner
     environment:
       TRUSTTUNNEL_BINARY: "/opt/trusttunnel/trusttunnel_endpoint"
