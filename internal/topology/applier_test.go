@@ -101,6 +101,7 @@ func TestExitPeerIsLimitedToIngressTunnelAddress(t *testing.T) {
 	runner := &recordingRunner{}
 	applier, _ := NewApplier(t.TempDir())
 	applier.runner = runner
+	applier.ipForwardPath = enabledIPv4Forwarding(t)
 	if err := applier.Apply(context.Background(), backboneState(RoleExit)); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +259,7 @@ func TestExitResolvesPublicInterfaceFromLocalDefaultRoute(t *testing.T) {
 	runner := &recordingRunner{}
 	applier, _ := NewApplier(t.TempDir())
 	applier.runner = runner
+	applier.ipForwardPath = enabledIPv4Forwarding(t)
 	applier.routeTablePath = filepath.Join(t.TempDir(), "route")
 	routes := "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" +
 		"ens3\t00000000\t010010AC\t0003\t0\t0\t100\t00000000\n"
@@ -281,4 +283,30 @@ func TestExitResolvesPublicInterfaceFromLocalDefaultRoute(t *testing.T) {
 	if !found {
 		t.Fatalf("local default exit interface was not used: %#v", runner.commands)
 	}
+}
+
+func TestExitFailsClosedWhenHostForwardingIsDisabled(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	applier.ipForwardPath = filepath.Join(t.TempDir(), "ip_forward")
+	if err := os.WriteFile(applier.ipForwardPath, []byte("0\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applier.Apply(context.Background(), backboneState(RoleExit)); err == nil ||
+		!strings.Contains(err.Error(), "must be enabled on the exit host") {
+		t.Fatalf("disabled forwarding was accepted: %v", err)
+	}
+	if _, err := applier.loadState(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed exit revision was persisted: %v", err)
+	}
+}
+
+func enabledIPv4Forwarding(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ip_forward")
+	if err := os.WriteFile(path, []byte("1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

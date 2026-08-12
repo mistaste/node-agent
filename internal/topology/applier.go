@@ -37,6 +37,7 @@ func (osRunner) Run(ctx context.Context, stdin []byte, name string, args ...stri
 type Applier struct {
 	root           string
 	routeTablePath string
+	ipForwardPath  string
 	runner         commandRunner
 }
 
@@ -46,7 +47,8 @@ func NewApplier(root string) (*Applier, error) {
 		return nil, errors.New("topology root must be absolute")
 	}
 	return &Applier{
-		root: root, routeTablePath: "/proc/net/route", runner: osRunner{},
+		root: root, routeTablePath: "/proc/net/route",
+		ipForwardPath: "/proc/sys/net/ipv4/ip_forward", runner: osRunner{},
 	}, nil
 }
 
@@ -245,8 +247,6 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 		commands = append(commands,
 			[]string{"ip", "route", "replace", "default", "dev", b.InterfaceName, "table", policyTable},
 			[]string{"ip", "rule", "add", "priority", "100", "uidrange", fmt.Sprintf("%d-%d", b.IngressUID, b.IngressUID), "lookup", policyTable})
-	} else {
-		commands = append(commands, []string{"sysctl", "-w", "net.ipv4.ip_forward=1"})
 	}
 	for _, command := range commands {
 		if err := a.runner.Run(ctx, nil, command[0], command[1:]...); err != nil {
@@ -254,7 +254,24 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 			return nil, err
 		}
 	}
+	if state.Role == RoleExit {
+		if err := a.requireIPv4Forwarding(); err != nil {
+			rollback(ctx)
+			return nil, err
+		}
+	}
 	return rollback, nil
+}
+
+func (a *Applier) requireIPv4Forwarding() error {
+	value, err := os.ReadFile(a.ipForwardPath)
+	if err != nil {
+		return fmt.Errorf("read net.ipv4.ip_forward: %w", err)
+	}
+	if strings.TrimSpace(string(value)) != "1" {
+		return errors.New("net.ipv4.ip_forward must be enabled on the exit host")
+	}
+	return nil
 }
 
 func (a *Applier) removeOwned(ctx context.Context, current DesiredState) error {
