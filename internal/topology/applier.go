@@ -112,8 +112,19 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 			return err
 		}
 	}
+	forwardRollback, err := a.ensureDockerForwarding(ctx, state)
+	if err != nil {
+		if rollback != nil {
+			rollback(ctx)
+		}
+		return err
+	}
 	rules, err := RenderNFTables(state)
 	if err != nil {
+		forwardRollback(ctx)
+		if rollback != nil {
+			rollback(ctx)
+		}
 		return err
 	}
 	transaction := ""
@@ -122,18 +133,28 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 	}
 	transaction += rules
 	if err := a.runner.Run(ctx, []byte(transaction), "nft", "-c", "-f", "-"); err != nil {
+		forwardRollback(ctx)
 		if rollback != nil {
 			rollback(ctx)
 		}
 		return err
 	}
 	if err := a.runner.Run(ctx, []byte(transaction), "nft", "-f", "-"); err != nil {
+		forwardRollback(ctx)
 		if rollback != nil {
 			rollback(ctx)
 		}
 		return err
 	}
-	return a.saveState(state)
+	if err := a.saveState(state); err != nil {
+		forwardRollback(ctx)
+		if rollback != nil {
+			rollback(ctx)
+		}
+		return err
+	}
+	a.removeDockerForwarding(ctx, missingForwardRules(dockerForwardRules(current), dockerForwardRules(state)))
+	return nil
 }
 
 func (a *Applier) resolveLocalState(state DesiredState) (DesiredState, error) {
@@ -274,7 +295,67 @@ func (a *Applier) requireIPv4Forwarding() error {
 	return nil
 }
 
+const dockerForwardComment = "guardex-transport"
+
+func dockerForwardRules(state DesiredState) [][]string {
+	if !state.Enabled {
+		return nil
+	}
+	switch state.Role {
+	case RoleExit:
+		b := state.Backbone
+		return [][]string{
+			{"-i", b.InterfaceName, "-o", b.EgressInterface, "-m", "comment", "--comment", dockerForwardComment, "-j", "ACCEPT"},
+			{"-i", b.EgressInterface, "-o", b.InterfaceName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-m", "comment", "--comment", dockerForwardComment, "-j", "ACCEPT"},
+		}
+	case RoleRelay:
+		r := state.Relay
+		rules := make([][]string, 0, 3)
+		if r.TCPEnabled {
+			rules = append(rules, []string{"-d", r.IngressAddress.String(), "-p", "tcp", "--dport", "443", "-m", "comment", "--comment", dockerForwardComment, "-j", "ACCEPT"})
+		}
+		if r.UDPEnabled {
+			rules = append(rules, []string{"-d", r.IngressAddress.String(), "-p", "udp", "--dport", "443", "-m", "comment", "--comment", dockerForwardComment, "-j", "ACCEPT"})
+		}
+		return append(rules, []string{"-s", r.IngressAddress.String(), "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-m", "comment", "--comment", dockerForwardComment, "-j", "ACCEPT"})
+	default:
+		return nil
+	}
+}
+
+func (a *Applier) ensureDockerForwarding(ctx context.Context, state DesiredState) (func(context.Context), error) {
+	rules := dockerForwardRules(state)
+	if len(rules) == 0 {
+		return func(context.Context) {}, nil
+	}
+	if err := a.runner.Run(ctx, nil, "iptables", "-w", "-t", "filter", "-S", "DOCKER-USER"); err != nil {
+		return nil, errors.New("Docker DOCKER-USER forwarding chain is unavailable")
+	}
+	added := make([][]string, 0, len(rules))
+	for _, rule := range rules {
+		check := append([]string{"-w", "-t", "filter", "-C", "DOCKER-USER"}, rule...)
+		if a.runner.Run(ctx, nil, "iptables", check...) == nil {
+			continue
+		}
+		insert := append([]string{"-w", "-t", "filter", "-I", "DOCKER-USER", "1"}, rule...)
+		if err := a.runner.Run(ctx, nil, "iptables", insert...); err != nil {
+			a.removeDockerForwarding(ctx, added)
+			return nil, err
+		}
+		added = append(added, rule)
+	}
+	return func(rollbackCtx context.Context) { a.removeDockerForwarding(rollbackCtx, added) }, nil
+}
+
+func (a *Applier) removeDockerForwarding(ctx context.Context, rules [][]string) {
+	for _, rule := range rules {
+		remove := append([]string{"-w", "-t", "filter", "-D", "DOCKER-USER"}, rule...)
+		_ = a.runner.Run(ctx, nil, "iptables", remove...)
+	}
+}
+
 func (a *Applier) removeOwned(ctx context.Context, current DesiredState) error {
+	a.removeDockerForwarding(ctx, dockerForwardRules(current))
 	if a.runner.Run(ctx, nil, "nft", "list", "table", "inet", TableName) == nil {
 		if err := a.runner.Run(ctx, []byte("delete table inet "+TableName+"\n"), "nft", "-f", "-"); err != nil {
 			return err
@@ -287,6 +368,20 @@ func (a *Applier) removeOwned(ctx context.Context, current DesiredState) error {
 		_ = a.runner.Run(ctx, nil, "ip", "link", "del", "dev", current.Backbone.InterfaceName)
 	}
 	return nil
+}
+
+func missingForwardRules(previous, next [][]string) [][]string {
+	keep := make(map[string]struct{}, len(next))
+	for _, rule := range next {
+		keep[strings.Join(rule, "\x00")] = struct{}{}
+	}
+	missing := make([][]string, 0, len(previous))
+	for _, rule := range previous {
+		if _, ok := keep[strings.Join(rule, "\x00")]; !ok {
+			missing = append(missing, rule)
+		}
+	}
+	return missing
 }
 
 func (a *Applier) ensurePrivateKey() ([]byte, error) {

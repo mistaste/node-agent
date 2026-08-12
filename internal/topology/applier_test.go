@@ -33,6 +33,16 @@ type failingRunner struct {
 	failNFTCheck bool
 }
 
+type missingDockerRuleRunner struct{ recordingRunner }
+
+func (r *missingDockerRuleRunner) Run(ctx context.Context, stdin []byte, name string, args ...string) error {
+	err := r.recordingRunner.Run(ctx, stdin, name, args...)
+	if name == "iptables" && len(args) > 3 && args[3] == "-C" {
+		return errors.New("rule not found")
+	}
+	return err
+}
+
 func (r *failingRunner) Run(ctx context.Context, stdin []byte, name string, args ...string) error {
 	if r.failNFTCheck && name == "nft" && len(args) > 0 && args[0] == "-c" {
 		r.commands = append(r.commands, recordedCommand{name: name, args: append([]string(nil), args...), stdin: string(stdin)})
@@ -117,6 +127,51 @@ func TestExitPeerIsLimitedToIngressTunnelAddress(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("exit peer tunnel restriction missing: %#v", runner.commands)
+	}
+}
+
+func TestExitInstallsAndRemovesOwnedDockerForwardingRules(t *testing.T) {
+	runner := &missingDockerRuleRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	applier.ipForwardPath = enabledIPv4Forwarding(t)
+	if err := applier.Apply(context.Background(), backboneState(RoleExit)); err != nil {
+		t.Fatal(err)
+	}
+	inserts := 0
+	for _, command := range runner.commands {
+		if command.name == "iptables" && strings.Contains(strings.Join(command.args, " "), "-I DOCKER-USER 1") {
+			inserts++
+		}
+	}
+	if inserts != 2 {
+		t.Fatalf("installed %d Docker forwarding rules, want 2: %#v", inserts, runner.commands)
+	}
+	if err := applier.RemoveUnassigned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	removes := 0
+	for _, command := range runner.commands {
+		if command.name == "iptables" && strings.Contains(strings.Join(command.args, " "), "-D DOCKER-USER") {
+			removes++
+		}
+	}
+	if removes != 2 {
+		t.Fatalf("removed %d Docker forwarding rules, want 2: %#v", removes, runner.commands)
+	}
+}
+
+func TestRelayDockerRulesRemainRestrictedToFixedIngress(t *testing.T) {
+	state := DesiredState{SchemaVersion: 1, Revision: 2, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("93.184.216.34"), IngressPort: 443, TCPEnabled: true, UDPEnabled: true}}
+	rules := dockerForwardRules(state)
+	if len(rules) != 3 {
+		t.Fatalf("relay Docker rules=%d want=3", len(rules))
+	}
+	for _, rule := range rules[:2] {
+		joined := strings.Join(rule, " ")
+		if !strings.Contains(joined, "-d 93.184.216.34") || !strings.Contains(joined, "--dport 443") {
+			t.Fatalf("relay rule permits a non-fixed target: %s", joined)
+		}
 	}
 }
 
