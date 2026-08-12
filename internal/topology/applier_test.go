@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -250,5 +251,34 @@ func TestRoleTransitionRemovesPreviousBackboneBeforeRelay(t *testing.T) {
 	}
 	if removedAt < 0 || appliedAt < 0 || removedAt >= appliedAt {
 		t.Fatalf("old backbone was not removed before relay validation: %#v", runner.commands)
+	}
+}
+
+func TestExitResolvesPublicInterfaceFromLocalDefaultRoute(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	applier.routeTablePath = filepath.Join(t.TempDir(), "route")
+	routes := "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" +
+		"ens3\t00000000\t010010AC\t0003\t0\t0\t100\t00000000\n"
+	if err := os.WriteFile(applier.routeTablePath, []byte(routes), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := backboneState(RoleExit)
+	state.Backbone.EgressInterface = "auto"
+	if err := applier.Apply(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, command := range runner.commands {
+		if command.name == "nft" && strings.Contains(command.stdin, `oifname "ens3" masquerade`) {
+			found = true
+		}
+		if strings.Contains(command.stdin, `oifname "auto"`) {
+			t.Fatalf("unresolved exit interface reached nftables: %s", command.stdin)
+		}
+	}
+	if !found {
+		t.Fatalf("local default exit interface was not used: %#v", runner.commands)
 	}
 }

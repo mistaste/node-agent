@@ -26,6 +26,9 @@ func RenderNFTables(state DesiredState) (string, error) {
 			fmt.Sprintf("  meta skuid %d reject", b.IngressUID), " }", "}")
 	case RoleExit:
 		b := state.Backbone
+		if b.EgressInterface == "auto" {
+			return "", fmt.Errorf("%w: exit interface was not resolved locally", ErrUnsafeDesiredState)
+		}
 		body = append(body,
 			fmt.Sprintf("  iifname %q oifname %q accept", b.InterfaceName, b.EgressInterface),
 			fmt.Sprintf("  iifname %q reject", b.InterfaceName), " }",

@@ -35,8 +35,9 @@ func (osRunner) Run(ctx context.Context, stdin []byte, name string, args ...stri
 }
 
 type Applier struct {
-	root   string
-	runner commandRunner
+	root           string
+	routeTablePath string
+	runner         commandRunner
 }
 
 func NewApplier(root string) (*Applier, error) {
@@ -44,7 +45,9 @@ func NewApplier(root string) (*Applier, error) {
 	if !filepath.IsAbs(root) {
 		return nil, errors.New("topology root must be absolute")
 	}
-	return &Applier{root: root, runner: osRunner{}}, nil
+	return &Applier{
+		root: root, routeTablePath: "/proc/net/route", runner: osRunner{},
+	}, nil
 }
 
 func (a *Applier) PublicKey() (string, error) {
@@ -60,6 +63,11 @@ func (a *Applier) PublicKey() (string, error) {
 }
 
 func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
+	var err error
+	state, err = a.resolveLocalState(state)
+	if err != nil {
+		return err
+	}
 	if err := Validate(state); err != nil {
 		return err
 	}
@@ -96,7 +104,6 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		}
 	}
 	var rollback func(context.Context)
-	var err error
 	if state.Backbone != nil {
 		rollback, err = a.applyWireGuard(ctx, state, current)
 		if err != nil {
@@ -125,6 +132,43 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		return err
 	}
 	return a.saveState(state)
+}
+
+func (a *Applier) resolveLocalState(state DesiredState) (DesiredState, error) {
+	if !state.Enabled || state.Role != RoleExit || state.Backbone == nil ||
+		state.Backbone.EgressInterface != "auto" {
+		return state, nil
+	}
+	name, err := defaultIPv4Interface(a.routeTablePath)
+	if err != nil {
+		return state, err
+	}
+	copy := *state.Backbone
+	copy.EgressInterface = name
+	state.Backbone = &copy
+	return state, nil
+}
+
+func defaultIPv4Interface(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read default route: %w", err)
+	}
+	for index, line := range strings.Split(string(raw), "\n") {
+		if index == 0 || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 || fields[1] != "00000000" {
+			continue
+		}
+		flags, parseErr := strconv.ParseUint(fields[3], 16, 32)
+		if parseErr != nil || flags&0x1 == 0 || !interfacePattern.MatchString(fields[0]) || fields[0] == "lo" {
+			continue
+		}
+		return fields[0], nil
+	}
+	return "", fmt.Errorf("%w: public IPv4 default interface is unavailable", ErrUnsafeDesiredState)
 }
 
 // RemoveUnassigned handles an empty controller assignment independently of

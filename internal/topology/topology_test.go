@@ -79,3 +79,11 @@ func TestDisabledStateIsEmptyTombstone(t *testing.T) {
 		t.Fatalf("disabled topology retained forwarding:\n%s", rules)
 	}
 }
+
+func TestRendererRejectsUnresolvedExitInterface(t *testing.T) {
+	state := backboneState(RoleExit)
+	state.Backbone.EgressInterface = "auto"
+	if _, err := RenderNFTables(state); !errors.Is(err, ErrUnsafeDesiredState) {
+		t.Fatalf("unresolved exit interface accepted: %v", err)
+	}
+}
