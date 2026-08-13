@@ -51,7 +51,7 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 		"tcp_connections_timeout_secs = 86400",
 		"udp_connections_timeout_secs = 300",
 		"speedtest_enable = false",
-		"ping_enable = false",
+		"ping_enable = true",
 		"auth_failure_status_code = 405",
 		"[metrics]",
 		"address = \"127.0.0.1:1987\"",
