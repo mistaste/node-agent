@@ -91,7 +91,7 @@ func (c *Controller) fetch(ctx context.Context) (DesiredState, error) {
 	c.auth(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return DesiredState{}, errors.New("topology desired request failed")
+		return DesiredState{}, fmt.Errorf("topology desired request failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -126,7 +126,7 @@ func (c *Controller) report(ctx context.Context, report NodeReport, code string,
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return errors.New("topology report failed")
+		return fmt.Errorf("topology report failed: %w", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
