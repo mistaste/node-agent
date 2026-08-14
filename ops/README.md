@@ -79,6 +79,14 @@ by the default installer. Use it only during the Stage 1 canary:
 docker compose -f docker-compose.yml -f docker-compose.stage1.yml up -d --build
 ```
 
+For a pure blind relay, also apply the relay override. It keeps the management
+and topology agents running while preventing local TrustTunnel and legacy
+compatibility listeners from starting:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.stage1.yml -f docker-compose.relay.yml up -d --build
+```
+
 Do not enable the legacy `guardex-trusttunnel.service` for Stage 1. It is kept
 only for older manual endpoint installs and runs with a broader capability set
 than the containerized runner design.

@@ -1,0 +1,15 @@
+name: guardex-node
+
+# Pure Stage 1 relay profile. Relays only forward TCP/UDP 443 to their assigned
+# ingress and must never expose a local VPN endpoint or legacy compatibility
+# listener.
+services:
+  xray:
+    profiles: [endpoint-only]
+
+  trusttunnel-runner:
+    profiles: [endpoint-only]
+
+  node-agent:
+    environment:
+      TRUSTTUNNEL_ENABLED: "false"
