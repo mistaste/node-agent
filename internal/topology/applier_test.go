@@ -61,7 +61,7 @@ func TestApplierValidatesThenAtomicallyChecksAndAppliesRelay(t *testing.T) {
 	}
 	var check, apply bool
 	for _, command := range runner.commands {
-		if command.name == "nft" && strings.Contains(command.stdin, "dnat to 93.184.216.34:443") {
+		if command.name == "nft" && strings.Contains(command.stdin, "dnat ip to 93.184.216.34:443") {
 			if len(command.args) > 0 && command.args[0] == "-c" {
 				check = true
 			} else {
@@ -301,7 +301,7 @@ func TestRoleTransitionRemovesPreviousBackboneBeforeRelay(t *testing.T) {
 		if command.name == "ip" && joined == "link del dev gxwg0" {
 			removedAt = index
 		}
-		if command.name == "nft" && strings.Contains(command.stdin, "dnat to 93.184.216.34:443") && len(command.args) > 0 && command.args[0] == "-c" {
+		if command.name == "nft" && strings.Contains(command.stdin, "dnat ip to 93.184.216.34:443") && len(command.args) > 0 && command.args[0] == "-c" {
 			appliedAt = index
 		}
 	}
