@@ -42,6 +42,17 @@ func RenderNFTables(state DesiredState) (string, error) {
 			fmt.Sprintf("  iifname %q oifname %q masquerade", b.InterfaceName, b.EgressInterface), " }", "}")
 	case RoleRelay:
 		r := state.Relay
+		if len(r.Targets) > 0 {
+			body = append(body,
+				"  ct state established,related accept",
+				"  reject", " }",
+				" chain relay_input { type filter hook input priority -5; policy accept;",
+				fmt.Sprintf("  tcp dport %d ct status dnat accept", tlsRelayInternalPort),
+				fmt.Sprintf("  tcp dport %d reject", tlsRelayInternalPort), " }",
+				" chain prerouting { type nat hook prerouting priority dstnat; policy accept;",
+				fmt.Sprintf("  tcp dport 443 redirect to :%d", tlsRelayInternalPort), " }", "}")
+			break
+		}
 		body = append(body, "  ct state established,related accept")
 		if r.TCPEnabled {
 			body = append(body, fmt.Sprintf("  ip daddr %s tcp dport 443 accept", r.IngressAddress))

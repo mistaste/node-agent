@@ -21,11 +21,17 @@ type Controller struct {
 }
 
 type NodeReport struct {
-	Role               string `json:"role"`
-	WireGuardPublicKey string `json:"wireguard_public_key"`
-	ObservedRevision   int64  `json:"observed_revision"`
-	Status             string `json:"status"`
-	ErrorCode          string `json:"error_code"`
+	Role               string            `json:"role"`
+	WireGuardPublicKey string            `json:"wireguard_public_key"`
+	ObservedRevision   int64             `json:"observed_revision"`
+	Status             string            `json:"status"`
+	ErrorCode          string            `json:"error_code"`
+	ExitProbeResults   []ExitProbeResult `json:"exit_probe_results,omitempty"`
+}
+
+type ExitProbeResult struct {
+	ExitServerID string `json:"exit_server_id"`
+	TCPRTTMs     int    `json:"tcp_rtt_ms"`
 }
 
 func NewController(baseURL, serviceToken, nodeSecret string, interval time.Duration, applier *Applier) (*Controller, error) {
@@ -77,6 +83,9 @@ func (c *Controller) SyncOnce(ctx context.Context) error {
 	if err = c.applier.Apply(ctx, state); err != nil {
 		return c.report(ctx, report, "apply_failed", err)
 	}
+	if state.Enabled && state.Role == RoleIngress {
+		report.ExitProbeResults = probeExits(ctx, state.ExitProbes)
+	}
 	if !state.Enabled {
 		report.Status = "disabled"
 	}
@@ -117,7 +126,7 @@ func (c *Controller) report(ctx context.Context, report NodeReport, code string,
 		report.Status = "degraded"
 		report.ErrorCode = code
 	}
-	body, _ := json.Marshal(map[string]any{"role": report.Role, "wireguard_public_key": report.WireGuardPublicKey, "observed_revision": report.ObservedRevision, "status": report.Status, "error_code": report.ErrorCode})
+	body, _ := json.Marshal(map[string]any{"role": report.Role, "wireguard_public_key": report.WireGuardPublicKey, "observed_revision": report.ObservedRevision, "status": report.Status, "error_code": report.ErrorCode, "exit_probe_results": report.ExitProbeResults})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/internal/node/topology/report", bytes.NewReader(body))
 	if err != nil {
 		return err

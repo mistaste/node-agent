@@ -39,6 +39,7 @@ type Applier struct {
 	routeTablePath string
 	ipForwardPath  string
 	runner         commandRunner
+	relayProxy     *TLSRelay
 }
 
 func NewApplier(root string) (*Applier, error) {
@@ -48,7 +49,7 @@ func NewApplier(root string) (*Applier, error) {
 	}
 	return &Applier{
 		root: root, routeTablePath: "/proc/net/route",
-		ipForwardPath: "/proc/sys/net/ipv4/ip_forward", runner: osRunner{},
+		ipForwardPath: "/proc/sys/net/ipv4/ip_forward", runner: osRunner{}, relayProxy: NewTLSRelay(),
 	}, nil
 }
 
@@ -86,7 +87,7 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		oldJSON, _ := json.Marshal(current)
 		newJSON, _ := json.Marshal(state)
 		if bytes.Equal(oldJSON, newJSON) {
-			return nil
+			return a.reconcileRelayRuntime(state)
 		}
 		return fmt.Errorf("%w: desired state changed without revision", ErrUnsafeDesiredState)
 	}
@@ -146,6 +147,13 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		}
 		return err
 	}
+	if err := a.reconcileRelayRuntime(state); err != nil {
+		forwardRollback(ctx)
+		if rollback != nil {
+			rollback(ctx)
+		}
+		return err
+	}
 	if err := a.saveState(state); err != nil {
 		forwardRollback(ctx)
 		if rollback != nil {
@@ -155,6 +163,16 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 	}
 	a.removeDockerForwarding(ctx, missingForwardRules(dockerForwardRules(current), dockerForwardRules(state)))
 	return nil
+}
+
+func (a *Applier) reconcileRelayRuntime(state DesiredState) error {
+	if a.relayProxy == nil {
+		a.relayProxy = NewTLSRelay()
+	}
+	if state.Enabled && state.Role == RoleRelay && state.Relay != nil && len(state.Relay.Targets) > 0 {
+		return a.relayProxy.Update(state.Relay.Targets)
+	}
+	return a.relayProxy.Close()
 }
 
 func (a *Applier) resolveLocalState(state DesiredState) (DesiredState, error) {
@@ -255,28 +273,35 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 		_, _ = a.applyWireGuard(rollbackCtx, previous, state)
 	}
 	if previous.Backbone != nil && previous.Backbone.InterfaceName == b.InterfaceName {
-		old := previous.Backbone
-		if old.TunnelAddress != b.TunnelAddress {
-			// address replace is additive when the prefix changes. Remove the
-			// previously owned address so source-address selection cannot keep
-			// routing traffic toward a retired exit.
-			_ = a.runner.Run(ctx, nil, "ip", "address", "del", old.TunnelAddress.String(), "dev", b.InterfaceName)
+		newAddresses := make(map[string]struct{})
+		newKeys := make(map[string]struct{})
+		for _, link := range backboneLinks(*b) {
+			newAddresses[link.TunnelAddress.String()] = struct{}{}
+			newKeys[link.PeerPublicKey] = struct{}{}
 		}
-		if old.PeerPublicKey != b.PeerPublicKey {
-			// wg set is also additive for peers. A migrated backbone must have
-			// exactly one controller-owned peer.
-			_ = a.runner.Run(ctx, nil, "wg", "set", b.InterfaceName, "peer", old.PeerPublicKey, "remove")
+		for _, old := range backboneLinks(*previous.Backbone) {
+			if _, retained := newAddresses[old.TunnelAddress.String()]; !retained {
+				_ = a.runner.Run(ctx, nil, "ip", "address", "del", old.TunnelAddress.String(), "dev", b.InterfaceName)
+			}
+			if _, retained := newKeys[old.PeerPublicKey]; !retained {
+				_ = a.runner.Run(ctx, nil, "wg", "set", b.InterfaceName, "peer", old.PeerPublicKey, "remove")
+			}
 		}
-	}
-	allowedIPs := "0.0.0.0/0"
-	if state.Role == RoleExit {
-		allowedIPs = netip.PrefixFrom(b.PeerTunnelAddress, 32).String()
 	}
 	commands := [][]string{
-		{"ip", "address", "replace", b.TunnelAddress.String(), "dev", b.InterfaceName},
-		{"wg", "set", b.InterfaceName, "private-key", keyPath, "listen-port", strconv.Itoa(b.ListenPort), "peer", b.PeerPublicKey, "endpoint", b.PeerEndpoint.String(), "allowed-ips", allowedIPs, "persistent-keepalive", "25"},
-		{"ip", "link", "set", "up", "dev", b.InterfaceName},
+		{"wg", "set", b.InterfaceName, "private-key", keyPath, "listen-port", strconv.Itoa(b.ListenPort)},
 	}
+	for _, link := range backboneLinks(*b) {
+		allowedIPs := "0.0.0.0/0"
+		if state.Role == RoleExit {
+			allowedIPs = netip.PrefixFrom(link.PeerTunnelAddress, 32).String()
+		}
+		commands = append(commands,
+			[]string{"ip", "address", "replace", link.TunnelAddress.String(), "dev", b.InterfaceName},
+			[]string{"wg", "set", b.InterfaceName, "peer", link.PeerPublicKey, "endpoint", link.PeerEndpoint.String(), "allowed-ips", allowedIPs, "persistent-keepalive", "25"},
+		)
+	}
+	commands = append(commands, []string{"ip", "link", "set", "up", "dev", b.InterfaceName})
 	if state.Role == RoleIngress {
 		// `ip rule replace` is not supported consistently across iproute2
 		// versions. Delete only our fixed priority and add the exact rule back.
@@ -302,6 +327,15 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 		}
 	}
 	return rollback, nil
+}
+
+func backboneLinks(backbone Backbone) []BackbonePeer {
+	result := make([]BackbonePeer, 0, 1+len(backbone.AdditionalPeers))
+	result = append(result, BackbonePeer{
+		TunnelAddress: backbone.TunnelAddress, PeerTunnelAddress: backbone.PeerTunnelAddress,
+		PeerPublicKey: backbone.PeerPublicKey, PeerEndpoint: backbone.PeerEndpoint,
+	})
+	return append(result, backbone.AdditionalPeers...)
 }
 
 func (a *Applier) requireIPv4Forwarding() error {
@@ -330,6 +364,9 @@ func dockerForwardRules(state DesiredState) [][]string {
 		}
 	case RoleRelay:
 		r := state.Relay
+		if len(r.Targets) > 0 {
+			return nil
+		}
 		rules := make([][]string, 0, 3)
 		if r.TCPEnabled {
 			rules = append(rules, []string{"-d", r.IngressAddress.String(), "-p", "tcp", "--dport", "443", "-m", "comment", "--comment", dockerForwardComment, "-j", "ACCEPT"})
@@ -375,6 +412,9 @@ func (a *Applier) removeDockerForwarding(ctx context.Context, rules [][]string) 
 }
 
 func (a *Applier) removeOwned(ctx context.Context, current DesiredState) error {
+	if err := a.reconcileRelayRuntime(DesiredState{}); err != nil {
+		return err
+	}
 	a.removeDockerForwarding(ctx, dockerForwardRules(current))
 	if a.runner.Run(ctx, nil, "nft", "list", "table", "inet", TableName) == nil {
 		if err := a.runner.Run(ctx, []byte("delete table inet "+TableName+"\n"), "nft", "-f", "-"); err != nil {
