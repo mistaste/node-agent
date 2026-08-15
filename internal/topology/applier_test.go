@@ -168,13 +168,15 @@ func TestIngressInstallsOuterWireGuardRoutingException(t *testing.T) {
 	if err := applier.Apply(context.Background(), backboneState(RoleIngress)); err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	foundEndpoint := false
+	foundReply := false
 	for _, command := range runner.commands {
 		joined := strings.Join(command.args, " ")
-		found = found || command.name == "ip" && joined == "rule add priority 90 to 93.184.216.34/32 lookup main"
+		foundEndpoint = foundEndpoint || command.name == "ip" && joined == "rule add priority 90 to 93.184.216.34/32 lookup main"
+		foundReply = foundReply || command.name == "ip" && joined == "rule add priority 80 fwmark 0x4758 lookup main"
 	}
-	if !found {
-		t.Fatalf("WireGuard outer route exception missing: %#v", runner.commands)
+	if !foundEndpoint || !foundReply {
+		t.Fatalf("ingress route exceptions missing: %#v", runner.commands)
 	}
 }
 

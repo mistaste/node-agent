@@ -21,7 +21,12 @@ func RenderNFTables(state DesiredState) (string, error) {
 	case RoleIngress:
 		b := state.Backbone
 		body = append(body,
-			" }", " chain output { type filter hook output priority -5; policy accept;",
+			" }", " chain ingress_mark { type filter hook prerouting priority mangle; policy accept;",
+			"  tcp dport 443 ct mark set 0x4758",
+			"  udp dport 443 ct mark set 0x4758", " }",
+			" chain reply_route { type route hook output priority mangle; policy accept;",
+			"  ct mark 0x4758 meta mark set 0x4758", " }",
+			" chain output { type filter hook output priority -5; policy accept;",
 			fmt.Sprintf("  meta skuid %d ip daddr %s udp dport %d accept", b.IngressUID, b.PeerEndpoint.Addr(), b.PeerEndpoint.Port()),
 			fmt.Sprintf("  meta skuid %d oifname %q accept", b.IngressUID, b.InterfaceName),
 			fmt.Sprintf("  meta skuid %d reject", b.IngressUID), " }", "}")

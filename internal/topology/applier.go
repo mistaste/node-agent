@@ -246,6 +246,7 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 	}
 	rollback := func(rollbackCtx context.Context) {
 		if created || previous.Backbone == nil {
+			_ = a.runner.Run(rollbackCtx, nil, "ip", "rule", "del", "priority", "80")
 			_ = a.runner.Run(rollbackCtx, nil, "ip", "rule", "del", "priority", "90")
 			_ = a.runner.Run(rollbackCtx, nil, "ip", "rule", "del", "priority", "100")
 			_ = a.runner.Run(rollbackCtx, nil, "ip", "link", "del", "dev", b.InterfaceName)
@@ -279,9 +280,11 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 	if state.Role == RoleIngress {
 		// `ip rule replace` is not supported consistently across iproute2
 		// versions. Delete only our fixed priority and add the exact rule back.
+		_ = a.runner.Run(ctx, nil, "ip", "rule", "del", "priority", "80")
 		_ = a.runner.Run(ctx, nil, "ip", "rule", "del", "priority", "90")
 		_ = a.runner.Run(ctx, nil, "ip", "rule", "del", "priority", "100")
 		commands = append(commands,
+			[]string{"ip", "rule", "add", "priority", "80", "fwmark", "0x4758", "lookup", "main"},
 			[]string{"ip", "rule", "add", "priority", "90", "to", netip.PrefixFrom(b.PeerEndpoint.Addr(), 32).String(), "lookup", "main"},
 			[]string{"ip", "route", "replace", "default", "dev", b.InterfaceName, "table", policyTable},
 			[]string{"ip", "rule", "add", "priority", "100", "uidrange", fmt.Sprintf("%d-%d", b.IngressUID, b.IngressUID), "lookup", policyTable})
@@ -380,6 +383,7 @@ func (a *Applier) removeOwned(ctx context.Context, current DesiredState) error {
 	}
 	if current.Backbone != nil {
 		if current.Role == RoleIngress {
+			_ = a.runner.Run(ctx, nil, "ip", "rule", "del", "priority", "80")
 			_ = a.runner.Run(ctx, nil, "ip", "rule", "del", "priority", "90")
 			_ = a.runner.Run(ctx, nil, "ip", "rule", "del", "priority", "100")
 		}

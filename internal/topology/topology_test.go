@@ -26,7 +26,10 @@ func TestIngressRulesAreFailClosed(t *testing.T) {
 	}
 	if !strings.Contains(rules, `meta skuid 65532 ip daddr 93.184.216.34 udp dport 51820 accept`) ||
 		!strings.Contains(rules, `meta skuid 65532 oifname "gxwg0" accept`) ||
-		!strings.Contains(rules, `meta skuid 65532 reject`) {
+		!strings.Contains(rules, `meta skuid 65532 reject`) ||
+		!strings.Contains(rules, `tcp dport 443 ct mark set 0x4758`) ||
+		!strings.Contains(rules, `udp dport 443 ct mark set 0x4758`) ||
+		!strings.Contains(rules, `ct mark 0x4758 meta mark set 0x4758`) {
 		t.Fatalf("missing fail-closed ingress rules:\n%s", rules)
 	}
 }
