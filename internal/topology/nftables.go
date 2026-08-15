@@ -22,6 +22,7 @@ func RenderNFTables(state DesiredState) (string, error) {
 		b := state.Backbone
 		body = append(body,
 			" }", " chain output { type filter hook output priority -5; policy accept;",
+			fmt.Sprintf("  meta skuid %d ip daddr %s udp dport %d accept", b.IngressUID, b.PeerEndpoint.Addr(), b.PeerEndpoint.Port()),
 			fmt.Sprintf("  meta skuid %d oifname %q accept", b.IngressUID, b.InterfaceName),
 			fmt.Sprintf("  meta skuid %d reject", b.IngressUID), " }", "}")
 	case RoleExit:

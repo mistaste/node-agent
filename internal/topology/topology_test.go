@@ -24,7 +24,9 @@ func TestIngressRulesAreFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(rules, `meta skuid 65532 oifname "gxwg0" accept`) || !strings.Contains(rules, `meta skuid 65532 reject`) {
+	if !strings.Contains(rules, `meta skuid 65532 ip daddr 93.184.216.34 udp dport 51820 accept`) ||
+		!strings.Contains(rules, `meta skuid 65532 oifname "gxwg0" accept`) ||
+		!strings.Contains(rules, `meta skuid 65532 reject`) {
 		t.Fatalf("missing fail-closed ingress rules:\n%s", rules)
 	}
 }
