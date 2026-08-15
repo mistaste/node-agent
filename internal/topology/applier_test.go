@@ -130,6 +130,37 @@ func TestExitPeerIsLimitedToIngressTunnelAddress(t *testing.T) {
 	}
 }
 
+func TestBackboneMigrationRemovesRetiredAddressAndPeer(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	first := backboneState(RoleIngress)
+	if err := applier.Apply(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := backboneState(RoleIngress)
+	second.Revision = first.Revision + 1
+	second.Backbone.TunnelAddress = netip.MustParsePrefix("10.92.0.1/30")
+	second.Backbone.PeerTunnelAddress = netip.MustParseAddr("10.92.0.2")
+	second.Backbone.PeerPublicKey = "X6iCcvOewJyIITUO42yCLKvKHTNBolQObM+7U/NU7zk="
+	runner.commands = nil
+	if err := applier.Apply(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+
+	removedAddress := false
+	removedPeer := false
+	for _, command := range runner.commands {
+		joined := strings.Join(command.args, " ")
+		removedAddress = removedAddress || command.name == "ip" && joined == "address del 10.91.0.1/30 dev gxwg0"
+		removedPeer = removedPeer || command.name == "wg" && strings.Contains(joined, "peer "+first.Backbone.PeerPublicKey+" remove")
+	}
+	if !removedAddress || !removedPeer {
+		t.Fatalf("migration retained stale WireGuard state: %#v", runner.commands)
+	}
+}
+
 func TestExitInstallsAndRemovesOwnedDockerForwardingRules(t *testing.T) {
 	runner := &missingDockerRuleRunner{}
 	applier, _ := NewApplier(t.TempDir())

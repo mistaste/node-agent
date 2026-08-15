@@ -250,7 +250,21 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 			_ = a.runner.Run(rollbackCtx, nil, "ip", "link", "del", "dev", b.InterfaceName)
 			return
 		}
-		_, _ = a.applyWireGuard(rollbackCtx, previous, DesiredState{})
+		_, _ = a.applyWireGuard(rollbackCtx, previous, state)
+	}
+	if previous.Backbone != nil && previous.Backbone.InterfaceName == b.InterfaceName {
+		old := previous.Backbone
+		if old.TunnelAddress != b.TunnelAddress {
+			// address replace is additive when the prefix changes. Remove the
+			// previously owned address so source-address selection cannot keep
+			// routing traffic toward a retired exit.
+			_ = a.runner.Run(ctx, nil, "ip", "address", "del", old.TunnelAddress.String(), "dev", b.InterfaceName)
+		}
+		if old.PeerPublicKey != b.PeerPublicKey {
+			// wg set is also additive for peers. A migrated backbone must have
+			// exactly one controller-owned peer.
+			_ = a.runner.Run(ctx, nil, "wg", "set", b.InterfaceName, "peer", old.PeerPublicKey, "remove")
+		}
 	}
 	allowedIPs := "0.0.0.0/0"
 	if state.Role == RoleExit {
