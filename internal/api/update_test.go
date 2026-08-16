@@ -20,7 +20,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	if command := strings.Join(agentOnly, " "); strings.Contains(command, "pull xray") ||
-		!strings.Contains(command, "--no-deps --build node-agent") {
+		!strings.Contains(command, "--no-deps --build node-agent topology-agent") {
 		t.Fatalf("agent-only command = %q", command)
 	}
 	full, err := agentUpdateParts("git-full", "master")
@@ -28,7 +28,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := strings.Join(full, " ")
-	if !strings.Contains(command, "docker compose pull xray") || !strings.Contains(command, "--build xray node-agent") {
+	if !strings.Contains(command, "docker compose pull xray") || !strings.Contains(command, "--build xray node-agent topology-agent") {
 		t.Fatalf("full command = %q", command)
 	}
 

@@ -25,6 +25,7 @@ func TestIngressRulesAreFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(rules, `meta skuid 65532 ip daddr 93.184.216.34 udp dport 51820 accept`) ||
+		!strings.Contains(rules, `meta skuid 65532 oifname "lo" accept`) ||
 		!strings.Contains(rules, `meta skuid 65532 oifname "gxwg0" accept`) ||
 		!strings.Contains(rules, `meta skuid 65532 reject`) ||
 		!strings.Contains(rules, `tcp dport 443 ct mark set 0x4758`) ||
