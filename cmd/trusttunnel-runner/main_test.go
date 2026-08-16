@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -141,6 +142,30 @@ func TestRunnerStopsWhenStateIsRemoved(t *testing.T) {
 	}
 	if r.running() {
 		t.Fatal("runner kept endpoint alive after tombstone removal")
+	}
+}
+
+func TestExitedEndpointCannotMarkReplacementStopped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell fixture")
+	}
+	process := exec.Command("/bin/sh", "-c", "sleep 0.05")
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	oldDone := make(chan struct{})
+	replacementDone := make(chan struct{})
+	r := &runner{done: replacementDone}
+	go r.waitEndpoint(process, oldDone, time.Now())
+	select {
+	case <-oldDone:
+	case <-time.After(time.Second):
+		t.Fatal("old endpoint waiter did not finish")
+	}
+	select {
+	case <-replacementDone:
+		t.Fatal("old endpoint waiter marked the replacement stopped")
+	default:
 	}
 }
 

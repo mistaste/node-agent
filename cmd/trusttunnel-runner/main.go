@@ -98,19 +98,22 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return err
 	}
 	r.process = cmd
-	r.done = make(chan struct{})
+	done := make(chan struct{})
+	r.done = done
 	r.key = key
-	go func(startedAt time.Time) {
-		err := cmd.Wait()
-		if err != nil {
-			log.Printf("[trusttunnel-runner] endpoint exited after %s: %v", time.Since(startedAt).Round(time.Millisecond), err)
-		} else {
-			log.Printf("[trusttunnel-runner] endpoint stopped after %s", time.Since(startedAt).Round(time.Millisecond))
-		}
-		close(r.done)
-	}(time.Now())
+	go r.waitEndpoint(cmd, done, time.Now())
 	log.Printf("[trusttunnel-runner] endpoint started")
 	return nil
+}
+
+func (r *runner) waitEndpoint(process *exec.Cmd, processDone chan struct{}, startedAt time.Time) {
+	err := process.Wait()
+	if err != nil {
+		log.Printf("[trusttunnel-runner] endpoint exited after %s: %v", time.Since(startedAt).Round(time.Millisecond), err)
+	} else {
+		log.Printf("[trusttunnel-runner] endpoint stopped after %s", time.Since(startedAt).Round(time.Millisecond))
+	}
+	close(processDone)
 }
 
 func (r *runner) prepareEndpointAccess() error {
