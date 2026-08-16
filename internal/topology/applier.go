@@ -18,7 +18,10 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-const policyTable = "51820"
+const (
+	policyTable  = "51820"
+	wireGuardMTU = "1280"
+)
 
 type commandRunner interface {
 	Run(context.Context, []byte, string, ...string) error
@@ -309,7 +312,14 @@ func (a *Applier) applyWireGuard(ctx context.Context, state, previous DesiredSta
 			[]string{"wg", "set", b.InterfaceName, "peer", link.PeerPublicKey, "endpoint", link.PeerEndpoint.String(), "allowed-ips", allowedIPs, "persistent-keepalive", "25"},
 		)
 	}
-	commands = append(commands, []string{"ip", "link", "set", "up", "dev", b.InterfaceName})
+	// 1420 black-holed TLS records on multiple real providers even though
+	// WireGuard keepalives and small ICMP packets succeeded. The IPv6 minimum
+	// MTU is a conservative cross-provider baseline and avoids relying on ICMP
+	// fragmentation-needed delivery through filtered transit networks.
+	commands = append(commands,
+		[]string{"ip", "link", "set", "dev", b.InterfaceName, "mtu", wireGuardMTU},
+		[]string{"ip", "link", "set", "up", "dev", b.InterfaceName},
+	)
 	if state.Role == RoleIngress {
 		// `ip rule replace` is not supported consistently across iproute2
 		// versions. Delete only our fixed priority and add the exact rule back.

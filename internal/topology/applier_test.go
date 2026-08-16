@@ -147,6 +147,21 @@ func TestExitPeerIsLimitedToIngressTunnelAddress(t *testing.T) {
 	}
 }
 
+func TestWireGuardUsesCrossProviderSafeMTU(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	if err := applier.Apply(context.Background(), backboneState(RoleIngress)); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range runner.commands {
+		if command.name == "ip" && strings.Join(command.args, " ") == "link set dev gxwg0 mtu 1280" {
+			return
+		}
+	}
+	t.Fatalf("safe WireGuard MTU command missing: %#v", runner.commands)
+}
+
 func TestBackboneMigrationRemovesRetiredAddressAndPeer(t *testing.T) {
 	runner := &recordingRunner{}
 	applier, _ := NewApplier(t.TempDir())
