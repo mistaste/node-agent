@@ -33,11 +33,15 @@ func TestReadClientHelloExtractsOnlyAllowlistedSNI(t *testing.T) {
 
 func TestValidateMultiIngressExitAndSNIRelay(t *testing.T) {
 	exit := backboneState(RoleExit)
+	// EXIT and ingress sockets are independent. A provider may require the
+	// shared EXIT endpoint on UDP 443 while ingress peers retain their own
+	// non-conflicting WireGuard listen port.
+	exit.Backbone.ListenPort = 443
 	exit.Backbone.AdditionalPeers = []BackbonePeer{{
 		TunnelAddress:     mustPrefix("10.92.0.2/30"),
 		PeerTunnelAddress: mustAddr("10.92.0.1"),
 		PeerPublicKey:     "X6iCcvOewJyIITUO42yCLKvKHTNBolQObM+7U/NU7zk=",
-		PeerEndpoint:      mustAddrPort("1.1.1.1:51820"),
+		PeerEndpoint:      mustAddrPort("1.1.1.1:51821"),
 	}}
 	if err := Validate(exit); err != nil {
 		t.Fatalf("multi-peer exit rejected: %v", err)

@@ -94,7 +94,7 @@ func validateBackbone(role Role, value Backbone) error {
 		if !validBackbonePair(peer.TunnelAddress, peer.PeerTunnelAddress) ||
 			!wgKeyPattern.MatchString(strings.TrimSpace(peer.PeerPublicKey)) ||
 			!peer.PeerEndpoint.IsValid() || !usablePublicIPv4(peer.PeerEndpoint.Addr()) ||
-			peer.PeerEndpoint.Port() != uint16(value.ListenPort) {
+			peer.PeerEndpoint.Port() == 0 {
 			return fmt.Errorf("%w: invalid additional backbone peer", ErrUnsafeDesiredState)
 		}
 		key := strings.TrimSpace(peer.PeerPublicKey)
