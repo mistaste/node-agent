@@ -79,7 +79,10 @@ install -d -m 0700 "$TT_ROOT" "$TOPOLOGY_ROOT"
 
 if [ -e "${TT_ROOT}/credentials.toml" ]; then
   mode="$(stat -c '%a' "${TT_ROOT}/credentials.toml" 2>/dev/null || stat -f '%Lp' "${TT_ROOT}/credentials.toml")"
-  [ "$mode" = "600" ] || fail "TrustTunnel credentials.toml must stay 0600 before enabling runner"
+  group="$(stat -c '%g' "${TT_ROOT}/credentials.toml" 2>/dev/null || stat -f '%g' "${TT_ROOT}/credentials.toml")"
+  if [ "$mode" != "600" ] && { [ "$mode" != "640" ] || [ "$group" != "65532" ]; }; then
+    fail "TrustTunnel credentials.toml must be 0600 or 0640 for endpoint GID 65532"
+  fi
 fi
 
 if ip link show dev gxwg0 >/dev/null 2>&1; then
