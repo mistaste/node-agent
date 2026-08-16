@@ -71,6 +71,10 @@ services:
       - ALL
     cap_add:
       - NET_ADMIN
+      # A dedicated EXIT may need UDP 443 when its provider rate-limits high
+      # WireGuard ports. NET_ADMIN can configure the interface but does not
+      # authorize binding a privileged listen port.
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     pids_limit: 64
