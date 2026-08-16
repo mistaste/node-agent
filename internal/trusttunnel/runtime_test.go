@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 type fakeProcess struct {
@@ -226,9 +227,13 @@ func TestRuntimeExternalProcessWritesStateWithoutStartingEndpoint(t *testing.T) 
 	request := requestForPort(starter.port)
 	request.Endpoint.CertificateFile = filepath.Join(runtime.root, "certs", "fullchain.pem")
 	request.Endpoint.PrivateKeyFile = filepath.Join(runtime.root, "certs", "privkey.pem")
+	acknowledged := acknowledgeExternalRunner(runtime.root)
 
 	state, err := runtime.Apply(context.Background(), request)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-acknowledged; err != nil {
 		t.Fatal(err)
 	}
 	if state.Port != starter.port || starter.starts != 0 {
@@ -240,6 +245,30 @@ func TestRuntimeExternalProcessWritesStateWithoutStartingEndpoint(t *testing.T) 
 	if starter.starts != 0 {
 		t.Fatalf("external runtime managed endpoint process: %d", starter.starts)
 	}
+}
+
+func acknowledgeExternalRunner(root string) <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		defer close(result)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			raw, err := os.ReadFile(filepath.Join(root, "state.json"))
+			if err == nil {
+				if err := os.WriteFile(filepath.Join(root, runnerStateFile), raw, 0600); err != nil {
+					result <- err
+				}
+				return
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				result <- err
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		result <- errors.New("state was not published for the external runner")
+	}()
+	return result
 }
 
 func TestRuntimeRestartsAfterAgentProcessIsMissing(t *testing.T) {

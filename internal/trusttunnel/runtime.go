@@ -18,7 +18,11 @@ import (
 	"time"
 )
 
-const stateVersion = 1
+const (
+	stateVersion            = 1
+	runnerStateFile         = "runner-state.json"
+	externalRunnerReadyWait = 5 * time.Second
+)
 
 type endpointProcess interface {
 	Stop(context.Context) error
@@ -165,7 +169,7 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	state := State{Version: stateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: digest, Port: request.Endpoint.Port, ClientCount: len(normalizeUUIDs(request.Endpoint.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
 	if current, ok := r.State(); ok {
 		unchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Revision == state.Revision && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
-		healthy := r.external || (r.process != nil && r.process.Running())
+		healthy := (r.external && r.externalRunnerReady(current)) || (!r.external && r.process != nil && r.process.Running())
 		if unchanged && healthy {
 			return current, nil
 		}
@@ -215,7 +219,52 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 		r.restore(previous)
 		return State{}, err
 	}
+	if r.external {
+		if err := r.waitForExternalRunner(ctx, state); err != nil {
+			r.restore(previous)
+			return State{}, err
+		}
+	}
 	return state, nil
+}
+
+func (r *Runtime) waitForExternalRunner(ctx context.Context, expected State) error {
+	deadline := time.Now().Add(externalRunnerReadyWait)
+	for {
+		if r.externalRunnerReady(expected) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("external TrustTunnel runner did not acknowledge the desired state")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (r *Runtime) externalRunnerReady(expected State) bool {
+	raw, err := os.ReadFile(filepath.Join(r.root, runnerStateFile))
+	if err != nil {
+		return false
+	}
+	var observed State
+	if json.Unmarshal(raw, &observed) != nil ||
+		observed.Version != expected.Version ||
+		observed.InboundID != expected.InboundID ||
+		observed.Revision != expected.Revision ||
+		observed.Digest != expected.Digest ||
+		observed.ClientSetSHA256 != expected.ClientSetSHA256 {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(expected.Port)), 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (r *Runtime) Remove(ctx context.Context, inboundID string, revision int64) error {

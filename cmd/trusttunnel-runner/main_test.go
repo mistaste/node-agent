@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +101,9 @@ func TestRunnerRestartsOnlyWhenStateKeyChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStarts(t, starts, 1)
+	if _, err := os.Stat(filepath.Join(root, runnerStateFile)); err != nil {
+		t.Fatalf("runner did not publish readiness state: %v", err)
+	}
 	if err := r.reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +146,9 @@ func TestRunnerStopsWhenStateIsRemoved(t *testing.T) {
 	}
 	if r.running() {
 		t.Fatal("runner kept endpoint alive after tombstone removal")
+	}
+	if _, err := os.Stat(filepath.Join(root, runnerStateFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runner readiness state survived endpoint removal: %v", err)
 	}
 }
 

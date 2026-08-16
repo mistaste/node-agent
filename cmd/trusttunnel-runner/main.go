@@ -24,6 +24,8 @@ type state struct {
 	ClientSetSHA256 string `json:"client_set_sha256"`
 }
 
+const runnerStateFile = "runner-state.json"
+
 type runner struct {
 	root        string
 	binary      string
@@ -37,7 +39,7 @@ type runner struct {
 func main() {
 	root := getenv("TRUSTTUNNEL_ROOT", "/data/trusttunnel")
 	binary := getenv("TRUSTTUNNEL_BINARY", "/opt/trusttunnel/trusttunnel_endpoint")
-	interval := parseDuration(getenv("TRUSTTUNNEL_RUNNER_INTERVAL", "2s"))
+	interval := parseDuration(getenv("TRUSTTUNNEL_RUNNER_INTERVAL", "250ms"))
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -70,6 +72,7 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return err
 	}
 	if !ok {
+		r.clearRunnerState()
 		if err := r.stop(ctx); err != nil {
 			return err
 		}
@@ -78,8 +81,12 @@ func (r *runner) reconcile(ctx context.Context) error {
 	}
 	key := current.InboundID + ":" + current.Digest + ":" + current.ClientSetSHA256 + ":" + strconv.FormatInt(current.Revision, 10)
 	if r.running() && r.key == key {
+		if err := r.writeRunnerState(current); err != nil {
+			return err
+		}
 		return nil
 	}
+	r.clearRunnerState()
 	if err := r.stop(ctx); err != nil {
 		return err
 	}
@@ -107,8 +114,39 @@ func (r *runner) reconcile(ctx context.Context) error {
 	r.done = done
 	r.key = key
 	go r.waitEndpoint(cmd, done, time.Now())
+	if err := r.writeRunnerState(current); err != nil {
+		_ = r.stop(context.Background())
+		return err
+	}
 	log.Printf("[trusttunnel-runner] endpoint started")
 	return nil
+}
+
+func (r *runner) writeRunnerState(current state) error {
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return errors.New("encode runner state")
+	}
+	target := filepath.Join(r.root, runnerStateFile)
+	temporary := target + ".tmp"
+	if err := os.WriteFile(temporary, raw, 0640); err != nil {
+		return fmt.Errorf("write runner state: %w", err)
+	}
+	if r.endpointGID != 0 {
+		if err := os.Chown(temporary, os.Geteuid(), int(r.endpointGID)); err != nil {
+			_ = os.Remove(temporary)
+			return fmt.Errorf("own runner state: %w", err)
+		}
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		_ = os.Remove(temporary)
+		return fmt.Errorf("publish runner state: %w", err)
+	}
+	return nil
+}
+
+func (r *runner) clearRunnerState() {
+	_ = os.Remove(filepath.Join(r.root, runnerStateFile))
 }
 
 func (r *runner) waitEndpoint(process *exec.Cmd, processDone chan struct{}, startedAt time.Time) {
@@ -144,6 +182,7 @@ func (r *runner) prepareEndpointAccess() error {
 }
 
 func (r *runner) stop(ctx context.Context) error {
+	r.clearRunnerState()
 	if !r.running() {
 		r.process = nil
 		r.done = nil

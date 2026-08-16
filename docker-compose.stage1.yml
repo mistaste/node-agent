@@ -27,7 +27,7 @@ services:
     environment:
       TRUSTTUNNEL_BINARY: "/opt/trusttunnel/trusttunnel_endpoint"
       TRUSTTUNNEL_ROOT: "/data/trusttunnel"
-      TRUSTTUNNEL_RUNNER_INTERVAL: "2s"
+      TRUSTTUNNEL_RUNNER_INTERVAL: "250ms"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
