@@ -84,8 +84,16 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		return ErrUnsafeDesiredState
 	}
 	if current.Revision == state.Revision {
-		oldJSON, _ := json.Marshal(current)
-		newJSON, _ := json.Marshal(state)
+		// Candidate-exit probes are short-lived measurement hints, not applied
+		// network ownership. They may change as exits become healthy or stale and
+		// therefore must not trip the same-revision mutation guard. The controller
+		// still validates and executes the freshly fetched probe list every cycle.
+		currentComparable := current
+		stateComparable := state
+		currentComparable.ExitProbes = nil
+		stateComparable.ExitProbes = nil
+		oldJSON, _ := json.Marshal(currentComparable)
+		newJSON, _ := json.Marshal(stateComparable)
 		if bytes.Equal(oldJSON, newJSON) {
 			return a.reconcileRelayRuntime(state)
 		}

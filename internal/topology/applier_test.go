@@ -88,6 +88,23 @@ func TestApplierRejectsSameRevisionMutation(t *testing.T) {
 	}
 }
 
+func TestApplierAllowsSameRevisionExitProbeRefresh(t *testing.T) {
+	runner := &recordingRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	state := backboneState(RoleIngress)
+	if err := applier.Apply(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	state.ExitProbes = []ExitProbe{{
+		ExitServerID: "61f4d9d0-c0d3-4de2-8685-e4732823f2ab",
+		Endpoint:     netip.MustParseAddrPort("82.47.46.112:8099"),
+	}}
+	if err := applier.Apply(context.Background(), state); err != nil {
+		t.Fatalf("operational exit-probe refresh rejected: %v", err)
+	}
+}
+
 func TestBackboneConfigNeverPlacesPrivateKeyOnCommandLine(t *testing.T) {
 	runner := &recordingRunner{}
 	applier, _ := NewApplier(t.TempDir())
