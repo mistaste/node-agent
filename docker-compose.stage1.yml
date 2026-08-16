@@ -38,6 +38,9 @@ services:
       - CHOWN
       - SETUID
       - SETGID
+      # The runner starts the endpoint as UID 65532. CAP_KILL is required so
+      # it can stop that lower-privilege child before applying a new revision.
+      - KILL
     security_opt:
       - no-new-privileges:true
     pids_limit: 64

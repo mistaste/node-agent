@@ -44,6 +44,7 @@ if [ -f "$STAGE1_COMPOSE" ]; then
     svc == "trusttunnel-runner" && /CHOWN/ { runner_chown=1 }
     svc == "trusttunnel-runner" && /SETUID/ { runner_setuid=1 }
     svc == "trusttunnel-runner" && /SETGID/ { runner_setgid=1 }
+    svc == "trusttunnel-runner" && /KILL/ { runner_kill=1 }
     svc == "node-agent" && /NET_ADMIN/ { bad_node_admin=1 }
     svc == "node-agent" && /NET_BIND_SERVICE/ { bad_node_bind=1 }
     svc == "node-agent" && /TRUSTTUNNEL_PROCESS_MODE: external/ { external=1 }
@@ -56,7 +57,7 @@ if [ -f "$STAGE1_COMPOSE" ]; then
       if (!external) exit 15
       if (bad_node_admin) exit 16
       if (bad_node_bind) exit 17
-      if (!runner_chown || !runner_setuid || !runner_setgid) exit 18
+      if (!runner_chown || !runner_setuid || !runner_setgid || !runner_kill) exit 18
     }
   ' || case "$?" in
     10) fail "topology-agent must never mount docker.sock" ;;
@@ -67,7 +68,7 @@ if [ -f "$STAGE1_COMPOSE" ]; then
     15) fail "node-agent must delegate TrustTunnel process in Stage 1 override" ;;
     16) fail "node-agent must not receive NET_ADMIN in Stage 1 override" ;;
     17) fail "node-agent must not receive NET_BIND_SERVICE in Stage 1 override" ;;
-    18) fail "trusttunnel-runner lacks the bounded identity-drop capabilities required for UID 65532" ;;
+    18) fail "trusttunnel-runner lacks the bounded identity-drop/process-control capabilities required for UID 65532" ;;
     *) fail "Stage 1 compose override is invalid" ;;
   esac
 else

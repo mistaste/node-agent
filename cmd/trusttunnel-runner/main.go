@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -56,7 +57,7 @@ func main() {
 		}
 		select {
 		case <-ctx.Done():
-			r.stop(context.Background())
+			_ = r.stop(context.Background())
 			return
 		case <-ticker.C:
 		}
@@ -69,7 +70,9 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return err
 	}
 	if !ok {
-		r.stop(ctx)
+		if err := r.stop(ctx); err != nil {
+			return err
+		}
 		r.key = ""
 		return nil
 	}
@@ -77,7 +80,9 @@ func (r *runner) reconcile(ctx context.Context) error {
 	if r.running() && r.key == key {
 		return nil
 	}
-	r.stop(ctx)
+	if err := r.stop(ctx); err != nil {
+		return err
+	}
 	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml"} {
 		if err := requireManagedFile(r.root, name, r.endpointGID); err != nil {
 			return err
@@ -138,22 +143,29 @@ func (r *runner) prepareEndpointAccess() error {
 	})
 }
 
-func (r *runner) stop(ctx context.Context) {
+func (r *runner) stop(ctx context.Context) error {
 	if !r.running() {
 		r.process = nil
 		r.done = nil
-		return
+		return nil
 	}
-	_ = r.process.Process.Signal(os.Interrupt)
+	if err := r.process.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("signal endpoint: %w", err)
+	}
 	select {
 	case <-r.done:
 	case <-ctx.Done():
-		_ = r.process.Process.Kill()
+		if err := r.process.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("kill endpoint after cancellation: %w", err)
+		}
 	case <-time.After(5 * time.Second):
-		_ = r.process.Process.Kill()
+		if err := r.process.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("kill endpoint after timeout: %w", err)
+		}
 	}
 	r.process = nil
 	r.done = nil
+	return nil
 }
 
 func (r *runner) running() bool {
