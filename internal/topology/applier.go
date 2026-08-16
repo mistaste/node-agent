@@ -98,6 +98,11 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		oldJSON, _ := json.Marshal(currentComparable)
 		newJSON, _ := json.Marshal(stateComparable)
 		if bytes.Equal(oldJSON, newJSON) {
+			if state.Backbone != nil {
+				if err := a.runner.Run(ctx, nil, "ip", "link", "set", "dev", state.Backbone.InterfaceName, "mtu", wireGuardMTU); err != nil {
+					return err
+				}
+			}
 			return a.reconcileRelayRuntime(state)
 		}
 		return fmt.Errorf("%w: desired state changed without revision", ErrUnsafeDesiredState)

@@ -103,6 +103,10 @@ func TestApplierAllowsSameRevisionExitProbeRefresh(t *testing.T) {
 	if err := applier.Apply(context.Background(), state); err != nil {
 		t.Fatalf("operational exit-probe refresh rejected: %v", err)
 	}
+	last := runner.commands[len(runner.commands)-1]
+	if last.name != "ip" || strings.Join(last.args, " ") != "link set dev gxwg0 mtu 1280" {
+		t.Fatalf("same-revision runtime MTU was not reconciled: %#v", last)
+	}
 }
 
 func TestBackboneConfigNeverPlacesPrivateKeyOnCommandLine(t *testing.T) {
