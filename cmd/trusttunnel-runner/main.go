@@ -126,12 +126,11 @@ func (r *runner) reconcile(ctx context.Context) error {
 	go r.waitEndpoint(cmd, done, time.Now())
 	if current.H3Port != 0 {
 		h3 := exec.CommandContext(ctx, r.binary, filepath.Join(r.root, "vpn-h3.toml"), filepath.Join(r.root, "hosts-h3.toml"))
-		if r.endpointUID != 0 {
-			if err := configureEndpointCommand(h3, r.endpointUID, r.endpointGID); err != nil {
-				_ = r.stop(context.Background())
-				return err
-			}
-		}
+		// The public QUIC listener requires NET_BIND_SERVICE. Keep only this
+		// pinned H3 endpoint under the container's capability-bounded root;
+		// the TCP endpoint continues to run as the dedicated unprivileged UID.
+		// The container is read-only, no-new-privileges, and exposes no Docker
+		// socket, so this does not grant host-level privilege.
 		h3.Stdout, h3.Stderr = nil, nil
 		if err := h3.Start(); err != nil {
 			_ = r.stop(context.Background())
