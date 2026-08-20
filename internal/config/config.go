@@ -29,6 +29,8 @@ type Config struct {
 	TrustTunnelRoot        string
 	TrustTunnelService     string
 	TrustTunnelVersion     string
+	TransportBundleEnabled bool
+	TransportBundleRoot    string
 	RepoDir                string
 	UpdateRef              string
 }
@@ -54,6 +56,8 @@ func Load() *Config {
 		TrustTunnelRoot:        getenv("TRUSTTUNNEL_ROOT", "/etc/guardex/trusttunnel"),
 		TrustTunnelService:     getenv("TRUSTTUNNEL_SERVICE", "guardex-trusttunnel.service"),
 		TrustTunnelVersion:     getenv("TRUSTTUNNEL_VERSION", "unknown"),
+		TransportBundleEnabled: parseBool(getenv("TRANSPORT_BUNDLE_ENABLED", "false")),
+		TransportBundleRoot:    getenv("TRANSPORT_BUNDLE_ROOT", "/data/transport-bundle"),
 		RepoDir:                getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
 		UpdateRef:              getenv("AGENT_UPDATE_REF", "master"),
 	}

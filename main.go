@@ -15,6 +15,7 @@ import (
 	"github.com/guardex/node-agent/internal/metrics"
 	"github.com/guardex/node-agent/internal/pusher"
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/transportbundle"
 	"github.com/guardex/node-agent/internal/trusttunnel"
 	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/usersync"
@@ -91,6 +92,15 @@ func main() {
 				} else {
 					controllerReconciler.EnableTrustTunnelCleanup(runtime)
 					log.Printf("[trusttunnel] endpoint apply disabled; tombstone cleanup remains enabled")
+				}
+			}
+			if cfg.TransportBundleEnabled {
+				bundleRuntime, bundleErr := transportbundle.NewRuntime(cfg.TransportBundleRoot, cfg.Secret)
+				if bundleErr != nil {
+					log.Printf("[transport-bundle] disabled: runtime configuration is invalid")
+				} else {
+					controllerReconciler.EnableTransportBundle(bundleRuntime)
+					log.Printf("[transport-bundle] NaiveProxy mux runtime enabled")
 				}
 			}
 			// Run performs the first pull immediately after the durable inbound

@@ -27,6 +27,7 @@ import (
 	"github.com/guardex/node-agent/internal/inbound"
 	"github.com/guardex/node-agent/internal/inboundsync"
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/transportbundle"
 	"github.com/guardex/node-agent/internal/trusttunnel"
 	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/xray"
@@ -77,6 +78,7 @@ type preparedItem struct {
 	clientCount     int
 	clientSetSHA256 string
 	trustTunnel     *trusttunnel.Endpoint
+	transportBundle *transportbundle.Config
 }
 
 type deploymentReport struct {
@@ -122,6 +124,7 @@ type Reconciler struct {
 	userOps                 *userops.Coordinator
 	trustTunnel             trustTunnelRuntime
 	trustTunnelApplyEnabled bool
+	transportBundle         transportBundleRuntime
 }
 
 type trustTunnelRuntime interface {
@@ -129,6 +132,12 @@ type trustTunnelRuntime interface {
 	Apply(context.Context, trusttunnel.ApplyRequest) (trusttunnel.State, error)
 	Remove(context.Context, string, int64) error
 	State() (trusttunnel.State, bool)
+}
+
+type transportBundleRuntime interface {
+	Apply(context.Context, transportbundle.ApplyRequest) (transportbundle.State, error)
+	Remove(context.Context, string, int64) error
+	State() (transportbundle.State, bool)
 }
 
 type userCore interface {
@@ -150,6 +159,10 @@ func (r *Reconciler) EnableTrustTunnel(runtime trustTunnelRuntime) {
 func (r *Reconciler) EnableTrustTunnelCleanup(runtime trustTunnelRuntime) {
 	r.trustTunnel = runtime
 	r.trustTunnelApplyEnabled = false
+}
+
+func (r *Reconciler) EnableTransportBundle(runtime transportBundleRuntime) {
+	r.transportBundle = runtime
 }
 
 func New(cfg *config.Config, manager *inboundsync.Manager, users *store.Store, usersRuntime userCore, coordinators ...*userops.Coordinator) (*Reconciler, error) {
@@ -236,6 +249,24 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 		}
 		return err
 	}
+	// A bundle apply requires TrustTunnel to move behind the mux first. A bundle
+	// delete must release public 443 before TrustTunnel moves back onto it.
+	sort.SliceStable(prepared, func(i, j int) bool {
+		left, right := prepared[i].desired, prepared[j].desired
+		if left.Engine == "naiveproxy" && left.Action == "delete" {
+			return true
+		}
+		if right.Engine == "naiveproxy" && right.Action == "delete" {
+			return false
+		}
+		if left.Engine == "naiveproxy" && left.Action == "apply" {
+			return false
+		}
+		if right.Engine == "naiveproxy" && right.Action == "apply" {
+			return true
+		}
+		return false
+	})
 
 	reports := make([]deploymentReport, 0, len(prepared))
 	failed := 0
@@ -243,6 +274,9 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 		report := r.reconcileOne(ctx, item)
 		if report.Status != "active" && report.Status != "deleted" {
 			failed++
+			if item.desired.Engine == "naiveproxy" && item.desired.Action == "apply" {
+				r.restoreTrustTunnelPublicListener(ctx, prepared)
+			}
 		}
 		reports = append(reports, report)
 	}
@@ -254,6 +288,21 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("%d desired inbound operations failed", failed)
 	}
 	return nil
+}
+
+func (r *Reconciler) restoreTrustTunnelPublicListener(ctx context.Context, prepared []preparedItem) {
+	if r.trustTunnel == nil {
+		return
+	}
+	for _, item := range prepared {
+		if item.desired.Engine != "trusttunnel" || item.desired.Action != "apply" || item.trustTunnel == nil || item.trustTunnel.Port == item.desired.EffectivePort {
+			continue
+		}
+		fallback := *item.trustTunnel
+		fallback.Port = item.desired.EffectivePort
+		_, _ = r.trustTunnel.Apply(ctx, trusttunnel.ApplyRequest{InboundID: item.desired.InboundID, Tag: item.desired.EffectiveTag, Revision: item.desired.DesiredRevision, Endpoint: fallback, ClientSetSHA256: item.clientSetSHA256})
+		return
+	}
 }
 
 func (r *Reconciler) fetchDesired(ctx context.Context) ([]desiredItem, error) {
@@ -333,12 +382,16 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 			errorsByIndex[index] = itemError{"unsupported_action", "desired inbound action is unsupported"}
 			continue
 		}
-		if item.Engine != "xray" && item.Engine != "trusttunnel" {
+		if item.Engine != "xray" && item.Engine != "trusttunnel" && item.Engine != "naiveproxy" {
 			errorsByIndex[index] = itemError{"unsupported_engine", "desired tunnel engine is unsupported"}
 			continue
 		}
 		if item.Engine == "trusttunnel" && item.Action == "apply" && (!r.trustTunnelApplyEnabled || r.trustTunnel == nil) {
 			errorsByIndex[index] = itemError{"engine_unavailable", "TrustTunnel runtime is not enabled on this node"}
+			continue
+		}
+		if item.Engine == "naiveproxy" && item.Action == "apply" && r.transportBundle == nil {
+			errorsByIndex[index] = itemError{"engine_unavailable", "NaiveProxy transport bundle runtime is not enabled on this node"}
 			continue
 		}
 		if item.Engine == "trusttunnel" && item.Action == "apply" {
@@ -387,6 +440,9 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 			listenerNetwork = "udp"
 		} else if item.trustTunnel == nil && item.config.Protocol == "hysteria" {
 			listenerNetwork = "udp"
+		}
+		if item.desired.EffectivePort == 443 && (item.desired.Engine == "trusttunnel" || item.desired.Engine == "naiveproxy") {
+			listenerNetwork = "mux-" + item.desired.Engine
 		}
 		if item.trustTunnel == nil && listenerNetwork == "tcp" && item.desired.EffectivePort == 443 {
 			errorsByIndex[index] = itemError{"protected_port", "TCP port 443 belongs to the static baseline inbound"}
@@ -438,6 +494,9 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	}
 	if item.Engine == "trusttunnel" {
 		return r.prepareTrustTunnelApply(item, clients, clientHash)
+	}
+	if item.Engine == "naiveproxy" {
+		return r.prepareNaiveProxyApply(item, clients, clientHash)
 	}
 
 	var root map[string]any
@@ -547,6 +606,48 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	}, nil
 }
 
+func (r *Reconciler) prepareNaiveProxyApply(item desiredItem, clients []string, clientHash string) (preparedItem, error) {
+	var config struct {
+		Protocol            string `json:"protocol"`
+		Hostname            string `json:"hostname"`
+		TrustTunnelHostname string `json:"trusttunnel_hostname"`
+		TrustTunnelPort     int    `json:"trusttunnel_port"`
+		NaivePort           int    `json:"naive_port"`
+		DecoyPort           int    `json:"decoy_port"`
+		CertificateFile     string `json:"certificate_file"`
+		PrivateKeyFile      string `json:"private_key_file"`
+		Tag                 string `json:"tag"`
+		Port                int    `json:"port"`
+		Transport           string `json:"transport"`
+		Security            string `json:"security"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(item.ConfigJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil || strings.ToLower(strings.TrimSpace(config.Protocol)) != "naive" {
+		return preparedItem{}, errors.New("NaiveProxy config is invalid")
+	}
+	root := strings.TrimSpace(r.cfg.TrustTunnelRoot)
+	if root == "" {
+		root = "/etc/guardex/trusttunnel"
+	}
+	if config.CertificateFile == "" {
+		config.CertificateFile = filepath.Join(root, "certs", "fullchain.pem")
+	}
+	if config.PrivateKeyFile == "" {
+		config.PrivateKeyFile = filepath.Join(root, "certs", "privkey.pem")
+	}
+	bundle := transportbundle.Config{PublicPort: item.EffectivePort, TrustTunnelHostname: config.TrustTunnelHostname, TrustTunnelPort: config.TrustTunnelPort, NaiveHostname: config.Hostname, NaivePort: config.NaivePort, DecoyPort: config.DecoyPort, CertificateFile: config.CertificateFile, PrivateKeyFile: config.PrivateKeyFile, ClientUUIDs: clients}
+	if _, err := transportbundle.Build(r.cfg.Secret, bundle); err != nil {
+		return preparedItem{}, err
+	}
+	digestRaw, _ := json.Marshal(struct {
+		Config  json.RawMessage `json:"config"`
+		Clients []string        `json:"clients"`
+	}{Config: item.ConfigJSON, Clients: clients})
+	digest := sha256.Sum256(digestRaw)
+	return preparedItem{desired: item, desiredDigest: hex.EncodeToString(digest[:]), publicMaterial: json.RawMessage(`{}`), clientParams: json.RawMessage(`{}`), clientSecret: json.RawMessage(`{}`), clientCount: len(clients), clientSetSHA256: clientHash, transportBundle: &bundle}, nil
+}
+
 // secureForwardedFor prevents HTTP transports from accepting a forged
 // X-Forwarded-For value on their public listener. Xray only honors that value
 // when one of the configured marker headers is also present. The marker is
@@ -589,6 +690,7 @@ func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string,
 		UpstreamFallbackProtocol string   `json:"upstream_fallback_protocol"`
 		UpstreamProtocol         string   `json:"upstream_protocol"`
 		CertificateFile          string   `json:"certificate_file"`
+		ListenPort               int      `json:"listen_port"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(item.ConfigJSON))
 	decoder.DisallowUnknownFields()
@@ -599,7 +701,7 @@ func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string,
 		if json.Unmarshal(item.ConfigJSON, &root) != nil {
 			return preparedItem{}, errors.New("TrustTunnel config is invalid")
 		}
-		allowed := map[string]bool{"protocol": true, "hostname": true, "dns_upstreams": true, "has_ipv6": true, "upstream_protocol": true, "upstream_fallback_protocol": true, "certificate_file": true, "tls_hosts_file": true, "anti_dpi": true, "tag": true, "port": true}
+		allowed := map[string]bool{"protocol": true, "hostname": true, "dns_upstreams": true, "has_ipv6": true, "upstream_protocol": true, "upstream_fallback_protocol": true, "certificate_file": true, "tls_hosts_file": true, "anti_dpi": true, "listen_port": true, "tag": true, "port": true}
 		for key := range root {
 			if !allowed[strings.ToLower(strings.TrimSpace(key))] {
 				return preparedItem{}, errors.New("TrustTunnel config contains an unsupported field")
@@ -635,7 +737,14 @@ func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string,
 	fallback := strings.ToLower(strings.TrimSpace(config.UpstreamFallbackProtocol))
 	http2 := upstream == "http2" || fallback == "http2"
 	http3 := upstream == "http3" || fallback == "http3"
-	endpoint := trusttunnel.Endpoint{Port: item.EffectivePort, Hostname: hostname, CertificateFile: cert, PrivateKeyFile: filepath.Join(root, "certs", "privkey.pem"), ClientUUIDs: clients, EnableHTTP1: false, EnableHTTP2: http2, EnableHTTP3: http3, IPv6Available: ipv6}
+	listenPort := item.EffectivePort
+	if config.ListenPort != 0 {
+		if config.ListenPort < 1024 || config.ListenPort > 65535 || config.ListenPort == 443 {
+			return preparedItem{}, errors.New("TrustTunnel internal listen port is invalid")
+		}
+		listenPort = config.ListenPort
+	}
+	endpoint := trusttunnel.Endpoint{Port: listenPort, Hostname: hostname, CertificateFile: cert, PrivateKeyFile: filepath.Join(root, "certs", "privkey.pem"), ClientUUIDs: clients, EnableHTTP1: false, EnableHTTP2: http2, EnableHTTP3: http3, IPv6Available: ipv6}
 	digestRaw, _ := json.Marshal(struct {
 		Config  json.RawMessage `json:"config"`
 		Clients []string        `json:"clients"`
@@ -687,6 +796,9 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 	desired := item.desired
 	if desired.Engine == "trusttunnel" {
 		return r.reconcileTrustTunnel(ctx, item)
+	}
+	if desired.Engine == "naiveproxy" {
+		return r.reconcileNaiveProxy(ctx, item)
 	}
 	if desired.Action == "delete" {
 		previousRevision := r.previousRevision(desired.EffectiveTag, desired.InboundID)
@@ -826,6 +938,31 @@ func (r *Reconciler) reconcileOne(ctx context.Context, item preparedItem) deploy
 	}
 }
 
+func (r *Reconciler) reconcileNaiveProxy(ctx context.Context, item preparedItem) deploymentReport {
+	desired := item.desired
+	if r.transportBundle == nil {
+		return failedReport(desired, 0, itemError{"engine_unavailable", "NaiveProxy transport bundle runtime is not enabled"})
+	}
+	if desired.Action == "delete" {
+		if err := r.transportBundle.Remove(ctx, desired.InboundID, desired.DesiredRevision); err != nil {
+			return failedReport(desired, 0, itemError{"delete_failed", "node could not remove the NaiveProxy transport bundle"})
+		}
+		return deploymentReport{InboundID: desired.InboundID, AppliedRevision: desired.DesiredRevision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "deleted", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientSetSHA256: emptyClientSetHash()}
+	}
+	if item.transportBundle == nil {
+		return failedReport(desired, 0, itemError{"invalid_desired_config", "NaiveProxy transport bundle settings are unavailable"})
+	}
+	state, err := r.transportBundle.Apply(ctx, transportbundle.ApplyRequest{InboundID: desired.InboundID, Tag: desired.EffectiveTag, Revision: desired.DesiredRevision, Config: *item.transportBundle, ClientSetSHA256: item.clientSetSHA256})
+	if err != nil {
+		previous := int64(0)
+		if current, ok := r.transportBundle.State(); ok && current.InboundID == desired.InboundID {
+			previous = current.Revision
+		}
+		return failedReport(desired, previous, itemError{"apply_failed", "node could not activate the NaiveProxy transport bundle"})
+	}
+	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
+}
+
 func (r *Reconciler) reconcileTrustTunnel(ctx context.Context, item preparedItem) deploymentReport {
 	desired := item.desired
 	if r.trustTunnel == nil {
@@ -848,7 +985,7 @@ func (r *Reconciler) reconcileTrustTunnel(ctx context.Context, item preparedItem
 		}
 		return failedReport(desired, previous, itemError{"apply_failed", "node could not activate the TrustTunnel endpoint"})
 	}
-	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: state.Port, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
+	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
 }
 
 func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, structuralChanged bool) error {
@@ -1110,6 +1247,22 @@ func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport)
 	if trustTunnelAvailable {
 		supportedEngines = append(supportedEngines, "trusttunnel")
 	}
+	naiveAvailable := r.transportBundle != nil
+	if naiveAvailable {
+		supportedEngines = append(supportedEngines, "naiveproxy")
+	}
+	supportedProtocols := []string{"vless", "hysteria"}
+	supportedTransports := []string{"raw", "xhttp", "grpc", "hysteria"}
+	if trustTunnelAvailable {
+		supportedProtocols = append(supportedProtocols, "trusttunnel")
+		supportedTransports = append(supportedTransports, "http2")
+	}
+	if naiveAvailable {
+		supportedProtocols = append(supportedProtocols, "naive")
+		if !trustTunnelAvailable {
+			supportedTransports = append(supportedTransports, "http2")
+		}
+	}
 	rawCapabilities, _ := json.Marshal(map[string]any{
 		"controller_polling":       true,
 		"controller_tag_namespace": "gx-",
@@ -1124,13 +1277,14 @@ func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport)
 		"udp_firewall_managed":     false,
 		"udp_hop_external_dnat":    true,
 		"trusttunnel_available":    trustTunnelAvailable,
+		"naiveproxy_available":     naiveAvailable,
 	})
 	payload := observedReport{
 		Capabilities: capabilitiesReport{
 			AgentVersion:        sanitizeText(r.cfg.AgentVersion(), 128),
 			CoreVersion:         sanitizeText(r.cfg.XrayCoreVersion, 128),
-			SupportedProtocols:  []string{"vless", "hysteria"},
-			SupportedTransports: []string{"raw", "xhttp", "grpc", "hysteria"},
+			SupportedProtocols:  supportedProtocols,
+			SupportedTransports: supportedTransports,
 			SupportedSecurities: []string{"reality", "tls"},
 			SupportedEngines:    supportedEngines,
 			RawJSON:             rawCapabilities,

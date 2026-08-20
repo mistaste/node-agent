@@ -71,26 +71,32 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 		if err != nil {
 			return Files{}, err
 		}
-		fmt.Fprintf(&users, "            basic_auth %s %s\n", id, password)
+		fmt.Fprintf(&users, "\t\t\tbasic_auth %s %s\n", id, password)
 	}
-	caddy := fmt.Sprintf(`https://%s:%d {
-	bind 127.0.0.1
-    tls %s %s
-    route {
-        forward_proxy {
-%s
-            hide_ip
-            hide_via
-            probe_resistance
-        }
-    }
-    log { output discard }
+	caddy := fmt.Sprintf(`{
+	order forward_proxy before file_server
 }
 
 https://%s:%d {
 	bind 127.0.0.1
 	tls %s %s
-    respond "OK" 200
+	route {
+		forward_proxy {
+%s
+			hide_ip
+			hide_via
+			probe_resistance
+		}
+	}
+	log {
+		output discard
+	}
+}
+
+https://%s:%d {
+	bind 127.0.0.1
+	tls %s %s
+	respond "OK" 200
 }
 `, naiveHost, cfg.NaivePort, cfg.CertificateFile, cfg.PrivateKeyFile, users.String(), naiveHost, cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 

@@ -20,12 +20,14 @@ import (
 	"github.com/guardex/node-agent/internal/inbound"
 	"github.com/guardex/node-agent/internal/inboundsync"
 	"github.com/guardex/node-agent/internal/store"
+	"github.com/guardex/node-agent/internal/transportbundle"
 	"github.com/guardex/node-agent/internal/trusttunnel"
 	"github.com/guardex/node-agent/internal/userops"
 	"github.com/guardex/node-agent/internal/xray"
 )
 
 const testClientUUID = "6f8d0c5b-6c62-4b35-9231-b2af180b5284"
+const testControllerSecret = "0123456789abcdef0123456789abcdef"
 
 type fakeTrustTunnelRuntime struct {
 	available bool
@@ -46,6 +48,28 @@ func (f *fakeTrustTunnelRuntime) Remove(_ context.Context, inboundID string, _ i
 	return nil
 }
 func (f *fakeTrustTunnelRuntime) State() (trusttunnel.State, bool) {
+	return f.state, f.state.InboundID != ""
+}
+
+type fakeTransportBundleRuntime struct {
+	state   transportbundle.State
+	applied []transportbundle.ApplyRequest
+	fail    bool
+}
+
+func (f *fakeTransportBundleRuntime) Apply(_ context.Context, request transportbundle.ApplyRequest) (transportbundle.State, error) {
+	f.applied = append(f.applied, request)
+	if f.fail {
+		return transportbundle.State{}, errors.New("bundle failed")
+	}
+	f.state = transportbundle.State{Version: 1, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, ClientCount: len(request.Config.ClientUUIDs), ClientSetSHA256: request.ClientSetSHA256}
+	return f.state, nil
+}
+func (f *fakeTransportBundleRuntime) Remove(_ context.Context, _ string, _ int64) error {
+	f.state = transportbundle.State{}
+	return nil
+}
+func (f *fakeTransportBundleRuntime) State() (transportbundle.State, bool) {
 	return f.state, f.state.InboundID != ""
 }
 
@@ -312,7 +336,7 @@ func newControllerHarness(t *testing.T, items []desiredItem, coordinators ...*us
 	h.userStore = store.New(filepath.Join(t.TempDir(), "users.json"))
 	h.manager = inboundsync.New(h.core, h.inventory, time.Minute, "vless-in", "api")
 	h.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Service-Token") != "service-token" || r.Header.Get("X-Node-Secret") != "node-secret" {
+		if r.Header.Get("X-Service-Token") != "service-token" || r.Header.Get("X-Node-Secret") != testControllerSecret {
 			t.Errorf("missing controller authentication headers")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -357,7 +381,7 @@ func newControllerHarness(t *testing.T, items []desiredItem, coordinators ...*us
 	cfg := &config.Config{
 		ControllerURL:        h.server.URL,
 		InternalServiceToken: "service-token",
-		Secret:               "node-secret",
+		Secret:               testControllerSecret,
 		Version:              "test-agent",
 		XrayCoreVersion:      "26.6.1",
 		ResyncInterval:       20 * time.Millisecond,
@@ -1252,6 +1276,69 @@ func TestControllerAppliesTrustTunnelOnlyWhenRuntimeEnabled(t *testing.T) {
 	}
 	if strings.Join(report.Capabilities.SupportedEngines, ",") != "xray,trusttunnel" {
 		t.Fatalf("engines = %+v", report.Capabilities.SupportedEngines)
+	}
+}
+
+func TestControllerSeparatesPublicAndMuxListenerPorts(t *testing.T) {
+	item := desiredItem{InboundID: "catalog-tt-mux", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-trusttunnel-mux", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"vpn.example.com","upstream_protocol":"http2","listen_port":8443}`), ClientUUIDs: []string{testClientUUID}}
+	count := 1
+	item.ClientCount = &count
+	_, item.ClientSetSHA256, _ = normalizeClientUUIDs(item.ClientUUIDs)
+	h := newControllerHarness(t, []desiredItem{item})
+	runtime := &fakeTrustTunnelRuntime{available: true}
+	h.reconciler.EnableTrustTunnel(runtime)
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.applied) != 1 || runtime.applied[0].Endpoint.Port != 8443 {
+		t.Fatalf("internal TrustTunnel listener = %+v", runtime.applied)
+	}
+	report := h.latestReport().Deployments[0]
+	if report.EffectivePort != 443 {
+		t.Fatalf("public effective port = %d, want 443", report.EffectivePort)
+	}
+}
+
+func TestControllerAppliesNaiveProxyTransportBundle(t *testing.T) {
+	item := desiredItem{InboundID: "catalog-naive", Engine: "naiveproxy", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-naive-h2", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"naive","tag":"gx-naive-h2","port":443,"hostname":"naive.node.example.com","trusttunnel_hostname":"node.example.com","trusttunnel_port":8443,"naive_port":9443,"decoy_port":9080,"transport":"http2","security":"tls"}`), ClientUUIDs: []string{testClientUUID}}
+	count := 1
+	item.ClientCount = &count
+	_, item.ClientSetSHA256, _ = normalizeClientUUIDs(item.ClientUUIDs)
+	h := newControllerHarness(t, []desiredItem{item})
+	runtime := &fakeTransportBundleRuntime{}
+	h.reconciler.EnableTransportBundle(runtime)
+	if _, err := h.reconciler.prepareApply(item); err != nil {
+		t.Fatalf("prepare NaiveProxy bundle: %v", err)
+	}
+	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("%v: %+v", err, h.latestReport().Deployments)
+	}
+	if len(runtime.applied) != 1 || runtime.applied[0].Config.PublicPort != 443 || runtime.applied[0].Config.NaivePort != 9443 || runtime.applied[0].Config.TrustTunnelPort != 8443 {
+		t.Fatalf("NaiveProxy bundle apply = %+v", runtime.applied)
+	}
+	report := h.latestReport()
+	if report.Deployments[0].Status != "active" || strings.Join(report.Capabilities.SupportedEngines, ",") != "xray,naiveproxy" {
+		t.Fatalf("NaiveProxy report = %+v", report)
+	}
+}
+
+func TestControllerRestoresPublicTrustTunnelWhenNaiveBundleFails(t *testing.T) {
+	trust := desiredItem{InboundID: "catalog-tt", Engine: "trusttunnel", Action: "apply", DesiredRevision: 2, EffectiveTag: "gx-trusttunnel", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"node.example.com","upstream_protocol":"http2","listen_port":8443}`), ClientUUIDs: []string{testClientUUID}}
+	naive := desiredItem{InboundID: "catalog-naive", Engine: "naiveproxy", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-naive-h2", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"naive","tag":"gx-naive-h2","port":443,"hostname":"naive.node.example.com","trusttunnel_hostname":"node.example.com","trusttunnel_port":8443,"naive_port":9443,"decoy_port":9080,"transport":"http2","security":"tls"}`), ClientUUIDs: []string{testClientUUID}}
+	count := 1
+	for _, item := range []*desiredItem{&trust, &naive} {
+		item.ClientCount = &count
+		_, item.ClientSetSHA256, _ = normalizeClientUUIDs(item.ClientUUIDs)
+	}
+	h := newControllerHarness(t, []desiredItem{naive, trust})
+	trustRuntime := &fakeTrustTunnelRuntime{available: true}
+	h.reconciler.EnableTrustTunnel(trustRuntime)
+	h.reconciler.EnableTransportBundle(&fakeTransportBundleRuntime{fail: true})
+	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+		t.Fatal("expected NaiveProxy activation failure")
+	}
+	if len(trustRuntime.applied) != 2 || trustRuntime.applied[0].Endpoint.Port != 8443 || trustRuntime.applied[1].Endpoint.Port != 443 {
+		t.Fatalf("TrustTunnel rollback sequence = %+v", trustRuntime.applied)
 	}
 }
 

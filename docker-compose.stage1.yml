@@ -13,6 +13,8 @@ services:
     cap_add: !reset []
     environment:
       TRUSTTUNNEL_PROCESS_MODE: "external"
+      TRANSPORT_BUNDLE_ENABLED: "${TRANSPORT_BUNDLE_ENABLED:-false}"
+      TRANSPORT_BUNDLE_ROOT: "/data/transport-bundle"
 
   trusttunnel-runner:
     build: .
@@ -53,6 +55,37 @@ services:
         max-file: "3"
     volumes:
       - ./data/trusttunnel:/data/trusttunnel
+  transport-bundle-runner:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    command: transport-bundle-runner
+    environment:
+      TRANSPORT_BUNDLE_ROOT: "/data/transport-bundle"
+      CADDY_BINARY: "/usr/bin/caddy"
+      HAPROXY_BINARY: "/usr/sbin/haproxy"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /config:size=16m,mode=0700
+      - /data/caddy:size=16m,mode=0700
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 96
+    mem_limit: 256m
+    cpus: 0.35
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+    volumes:
+      - ./data/transport-bundle:/data/transport-bundle
+      - ./data/trusttunnel:/data/trusttunnel:ro
 
   topology-agent:
     build: .

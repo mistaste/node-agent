@@ -5,7 +5,16 @@ RUN go mod download && go mod verify
 COPY . .
 RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /node-agent . \
     && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /topology-agent ./cmd/topology-agent \
-    && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /trusttunnel-runner ./cmd/trusttunnel-runner
+    && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /trusttunnel-runner ./cmd/trusttunnel-runner \
+    && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /transport-bundle-runner ./cmd/transport-bundle-runner
+
+FROM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS caddy-naive
+RUN apk add --no-cache git \
+    && go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.6 \
+    && /go/bin/xcaddy build v2.11.4 \
+       --with github.com/caddyserver/forwardproxy=github.com/klzgrad/forwardproxy@d62c80d3dd2c706b6b87579844d2397bddd18317 \
+       --output /caddy \
+    && /caddy version
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS trusttunnel
 # BuildKit supplies TARGETARCH for the selected image platform. Do not set a
@@ -26,10 +35,12 @@ RUN apk add --no-cache ca-certificates wget tar \
     && test -x /trusttunnel_endpoint
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
-RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git iproute2 iptables nftables wireguard-tools
+RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git haproxy iproute2 iptables nftables wireguard-tools
 COPY --from=builder /node-agent /usr/local/bin/node-agent
 COPY --from=builder /topology-agent /usr/local/bin/topology-agent
 COPY --from=builder /trusttunnel-runner /usr/local/bin/trusttunnel-runner
+COPY --from=builder /transport-bundle-runner /usr/local/bin/transport-bundle-runner
+COPY --from=caddy-naive /caddy /usr/bin/caddy
 COPY --from=trusttunnel /trusttunnel_endpoint /opt/trusttunnel/trusttunnel_endpoint
 EXPOSE 8099
 CMD ["node-agent"]
