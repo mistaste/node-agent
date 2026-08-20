@@ -74,6 +74,7 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 		fmt.Fprintf(&users, "            basic_auth %s %s\n", id, password)
 	}
 	caddy := fmt.Sprintf(`https://%s:%d {
+	bind 127.0.0.1
     tls %s %s
     route {
         forward_proxy {
@@ -86,10 +87,12 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
     log { output discard }
 }
 
-http://127.0.0.1:%d {
+https://%s:%d {
+	bind 127.0.0.1
+	tls %s %s
     respond "OK" 200
 }
-`, naiveHost, cfg.NaivePort, cfg.CertificateFile, cfg.PrivateKeyFile, users.String(), cfg.DecoyPort)
+`, naiveHost, cfg.NaivePort, cfg.CertificateFile, cfg.PrivateKeyFile, users.String(), naiveHost, cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 
 	haproxy := fmt.Sprintf(`global
     log stdout format raw local0

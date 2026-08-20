@@ -24,6 +24,9 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	if !strings.Contains(caddy, "basic_auth "+testUUID+" "+password) || !strings.Contains(caddy, "probe_resistance") {
 		t.Fatal("Caddy authentication or probe resistance missing")
 	}
+	if strings.Count(caddy, "bind 127.0.0.1") != 2 || !strings.Contains(caddy, "https://naive.node.example.com:9080") {
+		t.Fatal("Naive and TLS decoy listeners must remain private behind the SNI mux")
+	}
 }
 
 func TestCredentialIsStableAndDomainSeparated(t *testing.T) {
