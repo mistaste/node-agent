@@ -40,6 +40,7 @@ build_one() {
 build_one guardex-node-agent .
 build_one guardex-topology-agent ./cmd/topology-agent
 build_one guardex-trusttunnel-runner ./cmd/trusttunnel-runner
+build_one guardex-transport-bundle-render ./cmd/transport-bundle-render
 
 echo
 echo "manifest: ${MANIFEST}"

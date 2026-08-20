@@ -22,6 +22,7 @@ required="
 guardex-node-agent-linux-amd64
 guardex-topology-agent-linux-amd64
 guardex-trusttunnel-runner-linux-amd64
+guardex-transport-bundle-render-linux-amd64
 "
 
 for name in $required; do
