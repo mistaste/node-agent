@@ -82,7 +82,14 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return errors.New("invalid desired state")
 	}
 	if state.Digest == r.appliedDigest && running(r.caddyProcess) && running(r.haproxyProcess) {
-		return nil
+		// The rendered bundle can stay byte-for-byte identical while the
+		// controller advances its revision or membership acknowledgement. Keep
+		// the processes running, but acknowledge the exact desired state so the
+		// controller does not time out and incorrectly restore public TT/443.
+		if err := r.ensureUDPRedirect(ctx, state.TrustTunnelPort); err != nil {
+			return errors.New("public QUIC redirect is not ready")
+		}
+		return writeAtomic(filepath.Join(r.root, "runner-state.json"), stateRaw, 0600)
 	}
 	haproxyConfig := filepath.Join(r.root, "haproxy.cfg")
 	caddyConfig := filepath.Join(r.root, "Caddyfile")
