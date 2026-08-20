@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -53,7 +54,7 @@ func (r *runner) run(ctx context.Context) error {
 	defer r.stopChildren()
 	for {
 		if err := r.reconcile(ctx); err != nil {
-			log.Printf("[transport-bundle-runner] reconcile deferred")
+			log.Printf("[transport-bundle-runner] reconcile deferred: %v", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -75,7 +76,7 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return err
 	}
 	var state transportbundle.State
-	if json.Unmarshal(stateRaw, &state) != nil || state.Version != 1 || state.Digest == "" {
+	if json.Unmarshal(stateRaw, &state) != nil || state.Version != 1 || state.Digest == "" || !internalPort(state.TrustTunnelPort) || !internalPort(state.NaivePort) || !internalPort(state.DecoyPort) {
 		return errors.New("invalid desired state")
 	}
 	if state.Digest == r.appliedDigest && running(r.caddyProcess) && running(r.haproxyProcess) {
@@ -108,7 +109,7 @@ func (r *runner) reconcile(ctx context.Context) error {
 	} else {
 		err = exec.CommandContext(ctx, r.caddy, "reload", "--config", caddyConfig, "--adapter", "caddyfile", "--address", "127.0.0.1:2019").Run()
 	}
-	if err != nil || !waitTCP(ctx, "127.0.0.1:9443", 3*time.Second) || !waitTCP(ctx, "127.0.0.1:9080", 3*time.Second) || !waitTCP(ctx, "127.0.0.1:8443", 3*time.Second) {
+	if err != nil || !waitTCP(ctx, loopback(state.NaivePort), 3*time.Second) || !waitTCP(ctx, loopback(state.DecoyPort), 3*time.Second) || !waitTCP(ctx, loopback(state.TrustTunnelPort), 3*time.Second) {
 		return errors.New("private transport listeners are not ready")
 	}
 	if running(r.haproxyProcess) {
@@ -125,6 +126,10 @@ func (r *runner) reconcile(ctx context.Context) error {
 	log.Printf("[transport-bundle-runner] bundle active")
 	return nil
 }
+
+func internalPort(port int) bool { return port >= 1024 && port <= 65535 && port != 443 }
+
+func loopback(port int) string { return net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)) }
 
 func start(name string, args ...string) (*child, error) {
 	cmd := exec.Command(name, args...)

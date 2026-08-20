@@ -69,6 +69,7 @@ services:
       - /tmp:size=16m,mode=1777
       - /config:size=16m,mode=0700
       - /data/caddy:size=16m,mode=0700
+      - /run:size=4m,mode=0755
     cap_drop:
       - ALL
     cap_add:

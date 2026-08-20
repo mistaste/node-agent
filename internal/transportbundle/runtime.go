@@ -38,6 +38,9 @@ type State struct {
 	Digest          string `json:"digest"`
 	ClientCount     int    `json:"client_count"`
 	ClientSetSHA256 string `json:"client_set_sha256"`
+	TrustTunnelPort int    `json:"trusttunnel_port"`
+	NaivePort       int    `json:"naive_port"`
+	DecoyPort       int    `json:"decoy_port"`
 }
 
 func NewRuntime(root, nodeSecret string) (*Runtime, error) {
@@ -60,7 +63,7 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	}
 	digestRaw := append(append([]byte(nil), files.HAProxy...), files.Caddy...)
 	digest := sha256.Sum256(digestRaw)
-	state := State{Version: runtimeStateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: hex.EncodeToString(digest[:]), ClientCount: len(normalizeUUIDs(request.Config.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
+	state := State{Version: runtimeStateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: hex.EncodeToString(digest[:]), ClientCount: len(normalizeUUIDs(request.Config.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256, TrustTunnelPort: request.Config.TrustTunnelPort, NaivePort: request.Config.NaivePort, DecoyPort: request.Config.DecoyPort}
 	stateRaw, err := json.Marshal(state)
 	if err != nil {
 		return State{}, errors.New("transport bundle state could not be encoded")
