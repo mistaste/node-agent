@@ -193,15 +193,11 @@ func (r *runner) ensureUDPRedirect(ctx context.Context, port int) error {
 	if r.udpRedirectPort != 0 && r.udpRedirectPort != port {
 		r.removeUDPRedirect()
 	}
-	_ = exec.CommandContext(ctx, "iptables", "-t", "nat", "-N", "GUARDEX_TT_H3").Run()
-	if exec.CommandContext(ctx, "iptables", "-t", "nat", "-F", "GUARDEX_TT_H3").Run() != nil ||
-		exec.CommandContext(ctx, "iptables", "-t", "nat", "-A", "GUARDEX_TT_H3", "-p", "udp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(port)).Run() != nil {
-		return errors.New("configure UDP redirect chain")
-	}
-	jump := redirectJumpArgs("-C")
-	if exec.CommandContext(ctx, "iptables", jump...).Run() != nil {
-		if exec.CommandContext(ctx, "iptables", redirectJumpArgs("-A")...).Run() != nil {
-			return errors.New("install UDP redirect jump")
+	removeLegacyUDPRedirect()
+	rule := redirectArgs("-C", port)
+	if exec.CommandContext(ctx, "iptables", rule...).Run() != nil {
+		if exec.CommandContext(ctx, "iptables", redirectArgs("-A", port)...).Run() != nil {
+			return errors.New("install UDP redirect")
 		}
 	}
 	r.udpRedirectPort = port
@@ -209,17 +205,32 @@ func (r *runner) ensureUDPRedirect(ctx context.Context, port int) error {
 }
 
 func (r *runner) removeUDPRedirect() {
-	for exec.Command("iptables", redirectJumpArgs("-C")...).Run() == nil {
-		if exec.Command("iptables", redirectJumpArgs("-D")...).Run() != nil {
+	if r.udpRedirectPort != 0 {
+		for exec.Command("iptables", redirectArgs("-C", r.udpRedirectPort)...).Run() == nil {
+			if exec.Command("iptables", redirectArgs("-D", r.udpRedirectPort)...).Run() != nil {
+				break
+			}
+		}
+	}
+	removeLegacyUDPRedirect()
+	r.udpRedirectPort = 0
+}
+
+func removeLegacyUDPRedirect() {
+	for exec.Command("iptables", legacyRedirectJumpArgs("-C")...).Run() == nil {
+		if exec.Command("iptables", legacyRedirectJumpArgs("-D")...).Run() != nil {
 			break
 		}
 	}
 	_ = exec.Command("iptables", "-t", "nat", "-F", "GUARDEX_TT_H3").Run()
 	_ = exec.Command("iptables", "-t", "nat", "-X", "GUARDEX_TT_H3").Run()
-	r.udpRedirectPort = 0
 }
 
-func redirectJumpArgs(action string) []string {
+func redirectArgs(action string, port int) []string {
+	return []string{"-t", "nat", action, "PREROUTING", "-p", "udp", "--dport", "443", "-m", "comment", "--comment", "guardex-tt-h3-mux", "-j", "REDIRECT", "--to-ports", strconv.Itoa(port)}
+}
+
+func legacyRedirectJumpArgs(action string) []string {
 	return []string{"-t", "nat", action, "PREROUTING", "-p", "udp", "--dport", "443", "-m", "comment", "--comment", "guardex-tt-h3-mux", "-j", "GUARDEX_TT_H3"}
 }
 
