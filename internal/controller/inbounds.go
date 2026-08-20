@@ -267,6 +267,24 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 		}
 		return false
 	})
+	// An internal TrustTunnel listener is valid only while an active Naive mux
+	// owns the public socket. A Naive tombstone must therefore move TrustTunnel
+	// back to its advertised port in the same reconciliation cycle.
+	hasNaiveApply := false
+	for _, item := range prepared {
+		if item.desired.Engine == "naiveproxy" && item.desired.Action == "apply" {
+			hasNaiveApply = true
+			break
+		}
+	}
+	if !hasNaiveApply {
+		for index := range prepared {
+			item := &prepared[index]
+			if item.desired.Engine == "trusttunnel" && item.desired.Action == "apply" && item.trustTunnel != nil {
+				item.trustTunnel.Port = item.desired.EffectivePort
+			}
+		}
+	}
 
 	reports := make([]deploymentReport, 0, len(prepared))
 	failed := 0
