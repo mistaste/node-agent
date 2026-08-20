@@ -188,7 +188,7 @@ func (r *runner) ensureUDPRedirect(ctx context.Context, port int) error {
 	}
 	_ = exec.CommandContext(ctx, "iptables", "-t", "nat", "-N", "GUARDEX_TT_H3").Run()
 	if exec.CommandContext(ctx, "iptables", "-t", "nat", "-F", "GUARDEX_TT_H3").Run() != nil ||
-		exec.CommandContext(ctx, "iptables", "-t", "nat", "-A", "GUARDEX_TT_H3", "-j", "REDIRECT", "--to-ports", strconv.Itoa(port)).Run() != nil {
+		exec.CommandContext(ctx, "iptables", "-t", "nat", "-A", "GUARDEX_TT_H3", "-p", "udp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(port)).Run() != nil {
 		return errors.New("configure UDP redirect chain")
 	}
 	jump := redirectJumpArgs("-C")
