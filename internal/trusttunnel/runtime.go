@@ -164,20 +164,8 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	}
 	primary := request.Endpoint
 	var h3Files *Files
-	if primary.Port != 443 && primary.EnableHTTP3 {
-		primary.EnableHTTP3 = false
-		h3 := request.Endpoint
-		h3.Port = 443
-		h3.EnableHTTP1 = false
-		h3.EnableHTTP2 = false
-		h3.EnableHTTP3 = true
-		h3.MetricsPort = 1988
-		built, buildErr := BuildFiles(r.root, r.nodeSecret, h3)
-		if buildErr != nil {
-			return State{}, buildErr
-		}
-		h3Files = &built
-	}
+	// The SNI mux owns only TCP/443. TrustTunnel keeps H2 and H3 on its
+	// private port; the bundle supervisor redirects public UDP/443 to it.
 	files, err := BuildFiles(r.root, r.nodeSecret, primary)
 	if err != nil {
 		return State{}, err

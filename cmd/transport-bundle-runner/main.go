@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -46,6 +47,7 @@ type runner struct {
 	caddyProcess         *child
 	haproxyProcess       *child
 	appliedDigest        string
+	udpRedirectPort      int
 }
 
 func (r *runner) run(ctx context.Context) error {
@@ -112,6 +114,9 @@ func (r *runner) reconcile(ctx context.Context) error {
 	if err != nil || !waitTCP(ctx, loopback(state.NaivePort), 3*time.Second) || !waitTCP(ctx, loopback(state.DecoyPort), 3*time.Second) || !waitTCP(ctx, loopback(state.TrustTunnelPort), 3*time.Second) {
 		return errors.New("private transport listeners are not ready")
 	}
+	if err := r.ensureUDPRedirect(ctx, state.TrustTunnelPort); err != nil {
+		return errors.New("public QUIC redirect is not ready")
+	}
 	if running(r.haproxyProcess) {
 		_ = stop(r.haproxyProcess)
 	}
@@ -173,7 +178,42 @@ func stop(c *child) error {
 func (r *runner) stopChildren() {
 	_ = stop(r.haproxyProcess)
 	_ = stop(r.caddyProcess)
+	r.removeUDPRedirect()
 	r.haproxyProcess, r.caddyProcess = nil, nil
+}
+
+func (r *runner) ensureUDPRedirect(ctx context.Context, port int) error {
+	if r.udpRedirectPort != 0 && r.udpRedirectPort != port {
+		r.removeUDPRedirect()
+	}
+	_ = exec.CommandContext(ctx, "iptables", "-t", "nat", "-N", "GUARDEX_TT_H3").Run()
+	if exec.CommandContext(ctx, "iptables", "-t", "nat", "-F", "GUARDEX_TT_H3").Run() != nil ||
+		exec.CommandContext(ctx, "iptables", "-t", "nat", "-A", "GUARDEX_TT_H3", "-j", "REDIRECT", "--to-ports", strconv.Itoa(port)).Run() != nil {
+		return errors.New("configure UDP redirect chain")
+	}
+	jump := redirectJumpArgs("-C")
+	if exec.CommandContext(ctx, "iptables", jump...).Run() != nil {
+		if exec.CommandContext(ctx, "iptables", redirectJumpArgs("-A")...).Run() != nil {
+			return errors.New("install UDP redirect jump")
+		}
+	}
+	r.udpRedirectPort = port
+	return nil
+}
+
+func (r *runner) removeUDPRedirect() {
+	for exec.Command("iptables", redirectJumpArgs("-C")...).Run() == nil {
+		if exec.Command("iptables", redirectJumpArgs("-D")...).Run() != nil {
+			break
+		}
+	}
+	_ = exec.Command("iptables", "-t", "nat", "-F", "GUARDEX_TT_H3").Run()
+	_ = exec.Command("iptables", "-t", "nat", "-X", "GUARDEX_TT_H3").Run()
+	r.udpRedirectPort = 0
+}
+
+func redirectJumpArgs(action string) []string {
+	return []string{"-t", "nat", action, "PREROUTING", "-p", "udp", "--dport", "443", "-m", "comment", "--comment", "guardex-tt-h3-mux", "-j", "GUARDEX_TT_H3"}
 }
 
 func waitTCP(ctx context.Context, address string, timeout time.Duration) bool {
