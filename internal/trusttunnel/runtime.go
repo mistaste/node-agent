@@ -111,6 +111,7 @@ type State struct {
 	Revision        int64  `json:"revision"`
 	Digest          string `json:"digest"`
 	Port            int    `json:"port"`
+	H3Port          int    `json:"h3_port,omitempty"`
 	ClientCount     int    `json:"client_count"`
 	ClientSetSHA256 string `json:"client_set_sha256"`
 }
@@ -161,12 +162,33 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	if strings.TrimSpace(request.InboundID) == "" || strings.TrimSpace(request.Tag) == "" || request.Revision < 1 {
 		return State{}, errors.New("TrustTunnel desired identity is invalid")
 	}
-	files, err := BuildFiles(r.root, r.nodeSecret, request.Endpoint)
+	primary := request.Endpoint
+	var h3Files *Files
+	if primary.Port != 443 && primary.EnableHTTP3 {
+		primary.EnableHTTP3 = false
+		h3 := request.Endpoint
+		h3.Port = 443
+		h3.EnableHTTP1 = false
+		h3.EnableHTTP2 = false
+		h3.EnableHTTP3 = true
+		h3.MetricsPort = 1988
+		built, buildErr := BuildFiles(r.root, r.nodeSecret, h3)
+		if buildErr != nil {
+			return State{}, buildErr
+		}
+		h3Files = &built
+	}
+	files, err := BuildFiles(r.root, r.nodeSecret, primary)
 	if err != nil {
 		return State{}, err
 	}
-	digest := bundleDigest(files)
-	state := State{Version: stateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: digest, Port: request.Endpoint.Port, ClientCount: len(normalizeUUIDs(request.Endpoint.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
+	digestFiles := []Files{files}
+	state := State{Version: stateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: "", Port: request.Endpoint.Port, ClientCount: len(normalizeUUIDs(request.Endpoint.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
+	if h3Files != nil {
+		digestFiles = append(digestFiles, *h3Files)
+		state.H3Port = 443
+	}
+	state.Digest = bundleDigestAll(digestFiles...)
 	if current, ok := r.State(); ok {
 		unchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Revision == state.Revision && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
 		healthy := (r.external && r.externalRunnerReady(current)) || (!r.external && r.process != nil && r.process.Running())
@@ -198,6 +220,17 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 			r.restore(previous)
 			return State{}, err
 		}
+	}
+	if h3Files != nil {
+		for name, content := range map[string][]byte{"vpn-h3.toml": h3Files.Settings, "hosts-h3.toml": h3Files.Hosts} {
+			if err := writeAtomic(filepath.Join(r.root, name), content, 0600); err != nil {
+				r.restore(previous)
+				return State{}, err
+			}
+		}
+	} else {
+		_ = os.Remove(filepath.Join(r.root, "vpn-h3.toml"))
+		_ = os.Remove(filepath.Join(r.root, "hosts-h3.toml"))
 	}
 	if !r.external {
 		if err := r.startAndCheckLocked(ctx, request.Endpoint.Port); err != nil {
@@ -283,7 +316,7 @@ func (r *Runtime) Remove(ctx context.Context, inboundID string, revision int64) 
 	if err := r.stopLocked(ctx); err != nil {
 		return err
 	}
-	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml", "state.json"} {
+	for _, name := range managedStateFiles {
 		if err := os.Remove(filepath.Join(r.root, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove managed TrustTunnel file: %w", err)
 		}
@@ -379,7 +412,7 @@ func decodeState(raw []byte) (State, bool) {
 
 func (r *Runtime) snapshot() map[string][]byte {
 	previous := make(map[string][]byte)
-	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml", "state.json"} {
+	for _, name := range managedStateFiles {
 		if raw, err := os.ReadFile(filepath.Join(r.root, name)); err == nil {
 			previous[name] = raw
 		}
@@ -388,7 +421,7 @@ func (r *Runtime) snapshot() map[string][]byte {
 }
 
 func (r *Runtime) restore(previous map[string][]byte) {
-	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml", "state.json"} {
+	for _, name := range managedStateFiles {
 		path := filepath.Join(r.root, name)
 		if content, ok := previous[name]; ok {
 			_ = writeAtomic(path, content, 0600)
@@ -423,11 +456,17 @@ func writeAtomic(path string, content []byte, mode os.FileMode) error {
 	return os.Rename(temporaryPath, path)
 }
 
-func bundleDigest(files Files) string {
+var managedStateFiles = []string{"vpn.toml", "hosts.toml", "credentials.toml", "vpn-h3.toml", "hosts-h3.toml", "state.json"}
+
+func bundleDigest(files Files) string { return bundleDigestAll(files) }
+
+func bundleDigestAll(files ...Files) string {
 	hash := sha256.New()
-	for _, raw := range [][]byte{files.Settings, files.Hosts, files.Credentials} {
-		_, _ = hash.Write(raw)
-		_, _ = hash.Write([]byte{0})
+	for _, bundle := range files {
+		for _, raw := range [][]byte{bundle.Settings, bundle.Hosts, bundle.Credentials} {
+			_, _ = hash.Write(raw)
+			_, _ = hash.Write([]byte{0})
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }

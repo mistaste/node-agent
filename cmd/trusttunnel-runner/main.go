@@ -22,6 +22,7 @@ type state struct {
 	Revision        int64  `json:"revision"`
 	Digest          string `json:"digest"`
 	ClientSetSHA256 string `json:"client_set_sha256"`
+	H3Port          int    `json:"h3_port,omitempty"`
 }
 
 const runnerStateFile = "runner-state.json"
@@ -33,6 +34,8 @@ type runner struct {
 	endpointGID uint32
 	process     *exec.Cmd
 	done        chan struct{}
+	h3Process   *exec.Cmd
+	h3Done      chan struct{}
 	key         string
 }
 
@@ -80,7 +83,7 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return nil
 	}
 	key := current.InboundID + ":" + current.Digest + ":" + current.ClientSetSHA256 + ":" + strconv.FormatInt(current.Revision, 10)
-	if r.running() && r.key == key {
+	if r.running() && (current.H3Port == 0 || r.h3Running()) && r.key == key {
 		if err := r.writeRunnerState(current); err != nil {
 			return err
 		}
@@ -93,6 +96,13 @@ func (r *runner) reconcile(ctx context.Context) error {
 	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml"} {
 		if err := requireManagedFile(r.root, name, r.endpointGID); err != nil {
 			return err
+		}
+	}
+	if current.H3Port != 0 {
+		for _, name := range []string{"vpn-h3.toml", "hosts-h3.toml"} {
+			if err := requireManagedFile(r.root, name, r.endpointGID); err != nil {
+				return err
+			}
 		}
 	}
 	if err := r.prepareEndpointAccess(); err != nil {
@@ -114,6 +124,28 @@ func (r *runner) reconcile(ctx context.Context) error {
 	r.done = done
 	r.key = key
 	go r.waitEndpoint(cmd, done, time.Now())
+	if current.H3Port != 0 {
+		h3 := exec.CommandContext(ctx, r.binary, filepath.Join(r.root, "vpn-h3.toml"), filepath.Join(r.root, "hosts-h3.toml"))
+		if r.endpointUID != 0 {
+			if err := configureEndpointCommand(h3, r.endpointUID, r.endpointGID); err != nil {
+				_ = r.stop(context.Background())
+				return err
+			}
+		}
+		h3.Stdout, h3.Stderr = nil, nil
+		if err := h3.Start(); err != nil {
+			_ = r.stop(context.Background())
+			return err
+		}
+		r.h3Process = h3
+		r.h3Done = make(chan struct{})
+		go r.waitEndpoint(h3, r.h3Done, time.Now())
+		time.Sleep(250 * time.Millisecond)
+		if !r.running() || !r.h3Running() {
+			_ = r.stop(context.Background())
+			return errors.New("split TrustTunnel endpoint exited during startup")
+		}
+	}
 	if err := r.writeRunnerState(current); err != nil {
 		_ = r.stop(context.Background())
 		return err
@@ -183,6 +215,10 @@ func (r *runner) prepareEndpointAccess() error {
 
 func (r *runner) stop(ctx context.Context) error {
 	r.clearRunnerState()
+	if err := stopProcess(ctx, r.h3Process, r.h3Done); err != nil {
+		return err
+	}
+	r.h3Process, r.h3Done = nil, nil
 	if !r.running() {
 		r.process = nil
 		r.done = nil
@@ -207,12 +243,46 @@ func (r *runner) stop(ctx context.Context) error {
 	return nil
 }
 
+func stopProcess(ctx context.Context, process *exec.Cmd, done chan struct{}) error {
+	if process == nil || done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	if err := process.Process.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("signal endpoint: %w", err)
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return process.Process.Kill()
+	case <-time.After(5 * time.Second):
+		return process.Process.Kill()
+	}
+}
+
 func (r *runner) running() bool {
 	if r.process == nil || r.done == nil {
 		return false
 	}
 	select {
 	case <-r.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (r *runner) h3Running() bool {
+	if r.h3Process == nil || r.h3Done == nil {
+		return false
+	}
+	select {
+	case <-r.h3Done:
 		return false
 	default:
 		return true
@@ -231,7 +301,7 @@ func (r *runner) loadState() (state, bool, error) {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return state{}, false, err
 	}
-	if value.Version != 1 || strings.TrimSpace(value.InboundID) == "" || value.Revision < 1 || len(value.Digest) != 64 {
+	if value.Version != 1 || strings.TrimSpace(value.InboundID) == "" || value.Revision < 1 || len(value.Digest) != 64 || value.H3Port != 0 && value.H3Port != 443 {
 		return state{}, false, errors.New("invalid durable TrustTunnel state")
 	}
 	return value, true, nil

@@ -116,6 +116,36 @@ func TestRunnerRestartsOnlyWhenStateKeyChanges(t *testing.T) {
 	r.stop(ctx)
 }
 
+func TestRunnerStartsSplitHTTP2AndHTTP3Endpoints(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX shell fixture")
+	}
+	root := t.TempDir()
+	starts := filepath.Join(root, "split-starts")
+	binary := filepath.Join(root, "endpoint.sh")
+	script := "#!/bin/sh\nprintf x >> " + strconv.Quote(starts) + "\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml", "vpn-h3.toml", "hosts-h3.toml"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRunnerState(t, root, state{Version: 1, InboundID: "catalog-tt", Revision: 1, Digest: testDigest, H3Port: 443})
+	r := &runner{root: root, binary: binary}
+	if err := r.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForStarts(t, starts, 2)
+	if !r.running() || !r.h3Running() {
+		t.Fatal("split endpoints are not both running")
+	}
+	if err := r.stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunnerStopsWhenStateIsRemoved(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell fixture")

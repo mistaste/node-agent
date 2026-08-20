@@ -93,12 +93,12 @@ https://%s:%d {
 	}
 }
 
-https://%s:%d {
+:%d {
 	bind 127.0.0.1
 	tls %s %s
 	respond "OK" 200
 }
-`, naiveHost, cfg.NaivePort, cfg.CertificateFile, cfg.PrivateKeyFile, users.String(), naiveHost, cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
+`, naiveHost, cfg.NaivePort, cfg.CertificateFile, cfg.PrivateKeyFile, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 
 	haproxy := fmt.Sprintf(`global
     log stdout format raw local0
