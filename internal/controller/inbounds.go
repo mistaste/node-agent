@@ -165,6 +165,17 @@ func (r *Reconciler) EnableTransportBundle(runtime transportBundleRuntime) {
 	r.transportBundle = runtime
 }
 
+// IsNaiveTag reports whether tag belongs to the active NaiveProxy bundle.
+// It lets the authenticated direct-user API route membership refreshes to the
+// controller reconciler instead of Xray's HandlerService.
+func (r *Reconciler) IsNaiveTag(tag string) bool {
+	if r.transportBundle == nil {
+		return false
+	}
+	state, ok := r.transportBundle.State()
+	return ok && strings.TrimSpace(state.Tag) == strings.TrimSpace(tag)
+}
+
 func New(cfg *config.Config, manager *inboundsync.Manager, users *store.Store, usersRuntime userCore, coordinators ...*userops.Coordinator) (*Reconciler, error) {
 	if cfg == nil || manager == nil || users == nil || usersRuntime == nil {
 		return nil, errors.New("controller reconciler requires config, inbound manager, user store, and user runtime")

@@ -40,6 +40,7 @@ type handlers struct {
 
 type desiredStateReconciler interface {
 	SyncOnce(context.Context) error
+	IsNaiveTag(string) bool
 }
 
 func (h *handlers) reconcileDesiredState(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +150,7 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 	// is not an Xray runtime user. The backend stores profile membership before
 	// calling this endpoint, so reconcile the signed controller manifest now
 	// instead of attempting an invalid Xray HandlerService mutation.
-	if protocol == "naive" {
+	if protocol == "naive" || (h.reconciler != nil && h.reconciler.IsNaiveTag(req.InboundTag)) {
 		if h.reconciler == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "controller reconciliation is unavailable"})
 			return
