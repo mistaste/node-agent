@@ -9,14 +9,18 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -787,7 +791,34 @@ func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string,
 		Clients []string        `json:"clients"`
 	}{Config: item.ConfigJSON, Clients: clients})
 	digest := sha256.Sum256(digestRaw)
-	return preparedItem{desired: item, desiredDigest: hex.EncodeToString(digest[:]), publicMaterial: json.RawMessage(`{}`), clientParams: json.RawMessage(`{}`), clientSecret: json.RawMessage(`{}`), clientCount: len(clients), clientSetSHA256: clientHash, trustTunnel: &endpoint}, nil
+	clientParams := json.RawMessage(`{}`)
+	if pin, err := certificateSPKIPin(cert); err == nil {
+		clientParams, _ = json.Marshal(map[string]any{"spki_pins_sha256": []string{pin}})
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return preparedItem{}, fmt.Errorf("TrustTunnel certificate is invalid: %w", err)
+	}
+	return preparedItem{desired: item, desiredDigest: hex.EncodeToString(digest[:]), publicMaterial: json.RawMessage(`{}`), clientParams: clientParams, clientSecret: json.RawMessage(`{}`), clientCount: len(clients), clientSetSHA256: clientHash, trustTunnel: &endpoint}, nil
+}
+
+func certificateSPKIPin(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", errors.New("certificate PEM is missing")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	spki, err := x509.MarshalPKIXPublicKey(certificate.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(spki)
+	return base64.StdEncoding.EncodeToString(digest[:]), nil
 }
 
 func (r *Reconciler) realizeManagedHysteria(item preparedItem) (preparedItem, error) {

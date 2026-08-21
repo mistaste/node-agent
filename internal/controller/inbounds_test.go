@@ -3,7 +3,11 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1276,6 +1280,29 @@ func TestControllerAppliesTrustTunnelOnlyWhenRuntimeEnabled(t *testing.T) {
 	}
 	if strings.Join(report.Capabilities.SupportedEngines, ",") != "xray,trusttunnel" {
 		t.Fatalf("engines = %+v", report.Capabilities.SupportedEngines)
+	}
+}
+
+func TestCertificateSPKIPinUsesCertificatePublicKey(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	certificate := server.Certificate()
+	path := filepath.Join(t.TempDir(), "fullchain.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spki, err := x509.MarshalPKIXPublicKey(certificate.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(spki)
+	want := base64.StdEncoding.EncodeToString(digest[:])
+	got, err := certificateSPKIPin(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("SPKI pin = %q, want %q", got, want)
 	}
 }
 
