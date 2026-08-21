@@ -21,7 +21,7 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	}
 	caddy := string(files.Caddy)
 	password, _ := NaiveCredential(testSecret, testUUID)
-	if !strings.Contains(caddy, "basic_auth "+testUUID+" "+password) || !strings.Contains(caddy, "probe_resistance") {
+	if !strings.Contains(caddy, "basic_auth "+testUUID+" "+password) || !strings.Contains(caddy, "probe_resistance") || !strings.Contains(caddy, "auto_https disable_redirects") {
 		t.Fatal("Caddy authentication or probe resistance missing")
 	}
 	if strings.Count(caddy, "bind 127.0.0.1") != 2 || !strings.Contains(caddy, ":9080 {") {
