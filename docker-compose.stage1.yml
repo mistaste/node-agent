@@ -75,6 +75,8 @@ services:
     cap_add:
       - NET_BIND_SERVICE
       - NET_ADMIN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
     pids_limit: 96

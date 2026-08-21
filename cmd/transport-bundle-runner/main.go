@@ -36,7 +36,12 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	r := &runner{root: root, caddy: getenv("CADDY_BINARY", "/usr/bin/caddy"), haproxy: getenv("HAPROXY_BINARY", "/usr/sbin/haproxy")}
+	r := &runner{
+		root: root, caddy: getenv("CADDY_BINARY", "/usr/bin/caddy"),
+		haproxy:  getenv("HAPROXY_BINARY", "/usr/sbin/haproxy"),
+		caddyUID: uint32(getenvInt("CADDY_UID", 65532)),
+		caddyGID: uint32(getenvInt("CADDY_GID", 65532)),
+	}
 	if err := r.run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal("[transport-bundle-runner] stopped")
 	}
@@ -44,6 +49,7 @@ func main() {
 
 type runner struct {
 	root, caddy, haproxy string
+	caddyUID, caddyGID   uint32
 	caddyProcess         *child
 	haproxyProcess       *child
 	appliedDigest        string
@@ -114,7 +120,9 @@ func (r *runner) reconcile(ctx context.Context) error {
 	}
 	// Caddy owns only private listeners and is made ready before public 443.
 	if !running(r.caddyProcess) {
-		r.caddyProcess, err = start(r.caddy, "run", "--config", caddyConfig, "--adapter", "caddyfile")
+		if err = prepareCaddyRuntime(caddyConfig, r.caddyGID); err == nil {
+			r.caddyProcess, err = startAs(r.caddyUID, r.caddyGID, r.caddy, "run", "--config", caddyConfig, "--adapter", "caddyfile")
+		}
 	} else {
 		err = exec.CommandContext(ctx, r.caddy, "reload", "--config", caddyConfig, "--adapter", "caddyfile", "--address", "127.0.0.1:2019").Run()
 	}
@@ -145,6 +153,18 @@ func loopback(port int) string { return net.JoinHostPort("127.0.0.1", fmt.Sprint
 
 func start(name string, args ...string) (*child, error) {
 	cmd := exec.Command(name, args...)
+	return startCommand(cmd)
+}
+
+func startAs(uid, gid uint32, name string, args ...string) (*child, error) {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{Uid: uid, Gid: gid, NoSetGroups: true},
+	}
+	return startCommand(cmd)
+}
+
+func startCommand(cmd *exec.Cmd) (*child, error) {
 	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -158,6 +178,24 @@ func start(name string, args ...string) (*child, error) {
 		c.done <- err
 	}()
 	return c, nil
+}
+
+func prepareCaddyRuntime(config string, gid uint32) error {
+	if err := os.Chown(config, os.Geteuid(), int(gid)); err != nil {
+		return err
+	}
+	if err := os.Chmod(config, 0640); err != nil {
+		return err
+	}
+	for _, directory := range []string{"/config", "/data/caddy"} {
+		if err := os.Chown(directory, int(gid), int(gid)); err != nil {
+			return err
+		}
+		if err := os.Chmod(directory, 0700); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func running(c *child) bool {
@@ -275,4 +313,12 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getenvInt(key string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || value < 1 || value > 1<<31-1 {
+		return fallback
+	}
+	return value
 }
