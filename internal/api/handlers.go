@@ -135,8 +135,6 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 	if req.InboundTag == "" {
 		req.InboundTag = h.cfg.DefaultInboundTag
 	}
-	h.userOps.Lock()
-	defer h.userOps.Unlock()
 	protocol := "vless"
 	if h.inbounds != nil {
 		if managed, ok := h.inbounds.ManagedConfig(req.InboundTag); ok {
@@ -147,6 +145,26 @@ func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// NaiveProxy membership is rendered into the atomic transport bundle; it
+	// is not an Xray runtime user. The backend stores profile membership before
+	// calling this endpoint, so reconcile the signed controller manifest now
+	// instead of attempting an invalid Xray HandlerService mutation.
+	if protocol == "naive" {
+		if h.reconciler == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "controller reconciliation is unavailable"})
+			return
+		}
+		if err := h.reconciler.SyncOnce(r.Context()); err != nil {
+			log.Printf("[api] addUser NaiveProxy reconciliation failed")
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "NaiveProxy membership reconciliation failed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "reconciled", "uuid": req.UUID})
+		return
+	}
+
+	h.userOps.Lock()
+	defer h.userOps.Unlock()
 
 	err := h.runtimeUsers().AddUser(r.Context(), xray.AddUserParams{
 		InboundTag: req.InboundTag,
