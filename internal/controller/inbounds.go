@@ -479,18 +479,26 @@ func (r *Reconciler) prepareManifest(items []desiredItem) ([]preparedItem, []dep
 		return prepared, nil, nil
 	}
 	reports := make([]deploymentReport, 0, len(items))
+	validationCodes := make(map[string]struct{}, len(errorsByIndex))
 	for index, item := range prepared {
 		itemErr, invalid := errorsByIndex[index]
 		forceDegraded := invalid
 		if !invalid {
 			itemErr = itemError{"manifest_rejected", "manifest was not applied because another item is invalid"}
+		} else {
+			validationCodes[itemErr.code] = struct{}{}
 		}
 		if item.desired.InboundID == "" {
 			continue
 		}
 		reports = append(reports, r.failedReportPreservingLKG(item.desired, itemErr, forceDegraded))
 	}
-	return nil, reports, errors.New("controller manifest failed whole-manifest validation")
+	codes := make([]string, 0, len(validationCodes))
+	for code := range validationCodes {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return nil, reports, fmt.Errorf("controller manifest failed whole-manifest validation (%s)", strings.Join(codes, ","))
 }
 
 func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
