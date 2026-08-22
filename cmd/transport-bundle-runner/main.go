@@ -126,7 +126,10 @@ func (r *runner) reconcile(ctx context.Context) error {
 	} else {
 		err = exec.CommandContext(ctx, r.caddy, "reload", "--config", caddyConfig, "--adapter", "caddyfile", "--address", "127.0.0.1:2019").Run()
 	}
-	if err != nil || !waitTCP(ctx, loopback(state.NaivePort), 3*time.Second) || !waitTCP(ctx, loopback(state.DecoyPort), 3*time.Second) {
+	if err != nil {
+		return fmt.Errorf("private Caddy start failed: %w", err)
+	}
+	if !waitTCP(ctx, loopback(state.NaivePort), 3*time.Second) || !waitTCP(ctx, loopback(state.DecoyPort), 3*time.Second) {
 		return errors.New("private transport listeners are not ready")
 	}
 	if err := r.ensureUDPRedirect(ctx, state.TrustTunnelPort); err != nil {
@@ -216,11 +219,20 @@ func prepareCaddyRuntime(config string, gid uint32) error {
 		if err := os.MkdirAll(directory, 0700); err != nil {
 			return err
 		}
-		if err := os.Chmod(directory, 0700); err != nil {
+		info, err := os.Stat(directory)
+		if err != nil {
 			return err
 		}
-		if err := os.Chown(directory, int(gid), int(gid)); err != nil {
-			return err
+		if info.Mode().Perm() != 0700 {
+			if err := os.Chmod(directory, 0700); err != nil {
+				return err
+			}
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != gid || stat.Gid != gid {
+			if err := os.Chown(directory, int(gid), int(gid)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
