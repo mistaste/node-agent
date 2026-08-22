@@ -80,6 +80,11 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 
 https://%s:%d {
 	bind 127.0.0.1
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
 	route {
 		forward_proxy {
 %s

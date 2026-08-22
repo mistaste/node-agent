@@ -21,13 +21,13 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	}
 	caddy := string(files.Caddy)
 	password, _ := NaiveCredential(testSecret, testUUID)
-	if !strings.Contains(caddy, "basic_auth "+testUUID+" "+password) || !strings.Contains(caddy, "probe_resistance") || !strings.Contains(caddy, "auto_https disable_redirects") {
+	if !strings.Contains(caddy, "basic_auth "+testUUID+" "+password) || !strings.Contains(caddy, "probe_resistance") || !strings.Contains(caddy, "auto_https disable_redirects") || !strings.Contains(caddy, "disable_http_challenge") {
 		t.Fatal("Caddy authentication or probe resistance missing")
 	}
 	if strings.Count(caddy, "bind 127.0.0.1") != 2 || !strings.Contains(caddy, ":9080 {") {
 		t.Fatal("Naive and TLS decoy listeners must remain private behind the SNI mux")
 	}
-	if strings.Contains(caddy, "https://naive.node.example.com:9443 {\n\tbind 127.0.0.1\n\ttls ") {
+	if strings.Contains(caddy, "https://naive.node.example.com:9443 {\n\tbind 127.0.0.1\n\ttls /etc/") {
 		t.Fatal("Naive SNI must use Caddy-managed ACME instead of the TrustTunnel certificate")
 	}
 	if strings.Contains(caddy, ":9443, https://") {
