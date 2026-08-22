@@ -487,7 +487,7 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 	if mode == "git-full" {
 		parts = append(parts,
 			"docker", "compose", "pull", "xray", "&&",
-			"docker", "compose", "up", "-d", "--build", "xray", "node-agent", "topology-agent",
+			"docker", "compose", "up", "-d", "--build", "xray", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner",
 		)
 	} else {
 		// Agent-only rollout must never recreate or stop the data-plane. Xray is
