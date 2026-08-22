@@ -97,11 +97,13 @@ func (c *Collector) collect(ctx context.Context) {
 		snap.NetBytesRecv = counters[0].BytesRecv
 	}
 
-	if traffic, err := c.xray.QueryAllUserStats(ctx); err == nil {
-		snap.UserTraffic = traffic
-		snap.ActiveUsers = c.markActiveUsers(snap.CollectedAt, traffic)
-	} else {
-		log.Printf("[metrics] xray stats error: %v", err)
+	if c.xray != nil {
+		if traffic, err := c.xray.QueryAllUserStats(ctx); err == nil {
+			snap.UserTraffic = traffic
+			snap.ActiveUsers = c.markActiveUsers(snap.CollectedAt, traffic)
+		} else {
+			log.Printf("[metrics] xray stats error: %v", err)
+		}
 	}
 
 	c.mu.Lock()

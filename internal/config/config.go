@@ -15,6 +15,7 @@ type Config struct {
 	Secret                 string
 	DefaultInboundTag      string
 	MetricsInterval        time.Duration
+	MetricsOnly            bool
 	ControllerURL          string
 	NodeID                 string
 	InternalServiceToken   string
@@ -42,6 +43,7 @@ func Load() *Config {
 		Secret:                 getenv("AGENT_SECRET", "change-me-secret"),
 		DefaultInboundTag:      getenv("XRAY_INBOUND_TAG", "vless-in"),
 		MetricsInterval:        parseDuration(getenv("METRICS_INTERVAL", "15s")),
+		MetricsOnly:            parseBool(getenv("METRICS_ONLY", "false")),
 		ControllerURL:          canonicalControllerURL(getenv("CONTROLLER_URL", "")),
 		NodeID:                 getenv("NODE_ID", ""),
 		InternalServiceToken:   getenv("INTERNAL_SERVICE_TOKEN", ""),

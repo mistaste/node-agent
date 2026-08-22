@@ -34,6 +34,10 @@ func main() {
 		log.Printf("[rollback-check] safe: v3 store contains no active Hysteria records")
 		return
 	}
+	if cfg.MetricsOnly {
+		runMetricsOnly(cfg)
+		return
+	}
 
 	xrayClient, err := xray.NewClient(cfg.XrayGRPCAddr)
 	if err != nil {
@@ -145,4 +149,26 @@ func main() {
 		}
 		shutdownCancel()
 	}
+}
+
+// runMetricsOnly is used by relay and exit hosts which do not run Xray. Those
+// infrastructure roles still report real host CPU, memory and network counters
+// to the controller, but must not start inbound or user-management runtimes.
+func runMetricsOnly(cfg *config.Config) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	userStore := store.New(cfg.UsersFile)
+	if err := userStore.Load(); err != nil {
+		log.Printf("[agent] metrics-only user store unavailable: %v", err)
+	}
+	collector := metrics.NewCollector(nil, cfg.MetricsInterval)
+	go collector.Run(ctx)
+	go pusher.NewPusher(cfg, collector, userStore).Run(ctx)
+	log.Printf("[agent] metrics-only mode active; Xray management disabled")
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("[agent] metrics-only mode shutting down")
 }
