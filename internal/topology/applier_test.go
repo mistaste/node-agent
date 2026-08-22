@@ -35,6 +35,29 @@ type failingRunner struct {
 
 type missingDockerRuleRunner struct{ recordingRunner }
 
+type restartRunner struct {
+	recordingRunner
+	interfacePresent bool
+}
+
+func (r *restartRunner) Run(ctx context.Context, stdin []byte, name string, args ...string) error {
+	r.commands = append(r.commands, recordedCommand{name: name, args: append([]string(nil), args...), stdin: string(stdin)})
+	joined := strings.Join(args, " ")
+	if name == "ip" && joined == "link show dev gxwg0" && !r.interfacePresent {
+		return errors.New("not found")
+	}
+	if name == "ip" && joined == "link set dev gxwg0 mtu 1280" && !r.interfacePresent {
+		return errors.New("not found")
+	}
+	if name == "ip" && joined == "link add dev gxwg0 type wireguard" {
+		r.interfacePresent = true
+	}
+	if name == "nft" && len(args) > 0 && args[0] == "list" {
+		return errors.New("not found")
+	}
+	return nil
+}
+
 func (r *missingDockerRuleRunner) Run(ctx context.Context, stdin []byte, name string, args ...string) error {
 	err := r.recordingRunner.Run(ctx, stdin, name, args...)
 	if name == "iptables" && len(args) > 3 && args[3] == "-C" {
@@ -107,6 +130,27 @@ func TestApplierAllowsSameRevisionExitProbeRefresh(t *testing.T) {
 	if last.name != "ip" || strings.Join(last.args, " ") != "link set dev gxwg0 mtu 1280" {
 		t.Fatalf("same-revision runtime MTU was not reconciled: %#v", last)
 	}
+}
+
+func TestApplierRebuildsMissingBackboneAtSameRevision(t *testing.T) {
+	runner := &restartRunner{}
+	applier, _ := NewApplier(t.TempDir())
+	applier.runner = runner
+	state := backboneState(RoleIngress)
+	if err := applier.Apply(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	runner.interfacePresent = false
+	runner.commands = nil
+	if err := applier.Apply(context.Background(), state); err != nil {
+		t.Fatalf("same-revision runtime recovery failed: %v", err)
+	}
+	for _, command := range runner.commands {
+		if command.name == "ip" && strings.Join(command.args, " ") == "link add dev gxwg0 type wireguard" {
+			return
+		}
+	}
+	t.Fatalf("missing WireGuard interface was not rebuilt: %#v", runner.commands)
 }
 
 func TestBackboneConfigNeverPlacesPrivateKeyOnCommandLine(t *testing.T) {

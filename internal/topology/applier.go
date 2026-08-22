@@ -100,12 +100,19 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		if bytes.Equal(oldJSON, newJSON) {
 			if state.Backbone != nil {
 				if err := a.runner.Run(ctx, nil, "ip", "link", "set", "dev", state.Backbone.InterfaceName, "mtu", wireGuardMTU); err != nil {
-					return err
+					// Network devices live in the container/network namespace and may
+					// disappear after a runtime restart while the durable desired-state
+					// file remains. Rebuild the owned runtime from that same revision.
+					current = DesiredState{}
+				} else {
+					return a.reconcileRelayRuntime(state)
 				}
+			} else {
+				return a.reconcileRelayRuntime(state)
 			}
-			return a.reconcileRelayRuntime(state)
+		} else {
+			return fmt.Errorf("%w: desired state changed without revision", ErrUnsafeDesiredState)
 		}
-		return fmt.Errorf("%w: desired state changed without revision", ErrUnsafeDesiredState)
 	}
 	if !state.Enabled {
 		if err := a.removeOwned(ctx, current); err != nil {
