@@ -13,7 +13,7 @@ services:
     cap_add: !reset []
     environment:
       TRUSTTUNNEL_PROCESS_MODE: "external"
-      TRANSPORT_BUNDLE_ENABLED: "${TRANSPORT_BUNDLE_ENABLED:-false}"
+      TRANSPORT_BUNDLE_ENABLED: "${TRANSPORT_BUNDLE_ENABLED:-true}"
       TRANSPORT_BUNDLE_ROOT: "/data/transport-bundle"
 
   trusttunnel-runner:
