@@ -30,6 +30,9 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	if strings.Contains(caddy, "https://naive.node.example.com:9443 {\n\tbind 127.0.0.1\n\ttls ") {
 		t.Fatal("Naive SNI must use Caddy-managed ACME instead of the TrustTunnel certificate")
 	}
+	if strings.Contains(caddy, ":9443, https://") {
+		t.Fatal("Naive listener must not mix HTTP and HTTPS on the same address")
+	}
 }
 
 func TestCredentialIsStableAndDomainSeparated(t *testing.T) {
