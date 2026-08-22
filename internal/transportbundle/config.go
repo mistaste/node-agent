@@ -80,7 +80,6 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 
 :%d, https://%s:%d {
 	bind 127.0.0.1
-	tls %s %s
 	route {
 		forward_proxy {
 %s
@@ -99,7 +98,7 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 	tls %s %s
 	respond "OK" 200
 }
-`, cfg.NaivePort, naiveHost, cfg.NaivePort, cfg.CertificateFile, cfg.PrivateKeyFile, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
+`, cfg.NaivePort, naiveHost, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 
 	haproxy := fmt.Sprintf(`global
     log stdout format raw local0

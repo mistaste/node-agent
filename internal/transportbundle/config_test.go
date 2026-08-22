@@ -27,6 +27,9 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	if strings.Count(caddy, "bind 127.0.0.1") != 2 || !strings.Contains(caddy, ":9080 {") {
 		t.Fatal("Naive and TLS decoy listeners must remain private behind the SNI mux")
 	}
+	if strings.Contains(caddy, "https://naive.node.example.com:9443 {\n\tbind 127.0.0.1\n\ttls ") {
+		t.Fatal("Naive SNI must use Caddy-managed ACME instead of the TrustTunnel certificate")
+	}
 }
 
 func TestCredentialIsStableAndDomainSeparated(t *testing.T) {

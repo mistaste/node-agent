@@ -188,6 +188,9 @@ func prepareCaddyRuntime(config string, gid uint32) error {
 		return err
 	}
 	for _, directory := range []string{"/config", "/data/caddy"} {
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			return err
+		}
 		if err := os.Chmod(directory, 0700); err != nil {
 			return err
 		}
