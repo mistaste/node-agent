@@ -180,13 +180,16 @@ func startAs(uid, gid uint32, name string, args ...string) (*child, error) {
 }
 
 func startCommand(cmd *exec.Cmd) (*child, error) {
-	cmd.Stdout, cmd.Stderr = nil, nil
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	c := &child{cmd: cmd, done: make(chan error, 1), running: true}
 	go func() {
 		err := cmd.Wait()
+		if err != nil {
+			log.Printf("[transport-bundle-runner] child %s exited: %v", filepath.Base(cmd.Path), err)
+		}
 		c.mu.Lock()
 		c.running = false
 		c.mu.Unlock()
