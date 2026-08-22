@@ -70,15 +70,32 @@ func (p *Pusher) Run(ctx context.Context) {
 }
 
 type metricsPayload struct {
-	NodeSecret   string              `json:"node_secret"`
-	AgentVersion string              `json:"agent_version"`
-	CPUPercent   float64             `json:"cpu_percent"`
-	RAMPercent   float64             `json:"ram_percent"`
-	NetBytesSent uint64              `json:"net_bytes_sent"`
-	NetBytesRecv uint64              `json:"net_bytes_recv"`
-	Sessions     int                 `json:"sessions"`
-	ActiveUsers  []activeUserPayload `json:"active_users"`
-	UserTraffic  []activeUserPayload `json:"user_traffic"`
+	NodeSecret                   string              `json:"node_secret"`
+	AgentVersion                 string              `json:"agent_version"`
+	CPUPercent                   float64             `json:"cpu_percent"`
+	RAMPercent                   float64             `json:"ram_percent"`
+	NetBytesSent                 uint64              `json:"net_bytes_sent"`
+	NetBytesRecv                 uint64              `json:"net_bytes_recv"`
+	Sessions                     int                 `json:"sessions"`
+	ActiveUsers                  []activeUserPayload `json:"active_users"`
+	UserTraffic                  []activeUserPayload `json:"user_traffic"`
+	Interface                    string              `json:"interface"`
+	LinkCapacityMbps             int                 `json:"link_capacity_mbps"`
+	NetPacketsSent               uint64              `json:"net_packets_sent"`
+	NetPacketsRecv               uint64              `json:"net_packets_recv"`
+	NetErrorsIn                  uint64              `json:"net_errors_in"`
+	NetErrorsOut                 uint64              `json:"net_errors_out"`
+	NetDropsIn                   uint64              `json:"net_drops_in"`
+	NetDropsOut                  uint64              `json:"net_drops_out"`
+	TCPConnections               int                 `json:"tcp_connections"`
+	UDPConnections               int                 `json:"udp_connections"`
+	ConntrackCount               uint64              `json:"conntrack_count"`
+	ConntrackMax                 uint64              `json:"conntrack_max"`
+	Load1                        float64             `json:"load_1"`
+	Load5                        float64             `json:"load_5"`
+	Load15                       float64             `json:"load_15"`
+	UptimeSeconds                uint64              `json:"uptime_seconds"`
+	WireGuardHandshakeAgeSeconds int64               `json:"wireguard_handshake_age_seconds"`
 }
 
 type activeUserPayload struct {
@@ -106,15 +123,32 @@ func (p *Pusher) push(ctx context.Context) error {
 	userTraffic := trafficPayload(snap.UserTraffic, provisionedUUIDs(p.users))
 
 	payload := metricsPayload{
-		NodeSecret:   p.cfg.Secret,
-		AgentVersion: p.cfg.AgentVersion(),
-		CPUPercent:   snap.CPUPercent,
-		RAMPercent:   snap.MemPercent,
-		NetBytesSent: snap.NetBytesSent,
-		NetBytesRecv: snap.NetBytesRecv,
-		Sessions:     len(activeUsers),
-		ActiveUsers:  activeUsers,
-		UserTraffic:  userTraffic,
+		NodeSecret:                   p.cfg.Secret,
+		AgentVersion:                 p.cfg.AgentVersion(),
+		CPUPercent:                   snap.CPUPercent,
+		RAMPercent:                   snap.MemPercent,
+		NetBytesSent:                 snap.NetBytesSent,
+		NetBytesRecv:                 snap.NetBytesRecv,
+		Sessions:                     len(activeUsers),
+		ActiveUsers:                  activeUsers,
+		UserTraffic:                  userTraffic,
+		Interface:                    snap.Interface,
+		LinkCapacityMbps:             p.cfg.LinkCapacityMbps,
+		NetPacketsSent:               snap.NetPacketsSent,
+		NetPacketsRecv:               snap.NetPacketsRecv,
+		NetErrorsIn:                  snap.NetErrorsIn,
+		NetErrorsOut:                 snap.NetErrorsOut,
+		NetDropsIn:                   snap.NetDropsIn,
+		NetDropsOut:                  snap.NetDropsOut,
+		TCPConnections:               snap.TCPConnections,
+		UDPConnections:               snap.UDPConnections,
+		ConntrackCount:               snap.ConntrackCount,
+		ConntrackMax:                 snap.ConntrackMax,
+		Load1:                        snap.Load1,
+		Load5:                        snap.Load5,
+		Load15:                       snap.Load15,
+		UptimeSeconds:                snap.UptimeSeconds,
+		WireGuardHandshakeAgeSeconds: snap.WireGuardHandshakeAgeSeconds,
 	}
 
 	body, err := json.Marshal(payload)

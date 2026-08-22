@@ -3,26 +3,48 @@ package metrics
 import (
 	"context"
 	"log"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/guardex/node-agent/internal/xray"
 	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/load"
 	"github.com/shirou/gopsutil/v3/mem"
 	gopsNet "github.com/shirou/gopsutil/v3/net"
 )
 
 // Snapshot holds a point-in-time view of system + xray metrics.
 type Snapshot struct {
-	CollectedAt  time.Time
-	CPUPercent   float64
-	MemUsedMB    uint64
-	MemTotalMB   uint64
-	MemPercent   float64
-	NetBytesSent uint64
-	NetBytesRecv uint64
-	UserTraffic  []xray.UserTraffic
-	ActiveUsers  []ActiveUser
+	CollectedAt                  time.Time
+	CPUPercent                   float64
+	MemUsedMB                    uint64
+	MemTotalMB                   uint64
+	MemPercent                   float64
+	NetBytesSent                 uint64
+	NetBytesRecv                 uint64
+	NetPacketsSent               uint64
+	NetPacketsRecv               uint64
+	NetErrorsIn                  uint64
+	NetErrorsOut                 uint64
+	NetDropsIn                   uint64
+	NetDropsOut                  uint64
+	TCPConnections               int
+	UDPConnections               int
+	ConntrackCount               uint64
+	ConntrackMax                 uint64
+	Load1                        float64
+	Load5                        float64
+	Load15                       float64
+	UptimeSeconds                uint64
+	WireGuardHandshakeAgeSeconds int64
+	Interface                    string
+	UserTraffic                  []xray.UserTraffic
+	ActiveUsers                  []ActiveUser
 }
 
 type ActiveUser struct {
@@ -40,16 +62,22 @@ type Collector struct {
 	mu     sync.RWMutex
 	latest *Snapshot
 
-	prevTraffic map[string]int64
-	lastActive  map[string]time.Time
+	prevTraffic   map[string]int64
+	lastActive    map[string]time.Time
+	interfaceName string
 }
 
-func NewCollector(xrayClient *xray.Client, interval time.Duration) *Collector {
+func NewCollector(xrayClient *xray.Client, interval time.Duration, interfaceName ...string) *Collector {
+	configuredInterface := ""
+	if len(interfaceName) > 0 {
+		configuredInterface = strings.TrimSpace(interfaceName[0])
+	}
 	return &Collector{
-		xray:        xrayClient,
-		interval:    interval,
-		prevTraffic: make(map[string]int64),
-		lastActive:  make(map[string]time.Time),
+		xray:          xrayClient,
+		interval:      interval,
+		prevTraffic:   make(map[string]int64),
+		lastActive:    make(map[string]time.Time),
+		interfaceName: configuredInterface,
 	}
 }
 
@@ -91,11 +119,42 @@ func (c *Collector) collect(ctx context.Context) {
 		snap.MemTotalMB = vm.Total / 1024 / 1024
 		snap.MemPercent = vm.UsedPercent
 	}
-
-	if counters, err := gopsNet.IOCounters(false); err == nil && len(counters) > 0 {
-		snap.NetBytesSent = counters[0].BytesSent
-		snap.NetBytesRecv = counters[0].BytesRecv
+	if avg, err := load.Avg(); err == nil {
+		snap.Load1, snap.Load5, snap.Load15 = avg.Load1, avg.Load5, avg.Load15
 	}
+	if uptime, err := host.Uptime(); err == nil {
+		snap.UptimeSeconds = uptime
+	}
+
+	if counters, err := safeIOCounters(); err == nil {
+		chosen := selectNetworkCounter(counters, c.interfaceName)
+		if chosen != nil {
+			snap.Interface = chosen.Name
+			snap.NetBytesSent = chosen.BytesSent
+			snap.NetBytesRecv = chosen.BytesRecv
+			snap.NetPacketsSent = chosen.PacketsSent
+			snap.NetPacketsRecv = chosen.PacketsRecv
+			snap.NetErrorsIn = chosen.Errin
+			snap.NetErrorsOut = chosen.Errout
+			snap.NetDropsIn = chosen.Dropin
+			snap.NetDropsOut = chosen.Dropout
+		}
+	}
+	if connections, err := safeConnections(); err == nil {
+		for _, connection := range connections {
+			switch connection.Type {
+			case 1:
+				if connection.Status == "ESTABLISHED" {
+					snap.TCPConnections++
+				}
+			case 2:
+				snap.UDPConnections++
+			}
+		}
+	}
+	snap.ConntrackCount = readUintFile("/proc/sys/net/netfilter/nf_conntrack_count")
+	snap.ConntrackMax = readUintFile("/proc/sys/net/netfilter/nf_conntrack_max")
+	snap.WireGuardHandshakeAgeSeconds = wireGuardHandshakeAge(time.Now())
 
 	if c.xray != nil {
 		if traffic, err := c.xray.QueryAllUserStats(ctx); err == nil {
@@ -117,6 +176,82 @@ func (c *Collector) collect(ctx context.Context) {
 		len(snap.UserTraffic),
 		len(snap.ActiveUsers),
 	)
+}
+
+func safeIOCounters() (counters []gopsNet.IOCountersStat, err error) {
+	defer func() {
+		if recover() != nil {
+			counters = nil
+			err = context.Canceled
+		}
+	}()
+	return gopsNet.IOCounters(true)
+}
+
+func safeConnections() (connections []gopsNet.ConnectionStat, err error) {
+	defer func() {
+		if recover() != nil {
+			connections = nil
+			err = context.Canceled
+		}
+	}()
+	return gopsNet.Connections("inet")
+}
+
+func selectNetworkCounter(counters []gopsNet.IOCountersStat, configured string) *gopsNet.IOCountersStat {
+	if configured != "" {
+		for i := range counters {
+			if counters[i].Name == configured {
+				return &counters[i]
+			}
+		}
+	}
+	var selected *gopsNet.IOCountersStat
+	for i := range counters {
+		candidate := &counters[i]
+		if candidate.Name == "lo" || strings.HasPrefix(candidate.Name, "docker") || strings.HasPrefix(candidate.Name, "veth") || strings.HasPrefix(candidate.Name, "br-") {
+			continue
+		}
+		if selected == nil || candidate.BytesRecv+candidate.BytesSent > selected.BytesRecv+selected.BytesSent {
+			selected = candidate
+		}
+	}
+	return selected
+}
+
+func readUintFile(path string) uint64 {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	value, _ := strconv.ParseUint(strings.TrimSpace(string(body)), 10, 64)
+	return value
+}
+
+func wireGuardHandshakeAge(now time.Time) int64 {
+	body, err := exec.Command("wg", "show", "all", "latest-handshakes").Output()
+	if err != nil {
+		return -1
+	}
+	latest := int64(0)
+	for _, line := range strings.Split(string(body), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		value, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+		if err == nil && value > latest {
+			latest = value
+		}
+	}
+	if latest == 0 {
+		return -1
+	}
+	age := now.Unix() - latest
+	if age < 0 {
+		return 0
+	}
+	return age
 }
 
 func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic) []ActiveUser {

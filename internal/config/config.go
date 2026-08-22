@@ -34,6 +34,8 @@ type Config struct {
 	TransportBundleRoot    string
 	RepoDir                string
 	UpdateRef              string
+	MetricsInterface       string
+	LinkCapacityMbps       int
 }
 
 func Load() *Config {
@@ -62,7 +64,17 @@ func Load() *Config {
 		TransportBundleRoot:    getenv("TRANSPORT_BUNDLE_ROOT", "/data/transport-bundle"),
 		RepoDir:                getenv("AGENT_REPO_DIR", "/opt/guardex-node"),
 		UpdateRef:              getenv("AGENT_UPDATE_REF", "master"),
+		MetricsInterface:       strings.TrimSpace(getenv("METRICS_INTERFACE", "")),
+		LinkCapacityMbps:       parsePositiveInt(getenv("LINK_CAPACITY_MBPS", "0")),
 	}
+}
+
+func parsePositiveInt(value string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func parseBool(value string) bool {

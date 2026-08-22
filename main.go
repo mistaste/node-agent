@@ -119,7 +119,7 @@ func main() {
 	// Xray restart while honoring the shared exact-set operation lock.
 	go syncer.Run(ctx)
 
-	collector := metrics.NewCollector(xrayClient, cfg.MetricsInterval)
+	collector := metrics.NewCollector(xrayClient, cfg.MetricsInterval, cfg.MetricsInterface)
 	go collector.Run(ctx)
 
 	p := pusher.NewPusher(cfg, collector, userStore)
@@ -162,7 +162,7 @@ func runMetricsOnly(cfg *config.Config) {
 	if err := userStore.Load(); err != nil {
 		log.Printf("[agent] metrics-only user store unavailable: %v", err)
 	}
-	collector := metrics.NewCollector(nil, cfg.MetricsInterval)
+	collector := metrics.NewCollector(nil, cfg.MetricsInterval, cfg.MetricsInterface)
 	go collector.Run(ctx)
 	go pusher.NewPusher(cfg, collector, userStore).Run(ctx)
 	log.Printf("[agent] metrics-only mode active; Xray management disabled")
