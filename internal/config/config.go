@@ -97,9 +97,9 @@ func parseDuration(s string) time.Duration {
 }
 
 func (c *Config) AgentVersion() string {
-	if c.Version != "" && c.Version != "git" {
-		return c.Version
-	}
+	// The checked-out revision is authoritative for git-managed nodes. Older
+	// deployments pinned AGENT_VERSION in .env, which made successfully updated
+	// agents keep advertising the stale value forever.
 	if out, err := exec.Command("git", "-C", c.RepoDir, "rev-parse", "--short", "HEAD").Output(); err == nil {
 		if v := strings.TrimSpace(string(out)); v != "" {
 			return v
