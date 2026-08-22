@@ -135,7 +135,10 @@ func (r *runner) reconcile(ctx context.Context) error {
 	if running(r.haproxyProcess) {
 		_ = stop(r.haproxyProcess)
 	}
-	r.haproxyProcess, err = start(r.haproxy, "-W", "-db", "-f", haproxyConfig)
+	// Keep HAProxy as one foreground child owned by this runner. Master-worker
+	// mode can detach the process tracked by os/exec inside a container, which
+	// makes every reconciliation look like a crash and churn the public mux.
+	r.haproxyProcess, err = start(r.haproxy, "-db", "-f", haproxyConfig)
 	if err != nil || !waitTCP(ctx, "127.0.0.1:443", 3*time.Second) {
 		return errors.New("public mux listener is not ready")
 	}
