@@ -161,7 +161,14 @@ func start(name string, args ...string) (*child, error) {
 
 func startAs(uid, gid uint32, name string, args ...string) (*child, error) {
 	cmd := exec.Command(name, args...)
-	cmd.Env = append(os.Environ(),
+	environment := make([]string, 0, len(os.Environ())+3)
+	for _, variable := range os.Environ() {
+		if strings.HasPrefix(variable, "HOME=") || strings.HasPrefix(variable, "XDG_CONFIG_HOME=") || strings.HasPrefix(variable, "XDG_DATA_HOME=") {
+			continue
+		}
+		environment = append(environment, variable)
+	}
+	cmd.Env = append(environment,
 		"HOME=/config",
 		"XDG_CONFIG_HOME=/config",
 		"XDG_DATA_HOME=/data/caddy",
