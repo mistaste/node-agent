@@ -43,6 +43,7 @@ type Snapshot struct {
 	UptimeSeconds                uint64
 	WireGuardHandshakeAgeSeconds int64
 	Interface                    string
+	LinkCapacityMbps             int
 	UserTraffic                  []xray.UserTraffic
 	ActiveUsers                  []ActiveUser
 }
@@ -130,6 +131,7 @@ func (c *Collector) collect(ctx context.Context) {
 		chosen := selectNetworkCounter(counters, c.interfaceName)
 		if chosen != nil {
 			snap.Interface = chosen.Name
+			snap.LinkCapacityMbps = interfaceSpeedMbps(chosen.Name)
 			snap.NetBytesSent = chosen.BytesSent
 			snap.NetBytesRecv = chosen.BytesRecv
 			snap.NetPacketsSent = chosen.PacketsSent
@@ -217,6 +219,21 @@ func selectNetworkCounter(counters []gopsNet.IOCountersStat, configured string) 
 		}
 	}
 	return selected
+}
+
+func interfaceSpeedMbps(interfaceName string) int {
+	if interfaceName == "" || strings.ContainsAny(interfaceName, "/\\") {
+		return 0
+	}
+	body, err := os.ReadFile("/sys/class/net/" + interfaceName + "/speed")
+	if err != nil {
+		return 0
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil || value <= 0 || value > 100000 {
+		return 0
+	}
+	return value
 }
 
 func readUintFile(path string) uint64 {

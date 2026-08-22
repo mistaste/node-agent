@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -22,6 +23,16 @@ type Pusher struct {
 	collector *metrics.Collector
 	users     userInventory
 	http      *http.Client
+}
+
+func detectedLinkCapacity(configured, detected int) int {
+	if configured > 0 {
+		return configured
+	}
+	if detected > 0 {
+		return detected
+	}
+	return 0
 }
 
 type userInventory interface {
@@ -74,6 +85,8 @@ type metricsPayload struct {
 	AgentVersion                 string              `json:"agent_version"`
 	CPUPercent                   float64             `json:"cpu_percent"`
 	RAMPercent                   float64             `json:"ram_percent"`
+	RAMTotalMB                   uint64              `json:"ram_total_mb"`
+	CPUCores                     int                 `json:"cpu_cores"`
 	NetBytesSent                 uint64              `json:"net_bytes_sent"`
 	NetBytesRecv                 uint64              `json:"net_bytes_recv"`
 	Sessions                     int                 `json:"sessions"`
@@ -127,13 +140,15 @@ func (p *Pusher) push(ctx context.Context) error {
 		AgentVersion:                 p.cfg.AgentVersion(),
 		CPUPercent:                   snap.CPUPercent,
 		RAMPercent:                   snap.MemPercent,
+		RAMTotalMB:                   snap.MemTotalMB,
+		CPUCores:                     runtime.NumCPU(),
 		NetBytesSent:                 snap.NetBytesSent,
 		NetBytesRecv:                 snap.NetBytesRecv,
 		Sessions:                     len(activeUsers),
 		ActiveUsers:                  activeUsers,
 		UserTraffic:                  userTraffic,
 		Interface:                    snap.Interface,
-		LinkCapacityMbps:             p.cfg.LinkCapacityMbps,
+		LinkCapacityMbps:             detectedLinkCapacity(p.cfg.LinkCapacityMbps, snap.LinkCapacityMbps),
 		NetPacketsSent:               snap.NetPacketsSent,
 		NetPacketsRecv:               snap.NetPacketsRecv,
 		NetErrorsIn:                  snap.NetErrorsIn,
