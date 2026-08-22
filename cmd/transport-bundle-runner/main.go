@@ -161,6 +161,11 @@ func start(name string, args ...string) (*child, error) {
 
 func startAs(uid, gid uint32, name string, args ...string) (*child, error) {
 	cmd := exec.Command(name, args...)
+	cmd.Env = append(os.Environ(),
+		"HOME=/config",
+		"XDG_CONFIG_HOME=/config",
+		"XDG_DATA_HOME=/data/caddy",
+	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uid, Gid: gid, NoSetGroups: true},
 	}
