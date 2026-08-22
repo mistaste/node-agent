@@ -184,6 +184,13 @@ func startCommand(cmd *exec.Cmd) (*child, error) {
 }
 
 func prepareCaddyRuntime(config string, gid uint32) error {
+	configDirectory := filepath.Dir(config)
+	if err := os.Chmod(configDirectory, 0750); err != nil {
+		return err
+	}
+	if err := os.Chown(configDirectory, os.Geteuid(), int(gid)); err != nil {
+		return err
+	}
 	if err := os.Chmod(config, 0640); err != nil {
 		return err
 	}
