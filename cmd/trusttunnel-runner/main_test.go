@@ -78,7 +78,7 @@ func TestRunnerPreparesPrivateEndpointTreeForDedicatedIdentity(t *testing.T) {
 	}
 }
 
-func TestRunnerRestartsOnlyWhenStateKeyChanges(t *testing.T) {
+func TestRunnerAcknowledgesRevisionOnlyChangeWithoutRestart(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell fixture")
 	}
@@ -112,7 +112,15 @@ func TestRunnerRestartsOnlyWhenStateKeyChanges(t *testing.T) {
 	if err := r.reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	waitForStarts(t, starts, 2)
+	waitForStarts(t, starts, 1)
+	raw, err := os.ReadFile(filepath.Join(root, runnerStateFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acknowledged state
+	if json.Unmarshal(raw, &acknowledged) != nil || acknowledged.Revision != 2 {
+		t.Fatalf("runner acknowledgement = %s", raw)
+	}
 	r.stop(ctx)
 }
 

@@ -111,9 +111,11 @@ https://%s:%d {
 
 defaults
     mode tcp
+    option clitcpka
+    option srvtcpka
     timeout connect 5s
-    timeout client  1h
-    timeout server  1h
+    timeout client  24h
+    timeout server  24h
 
 frontend guardex_tls
     bind 0.0.0.0:%d

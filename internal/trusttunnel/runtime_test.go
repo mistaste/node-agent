@@ -215,6 +215,25 @@ func TestRuntimeDoesNotRestartUnchangedHealthyEndpoint(t *testing.T) {
 	}
 }
 
+func TestRuntimeAcknowledgesRevisionOnlyChangeWithoutRestart(t *testing.T) {
+	runtime, starter, request := newFixedRuntime(t)
+	defer starter.close()
+	if _, err := runtime.Apply(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request.Revision++
+	state, err := runtime.Apply(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Revision != request.Revision {
+		t.Fatalf("revision = %d, want %d", state.Revision, request.Revision)
+	}
+	if starter.starts != 1 || starter.process.stops != 0 {
+		t.Fatalf("revision-only apply restarted endpoint: starts=%d stops=%d", starter.starts, starter.process.stops)
+	}
+}
+
 func TestRuntimeExternalProcessWritesStateWithoutStartingEndpoint(t *testing.T) {
 	listener, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {

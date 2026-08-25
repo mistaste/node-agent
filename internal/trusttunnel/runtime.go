@@ -178,10 +178,32 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	}
 	state.Digest = bundleDigestAll(digestFiles...)
 	if current, ok := r.State(); ok {
-		unchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Revision == state.Revision && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
+		contentUnchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
 		healthy := (r.external && r.externalRunnerReady(current)) || (!r.external && r.process != nil && r.process.Running())
-		if unchanged && healthy {
-			return current, nil
+		if contentUnchanged && healthy {
+			if current.Revision == state.Revision {
+				return current, nil
+			}
+			if state.Revision > current.Revision {
+				// A controller revision is acknowledgement metadata, not endpoint
+				// configuration. Publish it without interrupting established sessions
+				// when the rendered settings and exact client set are unchanged.
+				stateRaw, marshalErr := json.Marshal(state)
+				if marshalErr != nil {
+					return State{}, errors.New("TrustTunnel state could not be encoded")
+				}
+				previousRaw, _ := json.Marshal(current)
+				if writeErr := writeAtomic(filepath.Join(r.root, "state.json"), stateRaw, 0600); writeErr != nil {
+					return State{}, writeErr
+				}
+				if r.external {
+					if waitErr := r.waitForExternalRunner(ctx, state); waitErr != nil {
+						_ = writeAtomic(filepath.Join(r.root, "state.json"), previousRaw, 0600)
+						return State{}, waitErr
+					}
+				}
+				return state, nil
+			}
 		}
 		// Only categorical mismatch flags are logged. Digests, identities,
 		// credentials and desired payloads remain private.

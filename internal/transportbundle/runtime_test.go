@@ -33,8 +33,11 @@ func TestRuntimePublishesRestrictedBundleAndWaitsForRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Revision != 2 || state.ClientCount != 1 || state.Digest == "" {
+	if state.Revision != 2 || state.ClientCount != 1 || state.Digest == "" || state.HAProxyDigest == "" || state.CaddyDigest == "" {
 		t.Fatalf("state = %+v", state)
+	}
+	if state.HAProxyDigest == state.CaddyDigest {
+		t.Fatal("component config digests unexpectedly match")
 	}
 	for _, name := range []string{"haproxy.cfg", "Caddyfile", "state.json"} {
 		info, statErr := os.Stat(filepath.Join(root, name))

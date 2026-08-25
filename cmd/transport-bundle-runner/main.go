@@ -53,7 +53,21 @@ type runner struct {
 	caddyProcess         *child
 	haproxyProcess       *child
 	appliedDigest        string
+	appliedCaddyDigest   string
+	appliedHAProxyDigest string
 	udpRedirectPort      int
+}
+
+type reconcilePlan struct {
+	applyCaddy   bool
+	applyHAProxy bool
+}
+
+func planReconcile(caddyRunning, haproxyRunning bool, appliedCaddy, desiredCaddy, appliedHAProxy, desiredHAProxy string) reconcilePlan {
+	return reconcilePlan{
+		applyCaddy:   !caddyRunning || appliedCaddy != desiredCaddy,
+		applyHAProxy: !haproxyRunning || appliedHAProxy != desiredHAProxy,
+	}
 }
 
 func (r *runner) run(ctx context.Context) error {
@@ -77,6 +91,8 @@ func (r *runner) reconcile(ctx context.Context) error {
 	if errors.Is(err, os.ErrNotExist) {
 		r.stopChildren()
 		r.appliedDigest = ""
+		r.appliedCaddyDigest = ""
+		r.appliedHAProxyDigest = ""
 		_ = os.Remove(filepath.Join(r.root, "runner-state.json"))
 		return nil
 	}
@@ -87,7 +103,7 @@ func (r *runner) reconcile(ctx context.Context) error {
 	if json.Unmarshal(stateRaw, &state) != nil || state.Version != 1 || state.Digest == "" || !internalPort(state.TrustTunnelPort) || !internalPort(state.NaivePort) || !internalPort(state.DecoyPort) {
 		return errors.New("invalid desired state")
 	}
-	if state.Digest == r.appliedDigest && running(r.caddyProcess) && running(r.haproxyProcess) {
+	if state.Digest == r.appliedDigest && state.CaddyDigest != "" && state.HAProxyDigest != "" && state.CaddyDigest == r.appliedCaddyDigest && state.HAProxyDigest == r.appliedHAProxyDigest && running(r.caddyProcess) && running(r.haproxyProcess) {
 		// The rendered bundle can stay byte-for-byte identical while the
 		// controller advances its revision or membership acknowledgement. Keep
 		// the processes running, but acknowledge the exact desired state so the
@@ -112,6 +128,17 @@ func (r *runner) reconcile(ctx context.Context) error {
 	if !strings.EqualFold(state.Digest, hex.EncodeToString(digest[:])) {
 		return errors.New("bundle digest mismatch")
 	}
+	haproxyDigestRaw := sha256.Sum256(haproxyRaw)
+	haproxyDigest := hex.EncodeToString(haproxyDigestRaw[:])
+	caddyDigestRaw := sha256.Sum256(caddyRaw)
+	caddyDigest := hex.EncodeToString(caddyDigestRaw[:])
+	if state.HAProxyDigest != "" && !strings.EqualFold(state.HAProxyDigest, haproxyDigest) {
+		return errors.New("HAProxy config digest mismatch")
+	}
+	if state.CaddyDigest != "" && !strings.EqualFold(state.CaddyDigest, caddyDigest) {
+		return errors.New("Caddy config digest mismatch")
+	}
+	plan := planReconcile(running(r.caddyProcess), running(r.haproxyProcess), r.appliedCaddyDigest, caddyDigest, r.appliedHAProxyDigest, haproxyDigest)
 	if exec.CommandContext(ctx, r.caddy, "validate", "--config", caddyConfig, "--adapter", "caddyfile").Run() != nil {
 		return errors.New("Caddy validation failed")
 	}
@@ -119,15 +146,21 @@ func (r *runner) reconcile(ctx context.Context) error {
 		return errors.New("HAProxy validation failed")
 	}
 	// Caddy owns only private listeners and is made ready before public 443.
-	if !running(r.caddyProcess) {
+	if plan.applyCaddy && !running(r.caddyProcess) {
 		if err = prepareCaddyRuntime(caddyConfig, r.caddyGID); err == nil {
 			r.caddyProcess, err = startAs(r.caddyUID, r.caddyGID, r.caddy, "run", "--config", caddyConfig, "--adapter", "caddyfile")
 		}
-	} else {
+	} else if plan.applyCaddy {
 		err = exec.CommandContext(ctx, r.caddy, "reload", "--config", caddyConfig, "--adapter", "caddyfile", "--address", "127.0.0.1:2019").Run()
 	}
 	if err != nil {
 		return fmt.Errorf("private Caddy start failed: %w", err)
+	}
+	if plan.applyCaddy {
+		// Record the component immediately after Caddy accepted the config. If a
+		// later readiness check fails and the controller restores the previous
+		// files, the next reconciliation must reload that previous config too.
+		r.appliedCaddyDigest = caddyDigest
 	}
 	if !waitTCP(ctx, loopback(state.NaivePort), 3*time.Second) || !waitTCP(ctx, loopback(state.DecoyPort), 3*time.Second) {
 		return errors.New("private transport listeners are not ready")
@@ -135,13 +168,18 @@ func (r *runner) reconcile(ctx context.Context) error {
 	if err := r.ensureUDPRedirect(ctx, state.TrustTunnelPort); err != nil {
 		return errors.New("public QUIC redirect is not ready")
 	}
-	if running(r.haproxyProcess) {
-		_ = stop(r.haproxyProcess)
+	if plan.applyHAProxy {
+		if running(r.haproxyProcess) {
+			_ = stop(r.haproxyProcess)
+		}
+		// Keep HAProxy as one foreground child owned by this runner. Master-worker
+		// mode can detach the process tracked by os/exec inside a container, which
+		// makes every reconciliation look like a crash and churn the public mux.
+		r.haproxyProcess, err = start(r.haproxy, "-db", "-f", haproxyConfig)
+		if err == nil {
+			r.appliedHAProxyDigest = haproxyDigest
+		}
 	}
-	// Keep HAProxy as one foreground child owned by this runner. Master-worker
-	// mode can detach the process tracked by os/exec inside a container, which
-	// makes every reconciliation look like a crash and churn the public mux.
-	r.haproxyProcess, err = start(r.haproxy, "-db", "-f", haproxyConfig)
 	if err != nil || !waitTCP(ctx, "127.0.0.1:443", 3*time.Second) {
 		return errors.New("public mux listener is not ready")
 	}
@@ -265,6 +303,7 @@ func (r *runner) stopChildren() {
 	_ = stop(r.caddyProcess)
 	r.removeUDPRedirect()
 	r.haproxyProcess, r.caddyProcess = nil, nil
+	r.appliedHAProxyDigest, r.appliedCaddyDigest = "", ""
 }
 
 func (r *runner) ensureUDPRedirect(ctx context.Context, port int) error {

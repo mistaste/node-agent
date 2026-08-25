@@ -14,6 +14,10 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	haproxy := string(files.HAProxy)
+	defaults := "defaults\n    mode tcp\n    option clitcpka\n    option srvtcpka\n    timeout connect 5s\n    timeout client  24h\n    timeout server  24h"
+	if !strings.Contains(haproxy, defaults) {
+		t.Fatalf("HAProxy defaults do not preserve long-lived tunnels:\n%s", haproxy)
+	}
 	for _, required := range []string{"bind 0.0.0.0:443", "req.ssl_sni -i node.example.com", "req.ssl_sni -i naive.node.example.com", "default_backend https_decoy", "127.0.0.1:8443", "127.0.0.1:9443"} {
 		if !strings.Contains(haproxy, required) {
 			t.Fatalf("HAProxy missing %q", required)

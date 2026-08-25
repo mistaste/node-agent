@@ -47,9 +47,12 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 		t.Fatalf("HTTP/1 listener must stay disabled for Stage 1: %s", files.Settings)
 	}
 	for _, expected := range []string{
+		"client_listener_timeout_secs = 86400",
 		"connection_establishment_timeout_secs = 30",
 		"tcp_connections_timeout_secs = 86400",
 		"udp_connections_timeout_secs = 300",
+		"default_max_http2_conns_per_client = 8",
+		"default_max_http3_conns_per_client = 8",
 		"speedtest_enable = false",
 		"ping_enable = true",
 		"auth_failure_status_code = 405",
@@ -59,6 +62,9 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 		if !strings.Contains(string(files.Settings), expected) {
 			t.Fatalf("Stage 1 TrustTunnel setting %q missing: %s", expected, files.Settings)
 		}
+	}
+	if strings.Contains(string(files.Settings), "client_listener_timeout_secs = 600") {
+		t.Fatalf("legacy 10-minute client listener timeout is still present: %s", files.Settings)
 	}
 }
 
