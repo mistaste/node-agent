@@ -3,8 +3,10 @@ package pusher
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"runtime"
@@ -25,6 +27,11 @@ type Pusher struct {
 	http      *http.Client
 }
 
+const (
+	metricsRequestTimeout = 5 * time.Second
+	metricsPushAttempts   = 2
+)
+
 func detectedLinkCapacity(configured, detected int) int {
 	if configured > 0 {
 		return configured
@@ -44,13 +51,34 @@ func NewPusher(cfg *config.Config, collector *metrics.Collector, users userInven
 		cfg:       cfg,
 		collector: collector,
 		users:     users,
-		http: &http.Client{
-			Timeout: 8 * time.Second,
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
+		http:      newHTTPClient(cfg != nil && cfg.MetricsOnly),
+	}
+}
+
+func newHTTPClient(metricsOnly bool) *http.Client {
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
 		},
 	}
+	if !metricsOnly {
+		return client
+	}
+
+	// Relay hosts only run the metrics/control plane. Some restricted paths
+	// consistently stall Go's HTTP/2 client while the same HTTPS endpoint is
+	// healthy over HTTP/1.1. A heartbeat is small and infrequent, so prefer a
+	// fresh HTTP/1.1 connection over a long-lived multiplexed connection. This
+	// transport is used only in metrics-only mode and cannot affect relay data.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	transport.ResponseHeaderTimeout = 4 * time.Second
+	client.Timeout = metricsRequestTimeout
+	client.Transport = transport
+	return client
 }
 
 // Run starts the push loop. Blocks until ctx is cancelled.
@@ -179,16 +207,40 @@ func (p *Pusher) push(ctx context.Context) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Token", p.cfg.InternalServiceToken)
 
-	resp, err := p.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("http: %w", err)
-	}
-	defer resp.Body.Close()
+	return p.send(req, body)
+}
 
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("controller returned %d", resp.StatusCode)
+func (p *Pusher) send(req *http.Request, body []byte) error {
+	attempts := 1
+	if p.cfg != nil && p.cfg.MetricsOnly {
+		attempts = metricsPushAttempts
 	}
-	return nil
+
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		request := req
+		if attempt > 0 {
+			if err := req.Context().Err(); err != nil {
+				return fmt.Errorf("http: %w", err)
+			}
+			request = req.Clone(req.Context())
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			request.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(body)), nil
+			}
+		}
+		resp, err := p.http.Do(request)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= http.StatusMultipleChoices {
+			return fmt.Errorf("controller returned %d", resp.StatusCode)
+		}
+		return nil
+	}
+	return fmt.Errorf("http: %w", lastErr)
 }
 
 // trafficPayload carries monotonic per-user counters independently from the
