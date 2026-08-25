@@ -107,6 +107,21 @@ func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *handlers) metricsOnlyHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"version": h.cfg.AgentVersion(),
+		"mode":    "metrics-only",
+		"capabilities": map[string]any{
+			"host_metrics":        true,
+			"agent_update":        true,
+			"xray_management":     false,
+			"inbound_management":  false,
+			"topology_management": false,
+		},
+	})
+}
+
 func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
 	snap := h.collector.Latest()
 	if snap == nil {
@@ -418,6 +433,24 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.Ref == "" {
 		req.Ref = h.cfg.UpdateRef
 	}
+	if h.cfg.MetricsOnly {
+		if mode != "git" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "metrics-only hosts support agent-only git updates"})
+			return
+		}
+		parts, err := metricsOnlyAgentUpdateParts(req.Ref)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid update mode or ref"})
+			return
+		}
+		go func() {
+			if err := runDetachedComposeHelper(h.cfg.RepoDir, parts); err != nil {
+				log.Printf("[update] metrics-only agent git update error: %v", err)
+			}
+		}()
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started", "mode": mode})
+		return
+	}
 
 	if mode == "git" || mode == "git-runners" || mode == "git-full" {
 		parts, err := agentUpdateParts(mode, req.Ref)
@@ -476,13 +509,9 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 	if mode != "git" && mode != "git-runners" && mode != "git-full" {
 		return nil, errors.New("unsupported git update mode")
 	}
-	if !safeGitRef.MatchString(ref) || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.HasSuffix(ref, "/") {
-		return nil, errors.New("unsafe git ref")
-	}
-	parts := []string{
-		"git", "fetch", "origin", ref, "&&",
-		"git", "checkout", ref, "&&",
-		"git", "pull", "--ff-only", "origin", ref, "&&",
+	parts, err := gitUpdatePrefix(ref)
+	if err != nil {
+		return nil, err
 	}
 	if mode == "git-full" {
 		parts = append(parts,
@@ -499,6 +528,28 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "node-agent", "topology-agent")
 	}
 	return parts, nil
+}
+
+func metricsOnlyAgentUpdateParts(ref string) ([]string, error) {
+	parts, err := gitUpdatePrefix(ref)
+	if err != nil {
+		return nil, err
+	}
+	// topology-agent owns the relay/exit forwarding data plane. Recreating it
+	// from this control endpoint would turn a harmless agent update into a live
+	// traffic interruption.
+	return append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "node-agent"), nil
+}
+
+func gitUpdatePrefix(ref string) ([]string, error) {
+	if !safeGitRef.MatchString(ref) || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.HasSuffix(ref, "/") {
+		return nil, errors.New("unsafe git ref")
+	}
+	return []string{
+		"git", "fetch", "origin", ref, "&&",
+		"git", "checkout", ref, "&&",
+		"git", "pull", "--ff-only", "origin", ref, "&&",
+	}, nil
 }
 
 func (h *handlers) restartNode(w http.ResponseWriter, r *http.Request) {

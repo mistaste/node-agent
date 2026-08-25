@@ -54,6 +54,20 @@ func NewServer(cfg *config.Config, xrayClient *xray.Client, collector *metrics.C
 	return s
 }
 
+// NewMetricsOnlyServer exposes the small authenticated control-plane surface
+// required by relay and exit hosts. It deliberately omits every Xray, inbound,
+// user and topology mutation route: those hosts are observed by this process,
+// while their forwarding data plane remains owned by topology-agent.
+func NewMetricsOnlyServer(cfg *config.Config, collector *metrics.Collector) *Server {
+	s := &Server{
+		cfg:       cfg,
+		collector: collector,
+		mux:       http.NewServeMux(),
+	}
+	s.registerMetricsOnlyRoutes()
+	return s
+}
+
 func (s *Server) Run() error {
 	server := &http.Server{
 		Addr:              s.cfg.ListenAddr,
@@ -108,4 +122,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/system/update-xray", h.updateXray)
 	s.mux.HandleFunc("POST /v1/system/update-agent", h.updateAgent)
 	s.mux.HandleFunc("POST /v1/system/restart", h.restartNode)
+}
+
+func (s *Server) registerMetricsOnlyRoutes() {
+	h := &handlers{
+		cfg:       s.cfg,
+		collector: s.collector,
+	}
+	s.mux.HandleFunc("GET /v1/health", h.metricsOnlyHealth)
+	s.mux.HandleFunc("GET /v1/metrics", h.getMetrics)
+	s.mux.HandleFunc("POST /v1/system/update-agent", h.updateAgent)
 }

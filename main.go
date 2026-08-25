@@ -165,6 +165,13 @@ func runMetricsOnly(cfg *config.Config) {
 	collector := metrics.NewCollector(nil, cfg.MetricsInterval, cfg.MetricsInterface)
 	go collector.Run(ctx)
 	go pusher.NewPusher(cfg, collector, userStore).Run(ctx)
+	srv := api.NewMetricsOnlyServer(cfg, collector)
+	go func() {
+		if err := srv.Run(); err != nil {
+			log.Printf("[agent] metrics-only HTTP server error: %v", err)
+		}
+	}()
+	log.Printf("[agent] metrics-only HTTP server listening on %s", cfg.ListenAddr)
 	log.Printf("[agent] metrics-only mode active; Xray management disabled")
 
 	quit := make(chan os.Signal, 1)
