@@ -234,6 +234,26 @@ func TestRuntimeAcknowledgesRevisionOnlyChangeWithoutRestart(t *testing.T) {
 	}
 }
 
+func TestRuntimeRejectsSameInboundRevisionDowngradeWithoutRestart(t *testing.T) {
+	runtime, starter, request := newFixedRuntime(t)
+	defer starter.close()
+	request.Revision = 5
+	if _, err := runtime.Apply(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request.Revision = 4
+	if _, err := runtime.Apply(context.Background(), request); err == nil {
+		t.Fatal("expected stale revision to be rejected")
+	}
+	state, ok := runtime.State()
+	if !ok || state.Revision != 5 {
+		t.Fatalf("durable state was downgraded: state=%+v ok=%t", state, ok)
+	}
+	if starter.starts != 1 || starter.process.stops != 0 {
+		t.Fatalf("stale apply restarted endpoint: starts=%d stops=%d", starter.starts, starter.process.stops)
+	}
+}
+
 func TestRuntimeExternalProcessWritesStateWithoutStartingEndpoint(t *testing.T) {
 	listener, err := net.Listen("tcp4", "0.0.0.0:0")
 	if err != nil {

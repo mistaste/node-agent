@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -84,7 +85,7 @@ func (r *runner) reconcile(ctx context.Context) error {
 	// Revision is controller acknowledgement metadata. The endpoint only needs
 	// a restart when its identity, rendered configuration, or exact client set
 	// changes; runner-state still acknowledges every newer revision below.
-	key := current.InboundID + ":" + current.Digest + ":" + current.ClientSetSHA256
+	key := desiredProcessKey(current)
 	if r.running() && (current.H3Port == 0 || r.h3Running()) && r.key == key {
 		if err := r.writeRunnerState(current); err != nil {
 			return err
@@ -153,6 +154,10 @@ func (r *runner) reconcile(ctx context.Context) error {
 	}
 	log.Printf("[trusttunnel-runner] endpoint started")
 	return nil
+}
+
+func desiredProcessKey(current state) string {
+	return current.InboundID + ":" + current.Digest + ":" + current.ClientSetSHA256 + ":" + strconv.Itoa(current.H3Port)
 }
 
 func (r *runner) writeRunnerState(current state) error {

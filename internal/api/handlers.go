@@ -419,7 +419,7 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 		req.Ref = h.cfg.UpdateRef
 	}
 
-	if mode == "git" || mode == "git-full" {
+	if mode == "git" || mode == "git-runners" || mode == "git-full" {
 		parts, err := agentUpdateParts(mode, req.Ref)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid update mode or ref"})
@@ -473,7 +473,7 @@ func validateBinaryUpdate(rawURL, rawChecksum string) (string, string, error) {
 }
 
 func agentUpdateParts(mode, ref string) ([]string, error) {
-	if mode != "git" && mode != "git-full" {
+	if mode != "git" && mode != "git-runners" && mode != "git-full" {
 		return nil, errors.New("unsupported git update mode")
 	}
 	if !safeGitRef.MatchString(ref) || strings.Contains(ref, "..") || strings.Contains(ref, "//") || strings.HasSuffix(ref, "/") {
@@ -489,6 +489,10 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 			"docker", "compose", "pull", "xray", "&&",
 			"docker", "compose", "up", "-d", "--build", "xray", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner",
 		)
+	} else if mode == "git-runners" {
+		// Runner-only rollout updates the session-preserving supervisors without
+		// recreating Xray, node-agent, or topology-agent.
+		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "trusttunnel-runner", "transport-bundle-runner")
 	} else {
 		// Agent-only rollout must never recreate or stop the data-plane. Xray is
 		// intentionally updated only by the explicit git-full mode above.

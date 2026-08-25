@@ -59,6 +59,9 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	if strings.TrimSpace(request.InboundID) == "" || strings.TrimSpace(request.Tag) == "" || request.Revision < 1 {
 		return State{}, errors.New("transport bundle desired identity is invalid")
 	}
+	if current, ok := r.State(); ok && strings.TrimSpace(current.InboundID) == strings.TrimSpace(request.InboundID) && request.Revision < current.Revision {
+		return State{}, errors.New("transport bundle desired revision is stale")
+	}
 	files, err := Build(r.nodeSecret, request.Config)
 	if err != nil {
 		return State{}, err

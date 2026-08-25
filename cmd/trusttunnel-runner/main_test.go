@@ -124,6 +124,20 @@ func TestRunnerAcknowledgesRevisionOnlyChangeWithoutRestart(t *testing.T) {
 	r.stop(ctx)
 }
 
+func TestDesiredProcessKeyTracksH3LifecycleButNotRevision(t *testing.T) {
+	base := state{InboundID: "catalog-tt", Revision: 1, Digest: testDigest, ClientSetSHA256: "clients"}
+	revisionOnly := base
+	revisionOnly.Revision++
+	if desiredProcessKey(base) != desiredProcessKey(revisionOnly) {
+		t.Fatal("revision-only change altered process key")
+	}
+	withH3 := base
+	withH3.H3Port = 443
+	if desiredProcessKey(base) == desiredProcessKey(withH3) {
+		t.Fatal("H3 lifecycle change did not alter process key")
+	}
+}
+
 func TestRunnerStartsSplitHTTP2AndHTTP3Endpoints(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses POSIX shell fixture")

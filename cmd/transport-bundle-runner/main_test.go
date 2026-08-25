@@ -1,8 +1,16 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/guardex/node-agent/internal/transportbundle"
 )
 
 func TestRedirectArgsAreScopedToUDP443(t *testing.T) {
@@ -45,5 +53,54 @@ func TestPlanRestartsOnlyChangedOrMissingComponent(t *testing.T) {
 				t.Fatalf("plan = %+v, want caddy=%t haproxy=%t", plan, test.wantCaddy, test.wantHAProxy)
 			}
 		})
+	}
+}
+
+func TestReconcileForcesRetryAfterAmbiguousCaddyReloadFailure(t *testing.T) {
+	root := t.TempDir()
+	haproxyRaw := []byte("unchanged-haproxy")
+	caddyRaw := []byte("new-caddy")
+	haproxyDigestRaw := sha256.Sum256(haproxyRaw)
+	caddyDigestRaw := sha256.Sum256(caddyRaw)
+	bundleDigestRaw := sha256.Sum256(append(append([]byte(nil), haproxyRaw...), caddyRaw...))
+	state := transportbundle.State{
+		Version: 1, InboundID: "naive-id", Tag: "gx-naive", Revision: 2,
+		Digest:          hex.EncodeToString(bundleDigestRaw[:]),
+		HAProxyDigest:   hex.EncodeToString(haproxyDigestRaw[:]),
+		CaddyDigest:     hex.EncodeToString(caddyDigestRaw[:]),
+		TrustTunnelPort: 8443, NaivePort: 9443, DecoyPort: 9080,
+	}
+	stateRaw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{
+		"haproxy.cfg": haproxyRaw,
+		"Caddyfile":   caddyRaw,
+		"state.json":  stateRaw,
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	caddy := filepath.Join(root, "caddy")
+	haproxy := filepath.Join(root, "haproxy")
+	if err := os.WriteFile(caddy, []byte("#!/bin/sh\n[ \"$1\" = reload ] && exit 1\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(haproxy, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{
+		root: root, caddy: caddy, haproxy: haproxy,
+		caddyProcess: &child{running: true}, haproxyProcess: &child{running: true},
+		appliedDigest: "old-bundle", appliedCaddyDigest: "old-caddy",
+		appliedHAProxyDigest: state.HAProxyDigest,
+	}
+	if err := r.reconcile(context.Background()); err == nil {
+		t.Fatal("expected Caddy reload failure")
+	}
+	if r.appliedCaddyDigest != "" {
+		t.Fatalf("ambiguous Caddy reload kept trusted digest %q", r.appliedCaddyDigest)
 	}
 }

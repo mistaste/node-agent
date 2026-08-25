@@ -3,6 +3,7 @@ package transportbundle
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,6 +71,38 @@ func TestRuntimeRestoresPreviousBundleWhenRunnerRejectsUpdate(t *testing.T) {
 		raw, readErr := os.ReadFile(filepath.Join(root, name))
 		if readErr != nil || string(raw) != expected {
 			t.Fatalf("%s was not restored", name)
+		}
+	}
+}
+
+func TestRuntimeRejectsSameInboundRevisionDowngradeBeforeMutation(t *testing.T) {
+	root := t.TempDir()
+	runtime, err := NewRuntime(root, testSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := State{Version: runtimeStateVersion, InboundID: "naive-id", Tag: "gx-naive", Revision: 5, Digest: "current"}
+	currentRaw, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "state.json"), currentRaw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	request := ApplyRequest{InboundID: "naive-id", Tag: "gx-naive", Revision: 4}
+	if _, err := runtime.Apply(context.Background(), request); err == nil {
+		t.Fatal("expected stale revision to be rejected")
+	}
+	after, err := os.ReadFile(filepath.Join(root, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(currentRaw) {
+		t.Fatal("stale revision mutated durable state")
+	}
+	for _, name := range []string{"haproxy.cfg", "Caddyfile"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale revision created %s: %v", name, err)
 		}
 	}
 }

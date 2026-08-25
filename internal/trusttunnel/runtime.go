@@ -162,6 +162,10 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	if strings.TrimSpace(request.InboundID) == "" || strings.TrimSpace(request.Tag) == "" || request.Revision < 1 {
 		return State{}, errors.New("TrustTunnel desired identity is invalid")
 	}
+	current, hasCurrent := r.State()
+	if hasCurrent && strings.TrimSpace(current.InboundID) == strings.TrimSpace(request.InboundID) && request.Revision < current.Revision {
+		return State{}, errors.New("TrustTunnel desired revision is stale")
+	}
 	primary := request.Endpoint
 	var h3Files *Files
 	// The SNI mux owns only TCP/443. TrustTunnel keeps H2 and H3 on its
@@ -177,7 +181,7 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 		state.H3Port = 443
 	}
 	state.Digest = bundleDigestAll(digestFiles...)
-	if current, ok := r.State(); ok {
+	if hasCurrent {
 		contentUnchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
 		healthy := (r.external && r.externalRunnerReady(current)) || (!r.external && r.process != nil && r.process.Running())
 		if contentUnchanged && healthy {

@@ -23,6 +23,15 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		!strings.Contains(command, "--no-deps --build node-agent topology-agent") {
 		t.Fatalf("agent-only command = %q", command)
 	}
+	runnersOnly, err := agentUpdateParts("git-runners", "master")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnersCommand := strings.Join(runnersOnly, " ")
+	if strings.Contains(runnersCommand, "pull xray") || strings.Contains(runnersCommand, " node-agent") || strings.Contains(runnersCommand, " topology-agent") ||
+		!strings.Contains(runnersCommand, "--no-deps --build trusttunnel-runner transport-bundle-runner") {
+		t.Fatalf("runner-only command = %q", runnersCommand)
+	}
 	full, err := agentUpdateParts("git-full", "master")
 	if err != nil {
 		t.Fatal(err)
@@ -32,9 +41,11 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		t.Fatalf("full command = %q", command)
 	}
 
-	for _, ref := range []string{"--upload-pack=evil", "master;reboot", "../master", "feature//bad", "feature/bad ", "feature/"} {
-		if _, err := agentUpdateParts("git-full", ref); err == nil {
-			t.Fatalf("unsafe ref %q accepted", ref)
+	for _, mode := range []string{"git", "git-runners", "git-full"} {
+		for _, ref := range []string{"--upload-pack=evil", "master;reboot", "../master", "feature//bad", "feature/bad ", "feature/"} {
+			if _, err := agentUpdateParts(mode, ref); err == nil {
+				t.Fatalf("unsafe ref %q accepted for %s", ref, mode)
+			}
 		}
 	}
 	if _, err := agentUpdateParts("other", "master"); err == nil {

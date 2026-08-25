@@ -151,6 +151,10 @@ func (r *runner) reconcile(ctx context.Context) error {
 			r.caddyProcess, err = startAs(r.caddyUID, r.caddyGID, r.caddy, "run", "--config", caddyConfig, "--adapter", "caddyfile")
 		}
 	} else if plan.applyCaddy {
+		// A reload can reach Caddy before the command observes a response. Mark
+		// the applied state unknown first so an error or cancellation forces the
+		// next reconciliation to reapply the current on-disk configuration.
+		r.appliedCaddyDigest = ""
 		err = exec.CommandContext(ctx, r.caddy, "reload", "--config", caddyConfig, "--adapter", "caddyfile", "--address", "127.0.0.1:2019").Run()
 	}
 	if err != nil {
