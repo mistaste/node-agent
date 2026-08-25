@@ -68,11 +68,11 @@ func newHTTPClient(metricsOnly bool) *http.Client {
 
 	// Relay hosts only run the metrics/control plane. Some restricted paths
 	// consistently stall Go's HTTP/2 client while the same HTTPS endpoint is
-	// healthy over HTTP/1.1. A heartbeat is small and infrequent, so prefer a
-	// fresh HTTP/1.1 connection over a long-lived multiplexed connection. This
-	// transport is used only in metrics-only mode and cannot affect relay data.
+	// healthy over HTTP/1.1. Keep normal HTTP/1.1 keep-alives: forcing a
+	// Connection: close header can itself be rejected by intermediaries on the
+	// same path. This transport is used only in metrics-only mode and cannot
+	// affect relay data.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DisableKeepAlives = true
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	transport.ResponseHeaderTimeout = 4 * time.Second
@@ -232,6 +232,7 @@ func (p *Pusher) send(req *http.Request, body []byte) error {
 		resp, err := p.http.Do(request)
 		if err != nil {
 			lastErr = err
+			p.http.CloseIdleConnections()
 			continue
 		}
 		_ = resp.Body.Close()

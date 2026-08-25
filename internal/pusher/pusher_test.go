@@ -24,7 +24,7 @@ func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) 
 	return fn(req)
 }
 
-func TestMetricsOnlyPusherUsesFreshHTTP11Connections(t *testing.T) {
+func TestMetricsOnlyPusherUsesHTTP11Connections(t *testing.T) {
 	var mu sync.Mutex
 	var protocols []string
 	var remoteAddresses []string
@@ -44,8 +44,8 @@ func TestMetricsOnlyPusherUsesFreshHTTP11Connections(t *testing.T) {
 	if !ok {
 		t.Fatalf("metrics-only transport = %T, want *http.Transport", pusher.http.Transport)
 	}
-	if !transport.DisableKeepAlives {
-		t.Fatal("metrics-only transport reuses connections")
+	if transport.DisableKeepAlives {
+		t.Fatal("metrics-only transport disables HTTP/1.1 keep-alives")
 	}
 	if transport.ForceAttemptHTTP2 {
 		t.Fatal("metrics-only transport force-enables HTTP/2")
@@ -71,8 +71,8 @@ func TestMetricsOnlyPusherUsesFreshHTTP11Connections(t *testing.T) {
 	if len(protocols) != 2 || protocols[0] != "HTTP/1.1" || protocols[1] != "HTTP/1.1" {
 		t.Fatalf("protocols = %v, want two HTTP/1.1 requests", protocols)
 	}
-	if len(remoteAddresses) != 2 || remoteAddresses[0] == remoteAddresses[1] {
-		t.Fatalf("remote addresses = %v, want a fresh connection per request", remoteAddresses)
+	if len(remoteAddresses) != 2 || remoteAddresses[0] != remoteAddresses[1] {
+		t.Fatalf("remote addresses = %v, want an ordinary HTTP/1.1 keep-alive", remoteAddresses)
 	}
 }
 
