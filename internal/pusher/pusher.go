@@ -75,6 +75,15 @@ func newHTTPClient(metricsOnly bool) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	// TLSNextProto disables the Go HTTP/2 round-tripper, while NextProtos keeps
+	// ALPN consistent with that choice. Without both, the server may select h2
+	// and send HTTP/2 frames to the HTTP/1.1 parser.
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	transport.ResponseHeaderTimeout = 4 * time.Second
 	client.Timeout = metricsRequestTimeout
 	client.Transport = transport

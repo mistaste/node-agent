@@ -53,10 +53,17 @@ func TestMetricsOnlyPusherUsesHTTP11Connections(t *testing.T) {
 	if transport.TLSNextProto == nil || len(transport.TLSNextProto) != 0 {
 		t.Fatalf("metrics-only TLSNextProto = %#v, want an explicit empty map", transport.TLSNextProto)
 	}
+	if transport.TLSClientConfig == nil || len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
+		t.Fatalf("metrics-only ALPN = %#v, want only http/1.1", transport.TLSClientConfig)
+	}
 	if transport.ResponseHeaderTimeout != 4*time.Second || pusher.http.Timeout != metricsRequestTimeout {
 		t.Fatalf("metrics-only timeouts = header %s client %s", transport.ResponseHeaderTimeout, pusher.http.Timeout)
 	}
-	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	testTLS := transport.TLSClientConfig.Clone()
+	serverTLS := server.Client().Transport.(*http.Transport).TLSClientConfig
+	testTLS.RootCAs = serverTLS.RootCAs
+	testTLS.InsecureSkipVerify = serverTLS.InsecureSkipVerify
+	transport.TLSClientConfig = testTLS
 
 	for range 2 {
 		response, err := pusher.http.Get(server.URL)
