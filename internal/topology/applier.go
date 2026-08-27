@@ -43,6 +43,7 @@ type Applier struct {
 	ipForwardPath  string
 	runner         commandRunner
 	relayProxy     *TLSRelay
+	runtimeReady   bool
 }
 
 func NewApplier(root string) (*Applier, error) {
@@ -98,7 +99,13 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		oldJSON, _ := json.Marshal(currentComparable)
 		newJSON, _ := json.Marshal(stateComparable)
 		if bytes.Equal(oldJSON, newJSON) {
-			if state.Backbone != nil {
+			// The desired state is durable, but policy rules, nftables and network
+			// devices are process/host runtime. On the first reconciliation after
+			// an agent or VPS restart, rebuild the complete owned runtime even when
+			// the WireGuard interface happened to survive.
+			if !a.runtimeReady {
+				current = DesiredState{}
+			} else if state.Backbone != nil {
 				if err := a.runner.Run(ctx, nil, "ip", "link", "set", "dev", state.Backbone.InterfaceName, "mtu", wireGuardMTU); err != nil {
 					// Network devices live in the container/network namespace and may
 					// disappear after a runtime restart while the durable desired-state
@@ -118,7 +125,11 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		if err := a.removeOwned(ctx, current); err != nil {
 			return err
 		}
-		return a.saveState(state)
+		if err := a.saveState(state); err != nil {
+			return err
+		}
+		a.runtimeReady = true
+		return nil
 	}
 	if current.Enabled && topologyOwnershipChanged(current, state) {
 		// A role or interface transition must never retain the previous
@@ -184,6 +195,7 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		}
 		return err
 	}
+	a.runtimeReady = true
 	a.removeDockerForwarding(ctx, missingForwardRules(dockerForwardRules(current), dockerForwardRules(state)))
 	return nil
 }

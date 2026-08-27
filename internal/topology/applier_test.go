@@ -153,6 +153,38 @@ func TestApplierRebuildsMissingBackboneAtSameRevision(t *testing.T) {
 	t.Fatalf("missing WireGuard interface was not rebuilt: %#v", runner.commands)
 }
 
+func TestApplierRebuildsPolicyRuntimeAfterProcessRestart(t *testing.T) {
+	root := t.TempDir()
+	state := backboneState(RoleIngress)
+
+	firstRunner := &restartRunner{}
+	first, _ := NewApplier(root)
+	first.runner = firstRunner
+	if err := first.Apply(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a restarted topology-agent with its durable state and existing
+	// WireGuard device intact, but kernel policy rules lost after a VPS reboot.
+	restartedRunner := &restartRunner{interfacePresent: true}
+	restarted, _ := NewApplier(root)
+	restarted.runner = restartedRunner
+	if err := restarted.Apply(context.Background(), state); err != nil {
+		t.Fatalf("startup runtime recovery failed: %v", err)
+	}
+
+	foundPolicyRule := false
+	foundNFTApply := false
+	for _, command := range restartedRunner.commands {
+		joined := strings.Join(command.args, " ")
+		foundPolicyRule = foundPolicyRule || command.name == "ip" && joined == "rule add priority 100 uidrange 65532-65532 lookup 51820"
+		foundNFTApply = foundNFTApply || command.name == "nft" && len(command.args) > 0 && command.args[0] == "-f"
+	}
+	if !foundPolicyRule || !foundNFTApply {
+		t.Fatalf("startup did not rebuild policy runtime: %#v", restartedRunner.commands)
+	}
+}
+
 func TestBackboneConfigNeverPlacesPrivateKeyOnCommandLine(t *testing.T) {
 	runner := &recordingRunner{}
 	applier, _ := NewApplier(t.TempDir())
