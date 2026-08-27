@@ -78,13 +78,8 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 	auto_https disable_redirects
 }
 
-https://%s:%d {
+https://%s:%d, https://:%d {
 	bind 127.0.0.1
-	tls {
-		issuer acme {
-			disable_http_challenge
-		}
-	}
 	route {
 		forward_proxy {
 %s
@@ -110,7 +105,7 @@ https://%s:%d {
 	tls %s %s
 	respond "OK" 200
 }
-`, naiveHost, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
+`, naiveHost, cfg.NaivePort, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 
 	haproxy := fmt.Sprintf(`global
     log stdout format raw local0
