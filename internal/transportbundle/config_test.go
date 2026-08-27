@@ -28,6 +28,18 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	if !strings.Contains(caddy, "basic_auth "+testUUID+" "+password) || !strings.Contains(caddy, "probe_resistance") || !strings.Contains(caddy, "auto_https disable_redirects") || !strings.Contains(caddy, "disable_http_challenge") {
 		t.Fatal("Caddy authentication or probe resistance missing")
 	}
+	for _, required := range []string{
+		"@naive_auth_challenge {",
+		"header padding *",
+		"header padding-type-request *",
+		`header @naive_auth_challenge Proxy-Authenticate "Basic realm=\"forward-proxy\""`,
+		`respond @naive_auth_challenge "" 407`,
+		`respond "OK" 200`,
+	} {
+		if !strings.Contains(caddy, required) {
+			t.Fatalf("Caddy missing selective Naive authentication challenge %q", required)
+		}
+	}
 	if strings.Count(caddy, "bind 127.0.0.1") != 2 || !strings.Contains(caddy, ":9080 {") {
 		t.Fatal("Naive and TLS decoy listeners must remain private behind the SNI mux")
 	}

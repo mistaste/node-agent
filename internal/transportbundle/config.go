@@ -92,6 +92,13 @@ https://%s:%d {
 			hide_via
 			probe_resistance
 		}
+		@naive_auth_challenge {
+			header padding *
+			header padding-type-request *
+		}
+		header @naive_auth_challenge Proxy-Authenticate "Basic realm=\"forward-proxy\""
+		respond @naive_auth_challenge "" 407
+		respond "OK" 200
 	}
 	log {
 		output discard
