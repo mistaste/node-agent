@@ -71,14 +71,16 @@ jobs:
       - name: Request guarded rollout
         env:
           URL: ${{ secrets.ROLLOUT_WEBHOOK_URL }}
+          ORIGIN_IP: ${{ secrets.ROLLOUT_ORIGIN_IP }}
           SECRET: ${{ secrets.ROLLOUT_WEBHOOK_SECRET }}
           TARGET: ${{ github.sha }}
-        if: ${{ env.URL != '' && env.SECRET != '' }}
+        if: ${{ env.URL != '' && env.ORIGIN_IP != '' && env.SECRET != '' }}
         run: |
           ROLLBACK=$(git rev-parse HEAD^)
           BODY=$(printf '{"target_commit":"%s","rollback_commit":"%s","mode":"git"}' "$TARGET" "$ROLLBACK")
           TS=$(date +%s)
           SIG=$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | awk '{print $2}')
           curl --fail-with-body --retry 3 --retry-all-errors \
+            --resolve "api.guardex-vpn.com:443:$ORIGIN_IP" \
             -H 'Content-Type: application/json' -H "X-Guardex-Timestamp: $TS" -H "X-Guardex-Signature: sha256=$SIG" \
             --data "$BODY" "$URL"
