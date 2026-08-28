@@ -12,6 +12,26 @@ import (
 	"time"
 )
 
+func TestTopologyControllerUsesBoundedHTTP11Transport(t *testing.T) {
+	client := newTopologyHTTPClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ForceAttemptHTTP2 {
+		t.Fatal("topology transport force-enables HTTP/2")
+	}
+	if transport.TLSNextProto == nil || len(transport.TLSNextProto) != 0 {
+		t.Fatalf("TLSNextProto = %#v, want explicit empty map", transport.TLSNextProto)
+	}
+	if transport.TLSClientConfig == nil || len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
+		t.Fatalf("ALPN = %#v, want only http/1.1", transport.TLSClientConfig)
+	}
+	if transport.ResponseHeaderTimeout != 6*time.Second || transport.IdleConnTimeout != 45*time.Second || client.Timeout != 12*time.Second {
+		t.Fatalf("timeouts = header %s idle %s client %s", transport.ResponseHeaderTimeout, transport.IdleConnTimeout, client.Timeout)
+	}
+}
+
 const testServiceToken = "service-token-for-topology-tests"
 const testNodeSecret = "0123456789abcdef0123456789abcdef"
 
