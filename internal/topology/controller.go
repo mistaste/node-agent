@@ -28,6 +28,7 @@ type NodeReport struct {
 	Status             string            `json:"status"`
 	ErrorCode          string            `json:"error_code"`
 	ExitProbeResults   []ExitProbeResult `json:"exit_probe_results,omitempty"`
+	RelayStats         *RelayStats       `json:"relay_stats,omitempty"`
 }
 
 type ExitProbeResult struct {
@@ -106,6 +107,10 @@ func (c *Controller) SyncOnce(ctx context.Context) error {
 	if state.Enabled && state.Role == RoleIngress {
 		report.ExitProbeResults = probeExits(ctx, state.ExitProbes)
 	}
+	if state.Enabled && state.Role == RoleRelay {
+		stats := c.applier.RelayStats()
+		report.RelayStats = &stats
+	}
 	if !state.Enabled {
 		report.Status = "disabled"
 	}
@@ -146,7 +151,7 @@ func (c *Controller) report(ctx context.Context, report NodeReport, code string,
 		report.Status = "degraded"
 		report.ErrorCode = code
 	}
-	body, _ := json.Marshal(map[string]any{"role": report.Role, "wireguard_public_key": report.WireGuardPublicKey, "observed_revision": report.ObservedRevision, "status": report.Status, "error_code": report.ErrorCode, "exit_probe_results": report.ExitProbeResults})
+	body, _ := json.Marshal(map[string]any{"role": report.Role, "wireguard_public_key": report.WireGuardPublicKey, "observed_revision": report.ObservedRevision, "status": report.Status, "error_code": report.ErrorCode, "exit_probe_results": report.ExitProbeResults, "relay_stats": report.RelayStats})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/internal/node/topology/report", bytes.NewReader(body))
 	if err != nil {
 		return err

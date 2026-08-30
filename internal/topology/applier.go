@@ -69,6 +69,13 @@ func (a *Applier) PublicKey() (string, error) {
 	return base64.StdEncoding.EncodeToString(public), nil
 }
 
+func (a *Applier) RelayStats() RelayStats {
+	if a.relayProxy == nil {
+		return RelayStats{}
+	}
+	return a.relayProxy.Snapshot()
+}
+
 func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 	var err error
 	state, err = a.resolveLocalState(state)

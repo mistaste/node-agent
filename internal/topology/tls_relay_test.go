@@ -65,6 +65,51 @@ func TestValidateMultiIngressExitAndSNIRelay(t *testing.T) {
 	}
 }
 
+func TestRelayStatsSeparateScannerNoiseFromRouteFailures(t *testing.T) {
+	relay := NewTLSRelay()
+	relay.targets["node.example.com"] = "192.0.2.10:443"
+	relay.targetStats["node.example.com"] = &RelayTargetStats{
+		ServerName: "node.example.com",
+		Failures:   make(map[string]uint64),
+	}
+
+	relay.recordFailure("", "client_hello_invalid")
+	relay.recordFailure("", "unknown_sni")
+	if snapshot := relay.Snapshot(); snapshot.LastFailure != nil {
+		t.Fatalf("scanner noise became actionable failure: %#v", snapshot.LastFailure)
+	}
+
+	relay.recordTargetAccepted("node.example.com")
+	relay.recordDial("node.example.com", 12*time.Millisecond)
+	relay.recordFailure("node.example.com", "upstream_dial_timeout")
+	snapshot := relay.Snapshot()
+	if snapshot.LastFailure == nil || snapshot.LastFailure.Code != "upstream_dial_timeout" || snapshot.LastFailure.ServerName != "node.example.com" {
+		t.Fatalf("unexpected actionable failure: %#v", snapshot.LastFailure)
+	}
+	if snapshot.Failures["client_hello_invalid"] != 1 || snapshot.Failures["unknown_sni"] != 1 {
+		t.Fatalf("scanner counters missing: %#v", snapshot.Failures)
+	}
+	if len(snapshot.Targets) != 1 || snapshot.Targets[0].Failures["upstream_dial_timeout"] != 1 || snapshot.Targets[0].UpstreamDialMs != 12 {
+		t.Fatalf("unexpected target stats: %#v", snapshot.Targets)
+	}
+}
+
+func TestRelaySnapshotIsImmutableAndSorted(t *testing.T) {
+	relay := NewTLSRelay()
+	for _, name := range []string{"z.example.com", "a.example.com"} {
+		relay.targets[name] = "192.0.2.10:443"
+		relay.targetStats[name] = &RelayTargetStats{ServerName: name, Failures: map[string]uint64{"upstream_dial_error": 1}}
+	}
+	snapshot := relay.Snapshot()
+	if len(snapshot.Targets) != 2 || snapshot.Targets[0].ServerName != "a.example.com" || snapshot.Targets[1].ServerName != "z.example.com" {
+		t.Fatalf("targets are not sorted: %#v", snapshot.Targets)
+	}
+	snapshot.Targets[0].Failures["upstream_dial_error"] = 99
+	if relay.targetStats["a.example.com"].Failures["upstream_dial_error"] != 1 {
+		t.Fatal("snapshot shares mutable failure counters")
+	}
+}
+
 func mustPrefix(value string) netip.Prefix     { return netip.MustParsePrefix(value) }
 func mustAddr(value string) netip.Addr         { return netip.MustParseAddr(value) }
 func mustAddrPort(value string) netip.AddrPort { return netip.MustParseAddrPort(value) }
