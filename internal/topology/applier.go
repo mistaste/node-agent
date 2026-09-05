@@ -25,8 +25,13 @@ const (
 
 type commandRunner interface {
 	Run(context.Context, []byte, string, ...string) error
+	Output(context.Context, string, ...string) ([]byte, error)
 }
 type osRunner struct{}
+
+func (osRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
 func (osRunner) Run(ctx context.Context, stdin []byte, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -119,6 +124,11 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 					// file remains. Rebuild the owned runtime from that same revision.
 					current = DesiredState{}
 				} else {
+					if state.Enabled && state.Role == RoleIngress {
+						if err := a.ensureIngressPolicy(ctx, state); err != nil {
+							return err
+						}
+					}
 					return a.reconcileRelayRuntime(state)
 				}
 			} else {
