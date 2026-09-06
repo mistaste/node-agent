@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	maxClientHelloBytes  = 64 << 10
-	maxRelayConnections  = 2048
-	tlsRelayInternalPort = 10443
+	maxClientHelloBytes        = 64 << 10
+	maxRelayConnections        = 2048
+	tlsRelayInternalPort       = 10443
+	relayUpstreamAttemptBudget = 3 * time.Second
 )
 
 // TLSRelay is a blind L4 router. It reads only the cleartext TLS ClientHello
@@ -162,23 +163,23 @@ func (r *TLSRelay) handle(client net.Conn) {
 		return
 	}
 	r.recordTargetAccepted(serverName)
-	dialStarted := time.Now()
-	upstream, err := (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext(context.Background(), "tcp4", target)
-	r.recordDial(serverName, time.Since(dialStarted))
-	if err != nil {
-		code := "upstream_dial_error"
-		if networkError, ok := err.(net.Error); ok && networkError.Timeout() {
-			code = "upstream_dial_timeout"
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*relayUpstreamAttemptBudget)
+	upstream, firstByte, code := connectRelayUpstream(ctx, target, buffered, relayUpstreamAttemptBudget,
+		func(ctx context.Context, address string) (net.Conn, error) {
+			return (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp4", address)
+		}, func(elapsed time.Duration) { r.recordDial(serverName, elapsed) })
+	cancel()
+	if code != "" {
 		r.recordFailure(serverName, code)
 		return
 	}
 	defer upstream.Close()
 	_ = client.SetDeadline(time.Time{})
-	written, err := upstream.Write(buffered)
-	r.recordBytes(serverName, uint64(written), 0)
+	r.recordBytes(serverName, uint64(len(buffered)), 0)
+	written, err := client.Write([]byte{firstByte})
+	r.recordBytes(serverName, 0, uint64(written))
 	if err != nil {
-		r.recordFailure(serverName, "upstream_initial_write")
+		r.recordFailure(serverName, relayCopyFailureCode("upstream_to_client_copy", err))
 		return
 	}
 	go func() {
@@ -198,6 +199,61 @@ func (r *TLSRelay) handle(client net.Conn) {
 		return
 	}
 	r.recordCompleted(serverName)
+}
+
+// Retry at most once, and ONLY before forwarding any server byte or reading
+// any client bytes beyond the already parsed ClientHello. Application payload,
+// TLS early data, authentication and post-handshake requests are never replayed.
+// This repairs a stalled upstream TCP/TLS opening without restarting the user's
+// tunnel. Both attempts share the caller's hard deadline.
+func connectRelayUpstream(ctx context.Context, target string, hello []byte, budget time.Duration,
+	dial func(context.Context, string) (net.Conn, error), recordDial func(time.Duration),
+) (net.Conn, byte, string) {
+	lastCode := "upstream_dial_timeout"
+	for attempt := 0; attempt < 2 && ctx.Err() == nil; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, budget)
+		started := time.Now()
+		conn, err := dial(attemptCtx, target)
+		recordDial(time.Since(started))
+		if err != nil {
+			lastCode = "upstream_dial_error"
+			var networkError net.Error
+			if errors.Is(err, context.DeadlineExceeded) ||
+				(errors.As(err, &networkError) && networkError.Timeout()) {
+				lastCode = "upstream_dial_timeout"
+			}
+			cancel()
+			continue
+		}
+		deadline, _ := attemptCtx.Deadline()
+		err = conn.SetDeadline(deadline)
+		if err == nil {
+			var n int
+			n, err = conn.Write(hello)
+			if err == nil && n != len(hello) {
+				err = io.ErrShortWrite
+			}
+		}
+		lastCode = "upstream_initial_write"
+		if err == nil {
+			var first [1]byte
+			_, err = io.ReadFull(conn, first[:])
+			if err == nil {
+				if err = conn.SetDeadline(time.Time{}); err == nil {
+					cancel()
+					return conn, first[0], ""
+				}
+			}
+			lastCode = "upstream_handshake_error"
+			var networkError net.Error
+			if errors.As(err, &networkError) && networkError.Timeout() {
+				lastCode = "upstream_handshake_timeout"
+			}
+		}
+		_ = conn.Close()
+		cancel()
+	}
+	return nil, 0, lastCode
 }
 
 func isExpectedRelayClose(err error) bool {
