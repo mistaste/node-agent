@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -184,7 +185,7 @@ func (r *TLSRelay) handle(client net.Conn) {
 		bytesCopied, copyErr := io.Copy(upstream, client)
 		r.recordBytes(serverName, uint64(bytesCopied), 0)
 		if copyErr != nil && !isExpectedRelayClose(copyErr) {
-			r.recordFailure(serverName, "client_to_upstream_copy")
+			r.recordFailure(serverName, relayCopyFailureCode("client_to_upstream_copy", copyErr))
 		}
 		if tcp, ok := upstream.(*net.TCPConn); ok {
 			_ = tcp.CloseWrite()
@@ -193,7 +194,7 @@ func (r *TLSRelay) handle(client net.Conn) {
 	bytesCopied, copyErr := io.Copy(client, upstream)
 	r.recordBytes(serverName, 0, uint64(bytesCopied))
 	if copyErr != nil && !isExpectedRelayClose(copyErr) {
-		r.recordFailure(serverName, "upstream_to_client_copy")
+		r.recordFailure(serverName, relayCopyFailureCode("upstream_to_client_copy", copyErr))
 		return
 	}
 	r.recordCompleted(serverName)
@@ -201,6 +202,34 @@ func (r *TLSRelay) handle(client net.Conn) {
 
 func isExpectedRelayClose(err error) bool {
 	return errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF)
+}
+
+// Preserve which socket operation failed without ever logging err.Error():
+// net.OpError contains client addresses. A downstream write reset is not
+// evidence that the ingress reset the connection. io.Copy/splice may wrap the
+// actual read/write error in an outer readfrom/writeto operation.
+func relayCopyFailureCode(direction string, err error) string {
+	operation := ""
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if op, ok := cause.(*net.OpError); ok && (op.Op == "read" || op.Op == "write") {
+			operation = "_" + op.Op
+		}
+	}
+	reason := ""
+	switch {
+	case errors.Is(err, syscall.ECONNRESET):
+		reason = "_reset"
+	case errors.Is(err, syscall.EPIPE):
+		reason = "_broken_pipe"
+	case errors.Is(err, syscall.ETIMEDOUT):
+		reason = "_timeout"
+	default:
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			reason = "_timeout"
+		}
+	}
+	return direction + operation + reason
 }
 
 func (r *TLSRelay) recordAccepted() {

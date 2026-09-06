@@ -2,12 +2,40 @@ package topology
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/netip"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestRelayCopyFailureIdentifiesSocketSideWithoutAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		direction string
+		op        string
+		err       error
+		want      string
+	}{
+		{"upstream_to_client_copy", "write", syscall.ECONNRESET, "upstream_to_client_copy_write_reset"},
+		{"upstream_to_client_copy", "read", syscall.ECONNRESET, "upstream_to_client_copy_read_reset"},
+		{"client_to_upstream_copy", "write", syscall.EPIPE, "client_to_upstream_copy_write_broken_pipe"},
+		{"client_to_upstream_copy", "read", syscall.ETIMEDOUT, "client_to_upstream_copy_read_timeout"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			err := &net.OpError{Op: "readfrom", Err: fmt.Errorf("copy: %w", &net.OpError{
+				Op: tc.op, Addr: &net.TCPAddr{IP: net.ParseIP("192.0.2.33"), Port: 54321}, Err: tc.err,
+			})}
+			if got := relayCopyFailureCode(tc.direction, err); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := relayCopyFailureCode("upstream_to_client_copy", fmt.Errorf("unknown private data")); got != "upstream_to_client_copy" {
+		t.Fatalf("unknown errors must not expose details: %q", got)
+	}
+}
 
 func TestReadClientHelloExtractsOnlyAllowlistedSNI(t *testing.T) {
 	client, server := net.Pipe()
