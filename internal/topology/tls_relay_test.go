@@ -37,6 +37,26 @@ func TestRelayCopyFailureIdentifiesSocketSideWithoutAddresses(t *testing.T) {
 	}
 }
 
+func TestRelayDetailedFailuresRemainCompatibleWithDeployedController(t *testing.T) {
+	r := NewTLSRelay()
+	r.targets["node.example.com"] = "192.0.2.10:443"
+	r.targetStats["node.example.com"] = &RelayTargetStats{ServerName: "node.example.com", Failures: map[string]uint64{}}
+	for _, code := range []string{
+		"upstream_handshake_timeout", "upstream_handshake_error",
+		"upstream_to_client_copy_write_broken_pipe", "upstream_to_client_copy_read_reset",
+		"client_to_upstream_copy_write_broken_pipe", "client_to_upstream_copy_read_timeout",
+	} {
+		r.recordFailure("node.example.com", code)
+	}
+	s := r.Snapshot()
+	if len(s.Failures) != 2 || s.Failures["upstream_to_client_copy"] != 4 || s.Failures["client_to_upstream_copy"] != 2 {
+		t.Fatalf("controller-incompatible categories: %v", s.Failures)
+	}
+	if s.LastFailure.Code != "client_to_upstream_copy" || len(s.Targets[0].Failures) != 2 {
+		t.Fatalf("controller-incompatible last failure or target: %+v", s)
+	}
+}
+
 func TestReadClientHelloExtractsOnlyAllowlistedSNI(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()

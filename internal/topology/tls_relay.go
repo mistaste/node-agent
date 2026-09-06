@@ -342,6 +342,8 @@ func (r *TLSRelay) recordCompleted(serverName string) {
 }
 
 func (r *TLSRelay) recordFailure(serverName, code string) {
+	detailCode := code
+	code = relayReportFailureCode(code)
 	now := time.Now().UTC()
 	r.mu.Lock()
 	r.failures[code]++
@@ -355,14 +357,30 @@ func (r *TLSRelay) recordFailure(serverName, code string) {
 	if actionable {
 		r.lastFailure = &RelayFailure{Code: code, ServerName: serverName, OccurredAt: now}
 	}
-	logKey := code + ":" + serverName
+	logKey := detailCode + ":" + serverName
 	shouldLog := actionable && now.Sub(r.lastLogAt[logKey]) >= time.Minute
 	if shouldLog {
 		r.lastLogAt[logKey] = now
 	}
 	r.mu.Unlock()
 	if shouldLog {
-		log.Printf("[relay] connection failed code=%s target=%s", code, safeRelayLogTarget(serverName))
+		log.Printf("[relay] connection failed code=%s target=%s", detailCode, safeRelayLogTarget(serverName))
+	}
+}
+
+// The deployed controller has an exact allowlist, including a maximum of nine
+// failure categories. Keep this wire contract stable; detailed socket/phase
+// codes belong in the privacy-safe local journal until the controller supports
+// them. Waiting for a first upstream TLS byte is an upstream-to-client read.
+func relayReportFailureCode(code string) string {
+	switch {
+	case strings.HasPrefix(code, "client_to_upstream_copy"):
+		return "client_to_upstream_copy"
+	case strings.HasPrefix(code, "upstream_to_client_copy"),
+		code == "upstream_handshake_timeout", code == "upstream_handshake_error":
+		return "upstream_to_client_copy"
+	default:
+		return code
 	}
 }
 
