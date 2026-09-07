@@ -44,6 +44,8 @@ prompt_token() {
 }
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/guardex-node}"
+AGENT_PUBLIC_HOST="${AGENT_PUBLIC_HOST:-}"
+AGENT_TLS_HOST_DIR="${AGENT_TLS_HOST_DIR:-${INSTALL_DIR}/management-tls}"
 
 log()  { echo -e "\033[1;32m[guardex]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[guardex]\033[0m $*"; }
@@ -53,6 +55,19 @@ require_root() { [ "$(id -u)" -eq 0 ] || die "Run as root: sudo bash install.sh"
 require_systemd() {
     command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] \
         || die "A systemd-based Linux distribution is required"
+}
+
+require_management_tls() {
+    [[ "$AGENT_PUBLIC_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+        || die "Set AGENT_PUBLIC_HOST to the DNS name covered by the management TLS certificate"
+    [[ "$AGENT_TLS_HOST_DIR" =~ ^/[A-Za-z0-9_./-]+$ ]] \
+        || die "AGENT_TLS_HOST_DIR must be an absolute path without spaces or shell metacharacters"
+    [ -s "$AGENT_TLS_HOST_DIR/fullchain.pem" ] && [ -s "$AGENT_TLS_HOST_DIR/privkey.pem" ] \
+        || die "Provision a publicly trusted fullchain.pem and privkey.pem in AGENT_TLS_HOST_DIR before installation"
+    openssl x509 -in "$AGENT_TLS_HOST_DIR/fullchain.pem" -noout -checkhost "$AGENT_PUBLIC_HOST" >/dev/null \
+        || die "Management certificate does not cover AGENT_PUBLIC_HOST"
+    openssl x509 -in "$AGENT_TLS_HOST_DIR/fullchain.pem" -noout -checkend 0 >/dev/null \
+        || die "Management certificate has expired"
 }
 
 install_prerequisites() {
@@ -172,6 +187,10 @@ write_env() {
     cat > "$INSTALL_DIR/.env" <<EOF
 XRAY_GRPC_ADDR=127.0.0.1:${XRAY_GRPC_PORT}
 AGENT_LISTEN_ADDR=:${AGENT_PORT}
+AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST}
+AGENT_TLS_HOST_DIR=${AGENT_TLS_HOST_DIR}
+AGENT_TLS_CERT_FILE=/run/guardex-management-tls/fullchain.pem
+AGENT_TLS_KEY_FILE=/run/guardex-management-tls/privkey.pem
 AGENT_SECRET=${AGENT_SECRET}
 XRAY_INBOUND_TAG=${INBOUND_TAG}
 METRICS_INTERVAL=15s
@@ -378,7 +397,7 @@ print_summary() {
     echo "║              Guardex Node Setup Complete                 ║"
     echo "╠══════════════════════════════════════════════════════════╣"
     printf "║  Server IP:       %-38s ║\n" "$ip"
-    printf "║  Node Agent URL:  %-38s ║\n" "http://$ip:${AGENT_PORT}"
+    printf "║  Node Agent URL:  %-38s ║\n" "https://${AGENT_PUBLIC_HOST}:${AGENT_PORT}"
     printf "║  Reality PBK:     %-38s ║\n" "$REALITY_PUBLIC_KEY"
     printf "║  Reality SID:     %-38s ║\n" "$REALITY_SHORT_ID"
     printf "║  Inbound Port:    %-38s ║\n" "$XRAY_PORT"
@@ -406,7 +425,7 @@ register_node() {
     payload=$(cat <<PAYLOAD
 {
   "host": "${ip}",
-  "node_url": "http://${ip}:${AGENT_PORT}",
+  "node_url": "https://${AGENT_PUBLIC_HOST}:${AGENT_PORT}",
   "node_secret": "${AGENT_SECRET}",
   "reality_pbk": "${REALITY_PUBLIC_KEY}",
   "reality_short_id": "${REALITY_SHORT_ID}",
@@ -442,6 +461,7 @@ PAYLOAD
 main() {
     require_root
     require_systemd
+    require_management_tls
 
     install_prerequisites
 

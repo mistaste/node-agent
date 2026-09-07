@@ -3,6 +3,9 @@ package api
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -77,6 +80,18 @@ func (s *Server) Run() error {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	if s.cfg.TLSCertFile != "" || s.cfg.TLSKeyFile != "" {
+		if s.cfg.TLSCertFile == "" || s.cfg.TLSKeyFile == "" {
+			return fmt.Errorf("both management TLS certificate and key are required")
+		}
+		return server.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+	}
+	host, _, err := net.SplitHostPort(s.cfg.ListenAddr)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("management listener requires TLS outside loopback")
 	}
 	return server.ListenAndServe()
 }

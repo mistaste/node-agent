@@ -61,6 +61,8 @@ services:
       - ./data:/data
       # Writable only in the agent; private keys are never sent to the controller.
       - ./data/tls:/etc/guardex/tls
+      # Management HTTPS certificates; restart the agent after renewal.
+      - ${AGENT_TLS_HOST_DIR:-./management-tls}:/run/guardex-management-tls:ro
       # Enables controlled git-based self-update from the admin panel.
       - ./:/opt/guardex-node:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
