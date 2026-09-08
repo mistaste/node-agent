@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,6 +20,9 @@ func main() {
 	applier, err := topology.NewApplier(root)
 	if err != nil {
 		log.Fatal("[topology] invalid local state directory")
+	}
+	if err := applier.SetTrustTunnelStatePath(filepath.Join(env("TRUSTTUNNEL_ROOT", "/data/trusttunnel"), "runner-state.json")); err != nil {
+		log.Fatal("[topology] invalid TrustTunnel state path")
 	}
 	controller, err := topology.NewController(
 		strings.TrimSpace(os.Getenv("CONTROLLER_URL")),

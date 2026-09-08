@@ -35,6 +35,34 @@ func TestIngressRulesAreFailClosed(t *testing.T) {
 	}
 }
 
+func TestIngressReplyRoutingDoesNotAddUIDPublicEgressBypass(t *testing.T) {
+	rules, err := RenderNFTables(backboneState(RoleIngress))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const replyRule = "meta skuid 65532 meta l4proto udp ct direction reply ct state established ct mark 0x4758 ct original proto-dst 443 accept"
+	if strings.Count(rules, replyRule) != 1 ||
+		strings.Index(rules, replyRule) > strings.Index(rules, "meta skuid 65532 reject") {
+		t.Fatal("missing/reordered narrow UDP return exception")
+	}
+	// The source-port policy is NOT a permission to originate traffic to WAN.
+	if strings.Contains(rules, "udp sport 443 accept") ||
+		strings.Contains(rules, "meta skuid 65532 ct mark 0x4758 accept") ||
+		strings.Contains(rules, "meta skuid 65532 meta mark 0x4758 accept") ||
+		strings.Contains(rules, "meta skuid 65532 ct state established accept") {
+		t.Fatal("return exception must not allow unrelated/original-direction UID egress")
+	}
+	allowedUIDRules := 0
+	for _, line := range strings.Split(rules, "\n") {
+		if strings.Contains(line, "meta skuid 65532") && strings.HasSuffix(line, " accept") {
+			allowedUIDRules++
+		}
+	}
+	if allowedUIDRules != 4 {
+		t.Fatalf("unexpected UID egress exception count: %d", allowedUIDRules)
+	}
+}
+
 func TestRelayHasOnlyFixed443Destination(t *testing.T) {
 	state := DesiredState{SchemaVersion: 1, Revision: 2, Role: RoleRelay, Enabled: true, Relay: &Relay{IngressAddress: netip.MustParseAddr("93.184.216.34"), IngressPort: 443, TCPEnabled: true, UDPEnabled: true}}
 	rules, err := RenderNFTables(state)

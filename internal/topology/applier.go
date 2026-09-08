@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -43,12 +44,13 @@ func (osRunner) Run(ctx context.Context, stdin []byte, name string, args ...stri
 }
 
 type Applier struct {
-	root           string
-	routeTablePath string
-	ipForwardPath  string
-	runner         commandRunner
-	relayProxy     *TLSRelay
-	runtimeReady   bool
+	root                 string
+	routeTablePath       string
+	ipForwardPath        string
+	runner               commandRunner
+	relayProxy           *TLSRelay
+	runtimeReady         bool
+	trustTunnelStatePath string
 }
 
 func NewApplier(root string) (*Applier, error) {
@@ -91,6 +93,20 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		return err
 	}
 	current, _ := a.loadState()
+	// A reconciliation after an agent restart must rebuild runtime, but still
+	// restore the durable previous topology if a later step fails.
+	wireGuardPrevious := current
+	var udpPlan *ingressUDPSourcePlan
+	if state.Enabled && state.Role == RoleIngress {
+		var previousUID []uint32
+		if current.Role == RoleIngress && current.Backbone != nil {
+			previousUID = append(previousUID, current.Backbone.IngressUID)
+		}
+		udpPlan, err = a.prepareIngressUDPSourcePolicy(ctx, state, previousUID...)
+		if err != nil {
+			return err
+		}
+	}
 	// A local unassigned tombstone has no controller revision namespace. It
 	// must not prevent a newly created role from starting again at revision 1.
 	if current.Role == "" && !current.Enabled {
@@ -125,7 +141,7 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 					current = DesiredState{}
 				} else {
 					if state.Enabled && state.Role == RoleIngress {
-						if err := a.ensureIngressPolicy(ctx, state); err != nil {
+						if err := a.ensureIngressPolicy(ctx, state, udpPlan); err != nil {
 							return err
 						}
 					}
@@ -156,10 +172,15 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		if err := a.removeOwned(ctx, current); err != nil {
 			return err
 		}
+		wireGuardPrevious = DesiredState{}
+		if udpPlan != nil && current.Role == RoleIngress {
+			// Teardown already removed these exact owned selectors.
+			udpPlan.existing = nil
+		}
 	}
 	var rollback func(context.Context)
 	if state.Backbone != nil {
-		rollback, err = a.applyWireGuard(ctx, state, current)
+		rollback, err = a.applyWireGuard(ctx, state, wireGuardPrevious)
 		if err != nil {
 			return err
 		}
@@ -180,7 +201,16 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		return err
 	}
 	transaction := ""
+	var previousNFT []byte
 	if a.runner.Run(ctx, nil, "nft", "list", "table", "inet", TableName) == nil {
+		previousNFT, err = a.runner.Output(ctx, "nft", "list", "table", "inet", TableName)
+		if err != nil {
+			forwardRollback(ctx)
+			if rollback != nil {
+				rollback(ctx)
+			}
+			return fmt.Errorf("snapshot owned nftables table: %w", err)
+		}
 		transaction = "delete table inet " + TableName + "\n"
 	}
 	transaction += rules
@@ -198,19 +228,37 @@ func (a *Applier) Apply(ctx context.Context, state DesiredState) error {
 		}
 		return err
 	}
-	if err := a.reconcileRelayRuntime(state); err != nil {
-		forwardRollback(ctx)
-		if rollback != nil {
-			rollback(ctx)
+	var udpRollback func(context.Context) error
+	rollbackApplied := func(cause error) error {
+		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var rollbackErrors []error
+		if udpRollback != nil {
+			rollbackErrors = append(rollbackErrors, udpRollback(rollbackCtx))
 		}
-		return err
+		restoreNFT := append([]byte("delete table inet "+TableName+"\n"), previousNFT...)
+		if len(previousNFT) == 0 && state.Role == RoleIngress {
+			// A fresh ingress may already have its TT process running. If no
+			// previous guard exists, never roll back into unrestricted UID WAN
+			// access when withdrawing the new route / WireGuard interface.
+			restoreNFT = []byte(fmt.Sprintf("delete table inet %s\ntable inet %s {\n chain output { type filter hook output priority -5; policy accept;\n  meta skuid %d oifname \"lo\" accept\n  meta skuid %d reject\n }\n}\n", TableName, TableName, state.Backbone.IngressUID, state.Backbone.IngressUID))
+		}
+		rollbackErrors = append(rollbackErrors, a.runner.Run(rollbackCtx, restoreNFT, "nft", "-f", "-"))
+		forwardRollback(rollbackCtx)
+		if rollback != nil {
+			rollback(rollbackCtx)
+		}
+		return errors.Join(append([]error{cause}, rollbackErrors...)...)
+	}
+	udpRollback, err = udpPlan.apply(ctx)
+	if err != nil {
+		return rollbackApplied(err)
+	}
+	if err := a.reconcileRelayRuntime(state); err != nil {
+		return rollbackApplied(err)
 	}
 	if err := a.saveState(state); err != nil {
-		forwardRollback(ctx)
-		if rollback != nil {
-			rollback(ctx)
-		}
-		return err
+		return rollbackApplied(err)
 	}
 	a.runtimeReady = true
 	a.removeDockerForwarding(ctx, missingForwardRules(dockerForwardRules(current), dockerForwardRules(state)))
@@ -473,6 +521,13 @@ func (a *Applier) removeDockerForwarding(ctx context.Context, rules [][]string) 
 func (a *Applier) removeOwned(ctx context.Context, current DesiredState) error {
 	if err := a.reconcileRelayRuntime(DesiredState{}); err != nil {
 		return err
+	}
+	if current.Role == RoleIngress && current.Backbone != nil {
+		// Remove the public source selector before removing its reply-only
+		// firewall guard. Otherwise teardown could briefly expose UID UDP.
+		if err := a.removeIngressUDPSourcePolicy(ctx, current.Backbone.IngressUID); err != nil {
+			return err
+		}
 	}
 	a.removeDockerForwarding(ctx, dockerForwardRules(current))
 	if a.runner.Run(ctx, nil, "nft", "list", "table", "inet", TableName) == nil {

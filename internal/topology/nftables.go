@@ -28,6 +28,10 @@ func RenderNFTables(state DesiredState) (string, error) {
 			"  ct mark 0x4758 meta mark set 0x4758", " }",
 			" chain output { type filter hook output priority -5; policy accept;",
 			fmt.Sprintf("  meta skuid %d oifname %q accept", b.IngressUID, "lo"),
+			// The listener's source-port policy selects the public source address
+			// before UDP sends. Permit only connection-tracked return
+			// direction, never arbitrary traffic merely using that source port.
+			fmt.Sprintf("  meta skuid %d meta l4proto udp ct direction reply ct state established ct mark 0x4758 ct original proto-dst 443 accept", b.IngressUID),
 			fmt.Sprintf("  meta skuid %d ip daddr %s udp dport %d accept", b.IngressUID, b.PeerEndpoint.Addr(), b.PeerEndpoint.Port()),
 			fmt.Sprintf("  meta skuid %d oifname %q accept", b.IngressUID, b.InterfaceName),
 			fmt.Sprintf("  meta skuid %d reject", b.IngressUID), " }", "}")

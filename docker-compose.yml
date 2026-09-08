@@ -148,6 +148,7 @@ services:
     env_file: .env
     environment:
       TOPOLOGY_ROOT: "/data/topology"
+      TRUSTTUNNEL_ROOT: "/data/trusttunnel"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -168,3 +169,4 @@ services:
         max-file: "3"
     volumes:
       - ./data/topology:/data/topology
+      - ./data/trusttunnel:/data/trusttunnel:ro

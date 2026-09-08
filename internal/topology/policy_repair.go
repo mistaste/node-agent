@@ -10,7 +10,17 @@ import (
 
 // Repair missing runtime rules even if the durable revision and WG interface
 // survived. Never delete a healthy rule or overwrite an unexpected owner.
-func (a *Applier) ensureIngressPolicy(ctx context.Context, state DesiredState) error {
+func (a *Applier) ensureIngressPolicy(ctx context.Context, state DesiredState, prepared ...*ingressUDPSourcePlan) error {
+	var udpPlan *ingressUDPSourcePlan
+	var err error
+	if len(prepared) > 0 {
+		udpPlan = prepared[0]
+	} else {
+		udpPlan, err = a.prepareIngressUDPSourcePolicy(ctx, state)
+	}
+	if err != nil {
+		return err
+	}
 	output, err := a.runner.Output(ctx, "ip", "-j", "-4", "rule", "show")
 	if err != nil {
 		return fmt.Errorf("inspect ingress policy: %w", err)
@@ -65,5 +75,6 @@ func (a *Applier) ensureIngressPolicy(ctx context.Context, state DesiredState) e
 			return err
 		}
 	}
-	return nil
+	_, err = udpPlan.apply(ctx)
+	return err
 }
