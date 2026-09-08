@@ -44,8 +44,9 @@ type Files struct {
 // an additional secret. Backend and node can reproduce it from the already
 // provisioned node secret, while compromise of one node does not expose others.
 func Credential(nodeSecret, clientUUID string) (string, error) {
+	nodeSecret = strings.TrimSpace(nodeSecret)
 	clientUUID = strings.ToLower(strings.TrimSpace(clientUUID))
-	if len(strings.TrimSpace(nodeSecret)) < 32 {
+	if len(nodeSecret) < 32 {
 		return "", errors.New("node secret must contain at least 32 characters")
 	}
 	if !uuidPattern.MatchString(clientUUID) {

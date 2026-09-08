@@ -21,6 +21,24 @@ func TestCredentialIsDeterministicAndNodeScoped(t *testing.T) {
 	}
 }
 
+func TestCredentialNormalizesSecretLikeBackend(t *testing.T) {
+	const uuid = "123e4567-e89b-42d3-a456-426614174000"
+	expected, err := Credential(testSecret, uuid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := Credential(" \t"+testSecret+"\r\n", " "+strings.ToUpper(uuid)+" ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual != expected {
+		t.Fatal("node and backend must derive the same credential after whitespace normalization")
+	}
+	if _, err := Credential("  short secret  ", uuid); err == nil {
+		t.Fatal("normalization must not permit short secrets")
+	}
+}
+
 func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 	endpoint := Endpoint{
 		Port: 8443, Hostname: "edge.example.com",
