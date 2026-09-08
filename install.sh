@@ -75,15 +75,15 @@ install_prerequisites() {
     if command -v apt-get >/dev/null 2>&1; then
         apt-get update -qq
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            ca-certificates curl fail2ban git iptables openssl
+            ca-certificates curl fail2ban git iptables openssl python3
     elif command -v dnf >/dev/null 2>&1; then
-        dnf install -y -q ca-certificates curl git iptables openssl
+        dnf install -y -q ca-certificates curl git iptables openssl python3
         dnf install -y -q fail2ban || log "WARNING: Failed to install fail2ban"
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y -q ca-certificates curl git iptables openssl
+        yum install -y -q ca-certificates curl git iptables openssl python3
         yum install -y -q fail2ban || log "WARNING: Failed to install fail2ban"
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache ca-certificates curl fail2ban git iptables openssl
+        apk add --no-cache ca-certificates curl fail2ban git iptables openssl python3
     else
         die "Unsupported package manager"
     fi
@@ -356,6 +356,9 @@ install_certbot_hook() {
     install -m 0755 \
         "$INSTALL_DIR/ops/certbot/guardex-trusttunnel-deploy-hook.sh" \
         /etc/letsencrypt/renewal-hooks/deploy/guardex-trusttunnel
+    install -m 0755 \
+        "$INSTALL_DIR/ops/certbot/guardex-management-renew.py" \
+        /etc/letsencrypt/renewal-hooks/deploy/guardex-management
 }
 
 sync_existing_trusttunnel_certificate() {
