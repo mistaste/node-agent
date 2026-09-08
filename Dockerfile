@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+FROM golang:1.26.8-alpine3.24@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS builder
 ENV GOPROXY=https://goproxy.cn,direct
 WORKDIR /src
 RUN apk add --no-cache git
@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /node-age
     && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /trusttunnel-runner ./cmd/trusttunnel-runner \
     && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /transport-bundle-runner ./cmd/transport-bundle-runner
 
-FROM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS caddy-naive
+FROM golang:1.26.8-alpine3.24@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS caddy-naive
 ENV GOPROXY=https://goproxy.cn,direct
 RUN apk add --no-cache git \
     && go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.6 \

@@ -12,6 +12,8 @@ import (
 type Config struct {
 	XrayGRPCAddr           string
 	ListenAddr             string
+	TLSCertFile            string
+	TLSKeyFile             string
 	Secret                 string
 	DefaultInboundTag      string
 	MetricsInterval        time.Duration
@@ -42,6 +44,8 @@ func Load() *Config {
 	return &Config{
 		XrayGRPCAddr:           getenv("XRAY_GRPC_ADDR", "127.0.0.1:10085"),
 		ListenAddr:             getenv("AGENT_LISTEN_ADDR", "0.0.0.0:8080"),
+		TLSCertFile:            getenv("AGENT_TLS_CERT_FILE", ""),
+		TLSKeyFile:             getenv("AGENT_TLS_KEY_FILE", ""),
 		Secret:                 getenv("AGENT_SECRET", "change-me-secret"),
 		DefaultInboundTag:      getenv("XRAY_INBOUND_TAG", "vless-in"),
 		MetricsInterval:        parseDuration(getenv("METRICS_INTERVAL", "15s")),
