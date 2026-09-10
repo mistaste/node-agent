@@ -14,7 +14,10 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	haproxy := string(files.HAProxy)
-	defaults := "defaults\n    mode tcp\n    option clitcpka\n    option srvtcpka\n    timeout connect 5s\n    timeout client  24h\n    timeout server  24h"
+	if !strings.Contains(haproxy, "bind 0.0.0.0:443 tcp-ut 30s") {
+		t.Fatal("unacknowledged client data must not retain dead transport slots")
+	}
+	defaults := "defaults\n    mode tcp\n    option clitcpka\n    option srvtcpka\n    clitcpka-idle 15s\n    clitcpka-intvl 5s\n    clitcpka-cnt 3\n    timeout connect 5s\n    timeout client  24h\n    timeout server  24h"
 	if !strings.Contains(haproxy, defaults) {
 		t.Fatalf("HAProxy defaults do not preserve long-lived tunnels:\n%s", haproxy)
 	}

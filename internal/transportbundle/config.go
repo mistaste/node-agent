@@ -107,6 +107,9 @@ https://%s:%d, https://:%d {
 }
 `, naiveHost, cfg.NaivePort, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 
+	// Preserve healthy idle tunnels, but reclaim dead physical connections after
+	// network handover. Kernel defaults otherwise retain them for over two hours.
+	// tcp-ut also bounds unacknowledged data, which keepalive alone cannot cover.
 	haproxy := fmt.Sprintf(`global
     log stdout format raw local0
     stats socket /run/guardex-haproxy-admin.sock mode 600 level admin
@@ -115,12 +118,15 @@ defaults
     mode tcp
     option clitcpka
     option srvtcpka
+    clitcpka-idle 15s
+    clitcpka-intvl 5s
+    clitcpka-cnt 3
     timeout connect 5s
     timeout client  24h
     timeout server  24h
 
 frontend guardex_tls
-    bind 0.0.0.0:%d
+    bind 0.0.0.0:%d tcp-ut 30s
     tcp-request inspect-delay 5s
     tcp-request content accept if { req_ssl_hello_type 1 }
     acl sni_tt req.ssl_sni -i %s

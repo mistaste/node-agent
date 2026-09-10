@@ -107,7 +107,11 @@ func BuildFiles(root, nodeSecret string, endpoint Endpoint) (Files, error) {
 	if metricsPort < 1024 || metricsPort > 65535 {
 		return Files{}, errors.New("metrics port is invalid")
 	}
-	settings := fmt.Sprintf("listen_address = %s\nipv6_available = %t\nallow_private_network_connections = false\ncredentials_file = %s\ntls_handshake_timeout_secs = 10\nclient_listener_timeout_secs = 86400\nconnection_establishment_timeout_secs = 30\ntcp_connections_timeout_secs = 86400\nudp_connections_timeout_secs = 300\ndefault_max_http2_conns_per_client = 8\ndefault_max_http3_conns_per_client = 8\nspeedtest_enable = false\nping_enable = true\nauth_failure_status_code = 405\n\n%s[forward_protocol]\ndirect = {}\n\n[metrics]\naddress = %s\nrequest_timeout_secs = 3\n",
+	// Limits apply to credentials shared by all devices, not to one device.
+	// Each client multiplexes up to 8 transports. Reserve two generations for
+	// five devices (80 sockets) plus bounded recovery headroom. Device slots
+	// remain enforced by the backend; this is only a transport resource limit.
+	settings := fmt.Sprintf("listen_address = %s\nipv6_available = %t\nallow_private_network_connections = false\ncredentials_file = %s\ntls_handshake_timeout_secs = 10\nclient_listener_timeout_secs = 86400\nconnection_establishment_timeout_secs = 30\ntcp_connections_timeout_secs = 86400\nudp_connections_timeout_secs = 300\ndefault_max_http2_conns_per_client = 96\ndefault_max_http3_conns_per_client = 96\nspeedtest_enable = false\nping_enable = true\nauth_failure_status_code = 405\n\n%s[forward_protocol]\ndirect = {}\n\n[metrics]\naddress = %s\nrequest_timeout_secs = 3\n",
 		quote("0.0.0.0:"+strconv.Itoa(endpoint.Port)), endpoint.IPv6Available,
 		quote(filepath.Join(root, "credentials.toml")), protocols.String(), quote("127.0.0.1:"+strconv.Itoa(metricsPort)))
 	hosts := fmt.Sprintf("[[main_hosts]]\nhostname = %s\ncert_chain_path = %s\nprivate_key_path = %s\n",
