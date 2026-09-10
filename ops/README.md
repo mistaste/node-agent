@@ -8,7 +8,10 @@
 - `ssh/00-guardex-hardening.conf` disables password-based SSH authentication.
 
 Set `CONTROLLER_ORIGIN_IP` when installing against a controller other than
-`80.241.216.139`. The generated `/etc/guardex/node-firewall.conf` is the durable
+`193.247.73.15`. This must be the outbound source address of the API backend,
+not the public reverse proxy address (`80.241.216.139`). Allowing only the proxy
+blocks profile reconciliation even while node heartbeats remain healthy.
+The generated `/etc/guardex/node-firewall.conf` is the durable
 source of the controller address and agent port. After changing it, apply the
 new rules with:
 

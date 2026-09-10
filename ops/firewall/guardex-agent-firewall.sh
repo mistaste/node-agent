@@ -4,7 +4,7 @@ set -eu
 # Restrict the privileged node-agent API to the Guardex controller. This script
 # is intentionally idempotent: systemd runs it at boot and operators may run it
 # again after changing /etc/guardex/node-firewall.conf.
-CONTROLLER_ORIGIN_IP="${CONTROLLER_ORIGIN_IP:-80.241.216.139}"
+CONTROLLER_ORIGIN_IP="${CONTROLLER_ORIGIN_IP:-193.247.73.15}"
 AGENT_PORT="${AGENT_PORT:-8099}"
 CHAIN="GUARDEX_AGENT"
 

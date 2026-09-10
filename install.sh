@@ -11,7 +11,7 @@ XRAY_PORT="${XRAY_PORT:-10443}"
 AGENT_PORT="${AGENT_PORT:-8099}"
 XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
 INBOUND_TAG="${INBOUND_TAG:-vless-in}"
-CONTROLLER_ORIGIN_IP="${CONTROLLER_ORIGIN_IP:-80.241.216.139}"
+CONTROLLER_ORIGIN_IP="${CONTROLLER_ORIGIN_IP:-193.247.73.15}"
 
 # Pin xray-core close to the version the Flutter app's proxy_core bundles
 # (GFW-knocker fork v1.26.5-mahsa, based on upstream 26.5). Reality handshakes only
