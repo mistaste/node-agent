@@ -38,7 +38,7 @@ Stage 1 separates the transport stack into three duties:
   written by `node-agent`; the bundle must remain mode `0600`.
 
 Version labels are intentionally split: nodes run the pinned TrustTunnel
-endpoint binary `1.0.33`, while mobile clients advertise the Guardex
+endpoint binary `1.1.0`, while released mobile clients advertise the Guardex
 TrustTunnel adapter/core capability `1.0.49`. Do not treat those two values as
 a mismatch during canary review.
 

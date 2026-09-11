@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # Guardex node agent starts it only after a valid catalogue route and TLS files
 # are present. Existing Xray listeners are untouched.
 
-VERSION="${TRUSTTUNNEL_VERSION:-1.0.33}"
+VERSION="${TRUSTTUNNEL_VERSION:-1.1.0}"
 INSTALL_ROOT="${TRUSTTUNNEL_INSTALL_ROOT:-/opt/trusttunnel}"
 CONFIG_ROOT="${TRUSTTUNNEL_ROOT:-/etc/guardex/trusttunnel}"
 SERVICE_NAME="guardex-trusttunnel.service"
@@ -19,11 +19,11 @@ fi
 case "$(uname -m)" in
   x86_64|amd64)
     ARCH="x86_64"
-    EXPECTED_SHA256="48802662bc745aed60207c6ed6465d9fed428b1e53532045689d89bcad19bdd9"
+    EXPECTED_SHA256="91c2ea3db7416a01b5258a4c047ec22890490bc55e1b194206031aa75144f0e7"
     ;;
   aarch64|arm64)
     ARCH="aarch64"
-    EXPECTED_SHA256="8b0d13d11f607c1da18be921096de3f85af67520b305aad425c74dd4f6775697"
+    EXPECTED_SHA256="c2aee17a1ced349283cba4775202e2baba053b8ea835d4cc23dc67d16c6b9686"
     ;;
   *)
     echo "Unsupported architecture: $(uname -m)" >&2
@@ -31,7 +31,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-if [ "$VERSION" != "1.0.33" ]; then
+if [ "$VERSION" != "1.1.0" ]; then
   echo "Unreviewed TrustTunnel version: $VERSION" >&2
   exit 1
 fi
