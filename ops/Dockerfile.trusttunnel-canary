@@ -1,4 +1,4 @@
-ARG BASE_IMAGE
+ARG BASE_IMAGE=guardex-node-security:9547512
 FROM ${BASE_IMAGE}
 
 # The build context must contain only the verified release binary. Keeping the
