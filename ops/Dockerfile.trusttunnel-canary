@@ -1,0 +1,7 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# The build context must contain only the verified release binary. Keeping the
+# canary image derived from the currently deployed node image makes the
+# endpoint binary the sole runtime difference during the first rollout.
+COPY --chmod=0755 trusttunnel_endpoint /opt/trusttunnel/trusttunnel_endpoint

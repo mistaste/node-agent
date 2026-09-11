@@ -21,6 +21,11 @@ the node's existing TrustTunnel configuration mounted read-only. Do not publish
 ports from that container. A successful five-second run proves that the
 configuration is accepted without touching the live endpoint.
 
+For the first live canary, build `Dockerfile.trusttunnel-canary` from a context
+containing only that verified binary. Pass the exact currently deployed image
+tag as `BASE_IMAGE`. This keeps every other binary and package byte-for-byte
+identical to the previous node image.
+
 Roll out to one node first. Record the previous image ID and keep it locally,
 replace only `trusttunnel-runner`, then verify:
 
