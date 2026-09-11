@@ -26,6 +26,10 @@ containing only that verified binary. Pass the exact currently deployed image
 tag as `BASE_IMAGE`. This keeps every other binary and package byte-for-byte
 identical to the previous node image.
 
+Set `TRUSTTUNNEL_CANARY_IMAGE` to the locally built immutable canary tag and
+append `docker-compose.trusttunnel-canary.yml` after the normal Compose files.
+Recreate only `trusttunnel-runner` with `--no-deps`.
+
 Roll out to one node first. Record the previous image ID and keep it locally,
 replace only `trusttunnel-runner`, then verify:
 
