@@ -25,12 +25,12 @@ FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc
 ARG TARGETARCH
 RUN apk add --no-cache ca-certificates wget tar \
     && case "$TARGETARCH" in \
-         amd64) tt_arch="x86_64"; tt_sha="48802662bc745aed60207c6ed6465d9fed428b1e53532045689d89bcad19bdd9" ;; \
-         arm64) tt_arch="aarch64"; tt_sha="8b0d13d11f607c1da18be921096de3f85af67520b305aad425c74dd4f6775697" ;; \
+         amd64) tt_arch="x86_64"; tt_sha="91c2ea3db7416a01b5258a4c047ec22890490bc55e1b194206031aa75144f0e7" ;; \
+         arm64) tt_arch="aarch64"; tt_sha="c2aee17a1ced349283cba4775202e2baba053b8ea835d4cc23dc67d16c6b9686" ;; \
          *) echo "unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
        esac \
-    && tt_archive="trusttunnel-v1.0.33-linux-${tt_arch}.tar.gz" \
-    && wget -q -O "/${tt_archive}" "https://github.com/TrustTunnel/TrustTunnel/releases/download/v1.0.33/${tt_archive}" \
+    && tt_archive="trusttunnel-v1.1.0-linux-${tt_arch}.tar.gz" \
+    && wget -q -O "/${tt_archive}" "https://github.com/TrustTunnel/TrustTunnel/releases/download/v1.1.0/${tt_archive}" \
     && echo "$tt_sha  /${tt_archive}" | sha256sum -c - \
     && mkdir -p /trusttunnel-unpack \
     && tar -xzf "/${tt_archive}" -C /trusttunnel-unpack \

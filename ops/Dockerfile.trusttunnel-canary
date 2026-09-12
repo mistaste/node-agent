@@ -1,0 +1,7 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Build with a context containing only the independently verified endpoint.
+# Deriving from the currently deployed image keeps this binary as the sole
+# runtime difference during a one-node-at-a-time rollout.
+COPY --chmod=0755 trusttunnel_endpoint /opt/trusttunnel/trusttunnel_endpoint

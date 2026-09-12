@@ -1,0 +1,3 @@
+services:
+  trusttunnel-runner:
+    image: ${TRUSTTUNNEL_CANARY_IMAGE:?set TRUSTTUNNEL_CANARY_IMAGE}
