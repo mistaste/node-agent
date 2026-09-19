@@ -127,6 +127,17 @@ func TestDetachedComposeHelperDefaultPathIsHostStable(t *testing.T) {
 	}
 }
 
+func TestSummarizeUpdateOutputKeepsBoundedFailureEvidence(t *testing.T) {
+	if got := summarizeUpdateOutput([]byte("  fetch failed\x00\r\nretry denied  ")); got != "fetch failed  \nretry denied" {
+		t.Fatalf("summary = %q", got)
+	}
+	long := strings.Repeat("x", 3000)
+	got := summarizeUpdateOutput([]byte(long))
+	if len(got) != 2051 || !strings.HasPrefix(got, "...") || got[3:] != long[len(long)-2048:] {
+		t.Fatalf("long summary was not tail-bounded: len=%d", len(got))
+	}
+}
+
 func TestValidateBinaryUpdateRequiresHTTPSAndSHA256(t *testing.T) {
 	payloadDigest := sha256.Sum256([]byte("binary"))
 	checksum := hex.EncodeToString(payloadDigest[:])

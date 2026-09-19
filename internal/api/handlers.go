@@ -568,7 +568,31 @@ func runDetachedComposeHelper(repoDir string, parts []string) error {
 	if err != nil {
 		return err
 	}
-	return exec.Command("docker", args...).Run()
+	output, err := exec.Command("docker", args...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := summarizeUpdateOutput(output)
+	if detail == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, detail)
+}
+
+func summarizeUpdateOutput(output []byte) string {
+	const maxBytes = 2048
+	detail := strings.TrimSpace(string(output))
+	detail = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r >= 0x20 {
+			return r
+		}
+		return ' '
+	}, detail)
+	if len(detail) > maxBytes {
+		detail = detail[len(detail)-maxBytes:]
+		detail = "..." + detail
+	}
+	return detail
 }
 
 func detachedComposeHelperArgs(repoDir string, parts []string) ([]string, error) {
