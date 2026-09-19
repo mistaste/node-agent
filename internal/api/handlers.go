@@ -523,9 +523,10 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 		// recreating Xray, node-agent, or topology-agent.
 		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "trusttunnel-runner", "transport-bundle-runner")
 	} else {
-		// Agent-only rollout must never recreate or stop the data-plane. Xray is
-		// intentionally updated only by the explicit git-full mode above.
-		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "node-agent", "topology-agent")
+		// Agent-only rollout must never recreate the topology controller or any
+		// data-plane process. Restarting topology-agent can turn a harmless API
+		// observability release into a policy reconciliation event.
+		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "node-agent")
 	}
 	return parts, nil
 }

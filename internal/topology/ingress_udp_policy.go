@@ -170,7 +170,7 @@ func (a *Applier) ingressUDPSourceRules(ctx context.Context, uids ...uint32) ([]
 		// Reject unknown ownership/selectors rather than deleting an operator's
 		// policy at the same priority. Explicit protocol tags survive restarts.
 		allowed := map[string]bool{"priority": true, "src": true, "table": true, "protocol": true,
-			"uid_start": true, "uid_end": true, "ipproto": true, "sport": true}
+			"uid_start": true, "uid_end": true, "ipproto": true, "sport": true, "sport_mask": true}
 		for key := range rule {
 			if !allowed[key] {
 				return nil, errors.New("ingress UDP source policy conflicts with another owner")
@@ -182,9 +182,11 @@ func (a *Applier) ingressUDPSourceRules(ctx context.Context, uids ...uint32) ([]
 		for _, expected := range uids {
 			uidAllowed = uidAllowed || uid == uint64(expected)
 		}
+		sportMask := value("sport_mask")
 		if value("src") != "all" || value("table") != "main" || value("protocol") != ingressUDPSourceOwner ||
 			uidErr != nil || !uidAllowed || value("uid_end") != value("uid_start") ||
-			value("ipproto") != "udp" || parseErr != nil || port < 1 || port > 65535 {
+			value("ipproto") != "udp" || (sportMask != "" && sportMask != "0xffff") ||
+			parseErr != nil || port < 1 || port > 65535 {
 			return nil, errors.New("ingress UDP source policy conflicts with another owner")
 		}
 		result = append(result, ingressUDPSourceRule{uint32(uid), port})

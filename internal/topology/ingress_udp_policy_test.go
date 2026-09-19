@@ -70,7 +70,7 @@ func TestIngressUDPSourcePolicyKeepsLKGUntilDesiredStateIsAcknowledged(t *testin
 }
 
 func udpOwnedRule(port int) string {
-	return fmt.Sprintf(`{"priority":95,"src":"all","uid_start":65532,"uid_end":65532,"ipproto":"udp","sport":%d,"table":"main","protocol":"242"}`, port)
+	return fmt.Sprintf(`{"priority":95,"src":"all","uid_start":65532,"uid_end":65532,"ipproto":"udp","sport":%d,"sport_mask":"0xffff","table":"main","protocol":"242"}`, port)
 }
 
 func TestIngressUDPSourcePolicyUsesAcknowledgedPortAndKeepsHealthyRule(t *testing.T) {
@@ -248,6 +248,17 @@ func TestIngressUDPConflictPreflightDoesNotTouchWorkingTopology(t *testing.T) {
 	}
 	if len(r.commands) != 0 {
 		t.Fatalf("preflight mutated working topology: %+v", r.commands)
+	}
+}
+
+func TestIngressUDPSourcePolicyRejectsPartialPortMask(t *testing.T) {
+	rule := strings.Replace(udpOwnedRule(18443), `"0xffff"`, `"0xff00"`, 1)
+	a, runner, _ := udpPolicyHarness(t, 18443, "["+rule+"]")
+	if err := a.ensureIngressUDPSourcePolicy(context.Background(), backboneState(RoleIngress)); err == nil {
+		t.Fatal("expected partial source-port mask conflict")
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("conflicting source rule was mutated: %+v", runner.commands)
 	}
 }
 
