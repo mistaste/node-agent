@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/guardex/node-agent/internal/trusttunnel"
 	"github.com/guardex/node-agent/internal/xray"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
@@ -57,8 +58,9 @@ type ActiveUser struct {
 
 // Collector periodically gathers system and Xray metrics.
 type Collector struct {
-	xray     *xray.Client
-	interval time.Duration
+	xray        *xray.Client
+	trustTunnel *trusttunnel.MetricsClient
+	interval    time.Duration
 
 	mu     sync.RWMutex
 	latest *Snapshot
@@ -75,6 +77,7 @@ func NewCollector(xrayClient *xray.Client, interval time.Duration, interfaceName
 	}
 	return &Collector{
 		xray:          xrayClient,
+		trustTunnel:   trusttunnel.NewMetricsClient("http://127.0.0.1:1987"),
 		interval:      interval,
 		prevTraffic:   make(map[string]int64),
 		lastActive:    make(map[string]time.Time),
@@ -158,13 +161,34 @@ func (c *Collector) collect(ctx context.Context) {
 	snap.ConntrackMax = readUintFile("/proc/sys/net/netfilter/nf_conntrack_max")
 	snap.WireGuardHandshakeAgeSeconds = wireGuardHandshakeAge(time.Now())
 
+	connected := make(map[string]bool)
+	byUUID := make(map[string]xray.UserTraffic)
 	if c.xray != nil {
 		if traffic, err := c.xray.QueryAllUserStats(ctx); err == nil {
-			snap.UserTraffic = traffic
-			snap.ActiveUsers = c.markActiveUsers(snap.CollectedAt, traffic)
+			for _, user := range traffic {
+				byUUID[strings.ToLower(strings.TrimSpace(user.UUID))] = user
+			}
 		} else {
 			log.Printf("[metrics] xray stats error: %v", err)
 		}
+		if clients, err := c.trustTunnel.Clients(ctx); err == nil {
+			for _, client := range clients {
+				current := byUUID[client.Username]
+				current.UUID = client.Username
+				current.Uplink += client.Inbound
+				current.Downlink += client.Outbound
+				byUUID[client.Username] = current
+				if client.Sessions > 0 {
+					connected[client.Username] = true
+				}
+			}
+		} else {
+			log.Printf("[metrics] trusttunnel stats error: %v", err)
+		}
+		for _, user := range byUUID {
+			snap.UserTraffic = append(snap.UserTraffic, user)
+		}
+		snap.ActiveUsers = c.markActiveUsers(snap.CollectedAt, snap.UserTraffic, connected)
 	}
 
 	c.mu.Lock()
@@ -271,16 +295,19 @@ func wireGuardHandshakeAge(now time.Time) int64 {
 	return age
 }
 
-func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic) []ActiveUser {
+func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic, connected map[string]bool) []ActiveUser {
 	const activeWindow = 90 * time.Second
 
 	seen := make(map[string]struct{}, len(traffic))
 	byUUID := make(map[string]xray.UserTraffic, len(traffic))
 	for _, user := range traffic {
+		user.UUID = strings.ToLower(strings.TrimSpace(user.UUID))
 		total := user.Uplink + user.Downlink
 		seen[user.UUID] = struct{}{}
 		byUUID[user.UUID] = user
-		if prev, ok := c.prevTraffic[user.UUID]; ok && total > prev {
+		if connected[user.UUID] {
+			c.lastActive[user.UUID] = now
+		} else if prev, ok := c.prevTraffic[user.UUID]; ok && total > prev {
 			c.lastActive[user.UUID] = now
 		}
 		c.prevTraffic[user.UUID] = total

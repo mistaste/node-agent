@@ -61,8 +61,8 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 	if !bytes.Contains(files.Settings, []byte("[listen_protocols.http2]")) || !bytes.Contains(files.Settings, []byte("[listen_protocols.quic]")) {
 		t.Fatalf("protocol configuration missing: %s", files.Settings)
 	}
-	if bytes.Contains(files.Settings, []byte("[listen_protocols.http1]")) {
-		t.Fatalf("HTTP/1 listener must stay disabled for Stage 1: %s", files.Settings)
+	if !bytes.Contains(files.Settings, []byte("[listen_protocols.http1]")) {
+		t.Fatalf("HTTP/1 codec is required by TrustTunnel metrics: %s", files.Settings)
 	}
 	for _, expected := range []string{
 		"client_listener_timeout_secs = 86400",
@@ -76,6 +76,7 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 		"auth_failure_status_code = 405",
 		"[metrics]",
 		"address = \"127.0.0.1:1987\"",
+		"per_client_metrics = true",
 	} {
 		if !strings.Contains(string(files.Settings), expected) {
 			t.Fatalf("Stage 1 TrustTunnel setting %q missing: %s", expected, files.Settings)
