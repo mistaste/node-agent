@@ -1353,6 +1353,46 @@ func TestControllerAppliesNaiveProxyTransportBundle(t *testing.T) {
 	}
 }
 
+func TestNaiveProxyReportsCertificatePinAndRejectsMalformedCertificate(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	root := t.TempDir()
+	certDir := filepath.Join(root, "certs")
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(certDir, "fullchain.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	item := desiredItem{InboundID: "naive-pin", Engine: "naiveproxy", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"naive","hostname":"naive.example.com","trusttunnel_hostname":"vpn.example.com","trusttunnel_port":8443,"naive_port":9443,"decoy_port":9080}`)}
+	h := newControllerHarness(t, nil)
+	h.reconciler.cfg.TrustTunnelRoot = root
+	prepared, err := h.reconciler.prepareNaiveProxyApply(item, []string{testClientUUID}, "clients")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var params struct {
+		Pins []string `json:"spki_pins_sha256"`
+	}
+	if err := json.Unmarshal(prepared.clientParams, &params); err != nil {
+		t.Fatal(err)
+	}
+	want, err := certificateSPKIPin(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Pins) != 1 || params.Pins[0] != want {
+		t.Fatal("Naive certificate pin not reported")
+	}
+	if err := os.WriteFile(path, []byte("malformed certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.reconciler.prepareNaiveProxyApply(item, []string{testClientUUID}, "clients"); err == nil {
+		t.Fatal("malformed certificate accepted")
+	}
+}
+
 func TestControllerRestoresPublicTrustTunnelWhenNaiveBundleFails(t *testing.T) {
 	trust := desiredItem{InboundID: "catalog-tt", Engine: "trusttunnel", Action: "apply", DesiredRevision: 2, EffectiveTag: "gx-trusttunnel", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"node.example.com","upstream_protocol":"http2","listen_port":8443}`), ClientUUIDs: []string{testClientUUID}}
 	naive := desiredItem{InboundID: "catalog-naive", Engine: "naiveproxy", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-naive-h2", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"naive","tag":"gx-naive-h2","port":443,"hostname":"naive.node.example.com","trusttunnel_hostname":"node.example.com","trusttunnel_port":8443,"naive_port":9443,"decoy_port":9080,"transport":"http2","security":"tls"}`), ClientUUIDs: []string{testClientUUID}}

@@ -686,7 +686,13 @@ func (r *Reconciler) prepareNaiveProxyApply(item desiredItem, clients []string, 
 		Clients []string        `json:"clients"`
 	}{Config: item.ConfigJSON, Clients: clients})
 	digest := sha256.Sum256(digestRaw)
-	return preparedItem{desired: item, desiredDigest: hex.EncodeToString(digest[:]), publicMaterial: json.RawMessage(`{}`), clientParams: json.RawMessage(`{}`), clientSecret: json.RawMessage(`{}`), clientCount: len(clients), clientSetSHA256: clientHash, transportBundle: &bundle}, nil
+	clientParams := json.RawMessage(`{}`)
+	if pin, err := certificateSPKIPin(config.CertificateFile); err == nil {
+		clientParams, _ = json.Marshal(map[string]any{"spki_pins_sha256": []string{pin}})
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return preparedItem{}, fmt.Errorf("NaiveProxy certificate is invalid: %w", err)
+	}
+	return preparedItem{desired: item, desiredDigest: hex.EncodeToString(digest[:]), publicMaterial: json.RawMessage(`{}`), clientParams: clientParams, clientSecret: json.RawMessage(`{}`), clientCount: len(clients), clientSetSHA256: clientHash, transportBundle: &bundle}, nil
 }
 
 // secureForwardedFor prevents HTTP transports from accepting a forged
