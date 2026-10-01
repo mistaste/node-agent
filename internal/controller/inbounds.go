@@ -1034,7 +1034,7 @@ func (r *Reconciler) reconcileNaiveProxy(ctx context.Context, item preparedItem)
 		}
 		return failedReport(desired, previous, itemError{"apply_failed", "node could not activate the NaiveProxy transport bundle"})
 	}
-	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
+	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: jsonObjectOrEmpty(item.clientParams), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
 }
 
 func (r *Reconciler) reconcileTrustTunnel(ctx context.Context, item preparedItem) deploymentReport {

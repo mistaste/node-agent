@@ -1385,6 +1385,11 @@ func TestNaiveProxyReportsCertificatePinAndRejectsMalformedCertificate(t *testin
 	if len(params.Pins) != 1 || params.Pins[0] != want {
 		t.Fatal("Naive certificate pin not reported")
 	}
+	h.reconciler.EnableTransportBundle(&fakeTransportBundleRuntime{})
+	report := h.reconciler.reconcileNaiveProxy(context.Background(), prepared)
+	if report.Status != "active" || string(report.ClientParamsJSON) != string(prepared.clientParams) {
+		t.Fatal("active reconciliation discarded Naive certificate metadata")
+	}
 	if err := os.WriteFile(path, []byte("malformed certificate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
