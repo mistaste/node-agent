@@ -1059,7 +1059,7 @@ func (r *Reconciler) reconcileTrustTunnel(ctx context.Context, item preparedItem
 		}
 		return failedReport(desired, previous, itemError{"apply_failed", "node could not activate the TrustTunnel endpoint"})
 	}
-	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: json.RawMessage(`{}`), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
+	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: item.clientParams, ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
 }
 
 func (r *Reconciler) reconcileUsers(ctx context.Context, item preparedItem, structuralChanged bool) error {

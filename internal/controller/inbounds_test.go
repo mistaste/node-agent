@@ -1283,6 +1283,45 @@ func TestControllerAppliesTrustTunnelOnlyWhenRuntimeEnabled(t *testing.T) {
 	}
 }
 
+func TestTrustTunnelActiveReportPreservesCertificatePin(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	root := t.TempDir()
+	certDir := filepath.Join(root, "certs")
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(certDir, "fullchain.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := newControllerHarness(t, nil)
+	h.reconciler.cfg.TrustTunnelRoot = root
+	h.reconciler.EnableTrustTunnel(&fakeTrustTunnelRuntime{available: true})
+	item := desiredItem{InboundID: "trust-pin", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"vpn.example.com","upstream_protocol":"http3"}`)}
+	prepared, err := h.reconciler.prepareTrustTunnelApply(item, []string{testClientUUID}, "clients")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := h.reconciler.reconcileTrustTunnel(context.Background(), prepared)
+	if report.Status != "active" {
+		t.Fatalf("report status = %s", report.Status)
+	}
+	var params struct {
+		Pins []string `json:"spki_pins_sha256"`
+	}
+	if err := json.Unmarshal(report.ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	want, err := certificateSPKIPin(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Pins) != 1 || params.Pins[0] != want {
+		t.Fatal("active TrustTunnel report discarded certificate pin")
+	}
+}
+
 func TestCertificateSPKIPinUsesCertificatePublicKey(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
