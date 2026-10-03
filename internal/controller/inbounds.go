@@ -129,6 +129,7 @@ type Reconciler struct {
 	trustTunnel             trustTunnelRuntime
 	trustTunnelApplyEnabled bool
 	transportBundle         transportBundleRuntime
+	naivePin                func(context.Context, string, int) (string, error)
 }
 
 type trustTunnelRuntime interface {
@@ -687,9 +688,8 @@ func (r *Reconciler) prepareNaiveProxyApply(item desiredItem, clients []string, 
 	}{Config: item.ConfigJSON, Clients: clients})
 	digest := sha256.Sum256(digestRaw)
 	clientParams := json.RawMessage(`{}`)
-	if pin, err := certificateSPKIPin(config.CertificateFile); err == nil {
-		clientParams, _ = json.Marshal(map[string]any{"spki_pins_sha256": []string{pin}})
-	} else if !errors.Is(err, os.ErrNotExist) {
+	// This file belongs to the decoy, not Caddy's managed Naive certificate.
+	if _, err := certificateSPKIPin(config.CertificateFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return preparedItem{}, fmt.Errorf("NaiveProxy certificate is invalid: %w", err)
 	}
 	return preparedItem{desired: item, desiredDigest: hex.EncodeToString(digest[:]), publicMaterial: json.RawMessage(`{}`), clientParams: clientParams, clientSecret: json.RawMessage(`{}`), clientCount: len(clients), clientSetSHA256: clientHash, transportBundle: &bundle}, nil
@@ -1034,7 +1034,16 @@ func (r *Reconciler) reconcileNaiveProxy(ctx context.Context, item preparedItem)
 		}
 		return failedReport(desired, previous, itemError{"apply_failed", "node could not activate the NaiveProxy transport bundle"})
 	}
-	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: jsonObjectOrEmpty(item.clientParams), ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
+	probe := r.naivePin
+	if probe == nil {
+		probe = naiveListenerPin
+	}
+	pin, err := probe(ctx, item.transportBundle.NaiveHostname, item.transportBundle.NaivePort)
+	if err != nil {
+		return failedReport(desired, state.Revision, itemError{"certificate_probe_failed", "node could not verify the active Naive TLS certificate"})
+	}
+	params, _ := json.Marshal(map[string]any{"spki_pins_sha256": []string{pin}})
+	return deploymentReport{InboundID: desired.InboundID, AppliedRevision: state.Revision, EffectiveTag: desired.EffectiveTag, EffectivePort: desired.EffectivePort, Status: "active", PublicMaterialJSON: json.RawMessage(`{}`), ClientParamsJSON: params, ClientSecretJSON: json.RawMessage(`{}`), AppliedClientCount: state.ClientCount, AppliedClientSetSHA256: state.ClientSetSHA256}
 }
 
 func (r *Reconciler) reconcileTrustTunnel(ctx context.Context, item preparedItem) deploymentReport {

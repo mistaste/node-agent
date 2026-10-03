@@ -397,6 +397,11 @@ func newControllerHarness(t *testing.T, items []desiredItem, coordinators ...*us
 	reconciler.http = h.server.Client()
 	reconciler.http.Timeout = requestTimeout
 	reconciler.http.CheckRedirect = rejectRedirect
+	// Fake bundle runtime has no TLS listener; live TLS verification is covered
+	// separately by TestNaiveListenerPinVerifiesActualCertificate.
+	reconciler.naivePin = func(context.Context, string, int) (string, error) {
+		return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)), nil
+	}
 	h.reconciler = reconciler
 	return h
 }
@@ -1421,13 +1426,24 @@ func TestNaiveProxyReportsCertificatePinAndRejectsMalformedCertificate(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(params.Pins) != 1 || params.Pins[0] != want {
-		t.Fatal("Naive certificate pin not reported")
+	if len(params.Pins) != 0 {
+		t.Fatal("decoy certificate incorrectly reported as Naive")
+	}
+	served := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	if served == want {
+		t.Fatal("fixture must distinguish decoy and listener")
 	}
 	h.reconciler.EnableTransportBundle(&fakeTransportBundleRuntime{})
 	report := h.reconciler.reconcileNaiveProxy(context.Background(), prepared)
-	if report.Status != "active" || string(report.ClientParamsJSON) != string(prepared.clientParams) {
-		t.Fatal("active reconciliation discarded Naive certificate metadata")
+	if err := json.Unmarshal(report.ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "active" || len(params.Pins) != 1 || params.Pins[0] != served {
+		t.Fatal("active reconciliation did not report actual listener pin")
+	}
+	h.reconciler.naivePin = func(context.Context, string, int) (string, error) { return "", errors.New("TLS rejected") }
+	if failed := h.reconciler.reconcileNaiveProxy(context.Background(), prepared); failed.Status == "active" {
+		t.Fatal("failed certificate probe reported active")
 	}
 	if err := os.WriteFile(path, []byte("malformed certificate"), 0o600); err != nil {
 		t.Fatal(err)
