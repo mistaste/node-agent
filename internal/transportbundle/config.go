@@ -110,6 +110,8 @@ https://%s:%d, https://:%d {
 	// Preserve healthy idle tunnels, but reclaim dead physical connections after
 	// network handover. Kernel defaults otherwise retain them for over two hours.
 	// tcp-ut also bounds unacknowledged data, which keepalive alone cannot cover.
+	// Windows proves the sidecar before sending the primary Naive ClientHello.
+	// Keep SNI routing pending through its 30-second signed proof deadline.
 	haproxy := fmt.Sprintf(`global
     log stdout format raw local0
     stats socket /run/guardex-haproxy-admin.sock mode 600 level admin
@@ -127,7 +129,7 @@ defaults
 
 frontend guardex_tls
     bind 0.0.0.0:%d tcp-ut 30s
-    tcp-request inspect-delay 5s
+    tcp-request inspect-delay 35s
     tcp-request content accept if { req_ssl_hello_type 1 }
     acl sni_tt req.ssl_sni -i %s
     acl sni_naive req.ssl_sni -i %s
