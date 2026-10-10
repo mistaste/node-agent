@@ -1524,3 +1524,35 @@ func bytesContainsJSONKey(raw json.RawMessage, key string) bool {
 	_, ok := object[key]
 	return ok
 }
+
+func TestCanceledReconcileDoesNotWaitForBusyCoordinator(t *testing.T) {
+	coordinator := userops.New()
+	h := newControllerHarness(t, nil, coordinator)
+	coordinator.Lock()
+	released := false
+	defer func() {
+		if !released {
+			coordinator.Unlock()
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.reconciler.SyncOnce(ctx) }()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err=%v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		coordinator.Unlock()
+		released = true
+		<-done
+		t.Fatal("cancelled reconcile waited for the coordinator")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.getCalls != 0 {
+		t.Fatalf("cancelled waiter fetched manifest %d times", h.getCalls)
+	}
+}
