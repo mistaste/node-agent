@@ -1,8 +1,10 @@
 package transportbundle
 
 import (
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testSecret = "0123456789abcdef0123456789abcdef"
@@ -14,6 +16,14 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	haproxy := string(files.HAProxy)
+	inspection := regexp.MustCompile(`(?m)^\s*tcp-request inspect-delay (\S+)$`).FindStringSubmatch(haproxy)
+	if len(inspection) != 2 {
+		t.Fatal("SNI inspection deadline is absent")
+	}
+	wait, err := time.ParseDuration(inspection[1])
+	if err != nil || wait < 35*time.Second {
+		t.Fatal("SNI must remain undecided through the 30-second paired proof plus scheduling margin")
+	}
 	if !strings.Contains(haproxy, "bind 0.0.0.0:443 tcp-ut 30s") {
 		t.Fatal("unacknowledged client data must not retain dead transport slots")
 	}

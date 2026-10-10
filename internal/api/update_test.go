@@ -20,7 +20,8 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	if command := strings.Join(agentOnly, " "); strings.Contains(command, "pull xray") ||
-		!strings.Contains(command, "--no-deps --build node-agent topology-agent") {
+		strings.Contains(command, " topology-agent") ||
+		!strings.Contains(command, "--no-deps --build node-agent") {
 		t.Fatalf("agent-only command = %q", command)
 	}
 	runnersOnly, err := agentUpdateParts("git-runners", "master")
@@ -124,6 +125,17 @@ func TestDetachedComposeHelperDefaultPathIsHostStable(t *testing.T) {
 	if !strings.Contains(joined, "-v\x00/opt/guardex-node:/opt/guardex-node") ||
 		!strings.Contains(joined, "-w\x00/opt/guardex-node") {
 		t.Fatalf("default repository mount is not host-stable: %q", args)
+	}
+}
+
+func TestSummarizeUpdateOutputKeepsBoundedFailureEvidence(t *testing.T) {
+	if got := summarizeUpdateOutput([]byte("  fetch failed\x00\r\nretry denied  ")); got != "fetch failed  \nretry denied" {
+		t.Fatalf("summary = %q", got)
+	}
+	long := strings.Repeat("x", 3000)
+	got := summarizeUpdateOutput([]byte(long))
+	if len(got) != 2051 || !strings.HasPrefix(got, "...") || got[3:] != long[len(long)-2048:] {
+		t.Fatalf("long summary was not tail-bounded: len=%d", len(got))
 	}
 }
 

@@ -58,6 +58,11 @@ func TestRunnerPreparesPrivateEndpointTreeForDedicatedIdentity(t *testing.T) {
 	r := &runner{
 		root: root, endpointUID: uint32(os.Getuid()), endpointGID: uint32(os.Getgid()),
 	}
+	if r.endpointUID == 0 {
+		// UID zero intentionally bypasses dedicated-identity permissions.
+		// A root-run test must still exercise the non-root endpoint branch.
+		r.endpointUID = 65532
+	}
 	if err := r.prepareEndpointAccess(); err != nil {
 		t.Fatal(err)
 	}
