@@ -74,7 +74,7 @@ func NewMetricsOnlyServer(cfg *config.Config, collector *metrics.Collector) *Ser
 func (s *Server) Run() error {
 	server := &http.Server{
 		Addr:              s.cfg.ListenAddr,
-		Handler:           s.auth(s.mux),
+		Handler:           s.auth(traceProvisioning(s.mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

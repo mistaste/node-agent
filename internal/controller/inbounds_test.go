@@ -397,6 +397,11 @@ func newControllerHarness(t *testing.T, items []desiredItem, coordinators ...*us
 	reconciler.http = h.server.Client()
 	reconciler.http.Timeout = requestTimeout
 	reconciler.http.CheckRedirect = rejectRedirect
+	// Fake bundle runtime has no TLS listener; live TLS verification is covered
+	// separately by TestNaiveListenerPinVerifiesActualCertificate.
+	reconciler.naivePin = func(context.Context, string, int) (string, error) {
+		return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)), nil
+	}
 	h.reconciler = reconciler
 	return h
 }
@@ -1283,6 +1288,45 @@ func TestControllerAppliesTrustTunnelOnlyWhenRuntimeEnabled(t *testing.T) {
 	}
 }
 
+func TestTrustTunnelActiveReportPreservesCertificatePin(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	root := t.TempDir()
+	certDir := filepath.Join(root, "certs")
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(certDir, "fullchain.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := newControllerHarness(t, nil)
+	h.reconciler.cfg.TrustTunnelRoot = root
+	h.reconciler.EnableTrustTunnel(&fakeTrustTunnelRuntime{available: true})
+	item := desiredItem{InboundID: "trust-pin", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"vpn.example.com","upstream_protocol":"http3"}`)}
+	prepared, err := h.reconciler.prepareTrustTunnelApply(item, []string{testClientUUID}, "clients")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := h.reconciler.reconcileTrustTunnel(context.Background(), prepared)
+	if report.Status != "active" {
+		t.Fatalf("report status = %s", report.Status)
+	}
+	var params struct {
+		Pins []string `json:"spki_pins_sha256"`
+	}
+	if err := json.Unmarshal(report.ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	want, err := certificateSPKIPin(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Pins) != 1 || params.Pins[0] != want {
+		t.Fatal("active TrustTunnel report discarded certificate pin")
+	}
+}
+
 func TestCertificateSPKIPinUsesCertificatePublicKey(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
@@ -1350,6 +1394,62 @@ func TestControllerAppliesNaiveProxyTransportBundle(t *testing.T) {
 	report := h.latestReport()
 	if report.Deployments[0].Status != "active" || strings.Join(report.Capabilities.SupportedEngines, ",") != "xray,naiveproxy" {
 		t.Fatalf("NaiveProxy report = %+v", report)
+	}
+}
+
+func TestNaiveProxyReportsCertificatePinAndRejectsMalformedCertificate(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	root := t.TempDir()
+	certDir := filepath.Join(root, "certs")
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(certDir, "fullchain.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	item := desiredItem{InboundID: "naive-pin", Engine: "naiveproxy", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"naive","hostname":"naive.example.com","trusttunnel_hostname":"vpn.example.com","trusttunnel_port":8443,"naive_port":9443,"decoy_port":9080}`)}
+	h := newControllerHarness(t, nil)
+	h.reconciler.cfg.TrustTunnelRoot = root
+	prepared, err := h.reconciler.prepareNaiveProxyApply(item, []string{testClientUUID}, "clients")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var params struct {
+		Pins []string `json:"spki_pins_sha256"`
+	}
+	if err := json.Unmarshal(prepared.clientParams, &params); err != nil {
+		t.Fatal(err)
+	}
+	want, err := certificateSPKIPin(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params.Pins) != 0 {
+		t.Fatal("decoy certificate incorrectly reported as Naive")
+	}
+	served := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	if served == want {
+		t.Fatal("fixture must distinguish decoy and listener")
+	}
+	h.reconciler.EnableTransportBundle(&fakeTransportBundleRuntime{})
+	report := h.reconciler.reconcileNaiveProxy(context.Background(), prepared)
+	if err := json.Unmarshal(report.ClientParamsJSON, &params); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "active" || len(params.Pins) != 1 || params.Pins[0] != served {
+		t.Fatal("active reconciliation did not report actual listener pin")
+	}
+	h.reconciler.naivePin = func(context.Context, string, int) (string, error) { return "", errors.New("TLS rejected") }
+	if failed := h.reconciler.reconcileNaiveProxy(context.Background(), prepared); failed.Status == "active" {
+		t.Fatal("failed certificate probe reported active")
+	}
+	if err := os.WriteFile(path, []byte("malformed certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.reconciler.prepareNaiveProxyApply(item, []string{testClientUUID}, "clients"); err == nil {
+		t.Fatal("malformed certificate accepted")
 	}
 }
 
