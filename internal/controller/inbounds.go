@@ -248,7 +248,9 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 	// fetch (and therefore appear in the manifest), or wait and execute after the
 	// old manifest has reconciled. Holding it for a bounded GET is what closes the
 	// stale-fetch window; reporting does not mutate runtime and happens unlocked.
-	r.userOps.Lock()
+	if err := r.userOps.LockContext(ctx); err != nil {
+		return err
+	}
 	items, err := r.fetchDesired(ctx)
 	if err != nil {
 		r.userOps.Unlock()
@@ -262,6 +264,10 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 				return reportErr
 			}
 		}
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		r.userOps.Unlock()
 		return err
 	}
 	// A bundle apply requires TrustTunnel to move behind the mux first. A bundle
@@ -304,6 +310,10 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 	reports := make([]deploymentReport, 0, len(prepared))
 	failed := 0
 	for _, item := range prepared {
+		if err := ctx.Err(); err != nil {
+			r.userOps.Unlock()
+			return err
+		}
 		report := r.reconcileOne(ctx, item)
 		if report.Status != "active" && report.Status != "deleted" {
 			failed++
