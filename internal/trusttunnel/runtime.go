@@ -105,15 +105,18 @@ type Runtime struct {
 }
 
 type State struct {
-	Version         int    `json:"version"`
-	InboundID       string `json:"inbound_id"`
-	Tag             string `json:"tag"`
-	Revision        int64  `json:"revision"`
-	Digest          string `json:"digest"`
-	Port            int    `json:"port"`
-	H3Port          int    `json:"h3_port,omitempty"`
-	ClientCount     int    `json:"client_count"`
-	ClientSetSHA256 string `json:"client_set_sha256"`
+	ConfigurationSHA256     string `json:"configuration_sha256,omitempty"`
+	CredentialsSHA256       string `json:"credentials_sha256,omitempty"`
+	CredentialReloadVersion int    `json:"credential_reload_version,omitempty"`
+	Version                 int    `json:"version"`
+	InboundID               string `json:"inbound_id"`
+	Tag                     string `json:"tag"`
+	Revision                int64  `json:"revision"`
+	Digest                  string `json:"digest"`
+	Port                    int    `json:"port"`
+	H3Port                  int    `json:"h3_port,omitempty"`
+	ClientCount             int    `json:"client_count"`
+	ClientSetSHA256         string `json:"client_set_sha256"`
 }
 
 type ApplyRequest struct {
@@ -181,6 +184,35 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 		state.H3Port = 443
 	}
 	state.Digest = bundleDigestAll(digestFiles...)
+	state.ConfigurationSHA256 = configurationDigest(files)
+	credentialDigest := sha256.Sum256(files.Credentials)
+	state.CredentialsSHA256 = hex.EncodeToString(credentialDigest[:])
+	if hasCurrent && r.external && current.InboundID == state.InboundID && current.Tag == state.Tag && current.Port == state.Port && current.H3Port == state.H3Port {
+		// A supporting runner acknowledges its actual endpoint ABI. Never skip
+		// restart merely because the new agent understands live credentials.
+		var observed State
+		raw, _ := os.ReadFile(filepath.Join(r.root, runnerStateFile))
+		settings, _ := os.ReadFile(filepath.Join(r.root, "vpn.toml"))
+		hosts, _ := os.ReadFile(filepath.Join(r.root, "hosts.toml"))
+		if json.Unmarshal(raw, &observed) == nil && observed.CredentialReloadVersion == 1 &&
+			r.externalRunnerReady(current) && bytes.Equal(settings, files.Settings) && bytes.Equal(hosts, files.Hosts) {
+			previous := r.snapshot()
+			if err := writeAtomic(filepath.Join(r.root, "credentials.toml"), files.Credentials, 0600); err != nil {
+				return State{}, err
+			}
+			stateRaw, _ := json.Marshal(state)
+			if err := writeAtomic(filepath.Join(r.root, "state.json"), stateRaw, 0600); err != nil {
+				r.restore(previous)
+				return State{}, err
+			}
+			if err := r.waitForExternalRunner(ctx, state); err != nil {
+				r.restore(previous)
+				return State{}, err
+			}
+			return state, nil
+		}
+	}
+
 	if hasCurrent {
 		contentUnchanged := current.InboundID == state.InboundID && current.Tag == state.Tag && current.Digest == state.Digest && current.ClientSetSHA256 == state.ClientSetSHA256
 		healthy := (r.external && r.externalRunnerReady(current)) || (!r.external && r.process != nil && r.process.Running())
@@ -212,7 +244,7 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 		// Only categorical mismatch flags are logged. Digests, identities,
 		// credentials and desired payloads remain private.
 		log.Printf(
-			"[trusttunnel] endpoint reconcile restart: identity=%t revision=%t config=%t clients=%t healthy=%t",
+			"[trusttunnel] endpoint reconcile restart: identity_unchanged=%t revision_unchanged=%t config_unchanged=%t clients_unchanged=%t healthy=%t",
 			current.InboundID == state.InboundID && current.Tag == state.Tag,
 			current.Revision == state.Revision,
 			current.Digest == state.Digest,
@@ -303,7 +335,9 @@ func (r *Runtime) externalRunnerReady(expected State) bool {
 		observed.InboundID != expected.InboundID ||
 		observed.Revision != expected.Revision ||
 		observed.Digest != expected.Digest ||
-		observed.ClientSetSHA256 != expected.ClientSetSHA256 {
+		observed.ClientSetSHA256 != expected.ClientSetSHA256 ||
+		(expected.CredentialsSHA256 != "" && observed.CredentialsSHA256 != expected.CredentialsSHA256) {
+
 		return false
 	}
 	conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(expected.Port)), 250*time.Millisecond)
@@ -494,4 +528,13 @@ func safeCommandError(output []byte) string {
 		value = value[:256]
 	}
 	return value
+}
+
+func configurationDigest(files Files) string {
+	hash := sha256.New()
+	for _, raw := range [][]byte{files.Settings, files.Hosts} {
+		_, _ = hash.Write(raw)
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }

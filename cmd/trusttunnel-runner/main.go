@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,26 +19,30 @@ import (
 )
 
 type state struct {
-	Version         int    `json:"version"`
-	InboundID       string `json:"inbound_id"`
-	Revision        int64  `json:"revision"`
-	Digest          string `json:"digest"`
-	ClientSetSHA256 string `json:"client_set_sha256"`
-	H3Port          int    `json:"h3_port,omitempty"`
+	ConfigurationSHA256     string `json:"configuration_sha256,omitempty"`
+	CredentialsSHA256       string `json:"credentials_sha256,omitempty"`
+	CredentialReloadVersion int    `json:"credential_reload_version,omitempty"`
+	Version                 int    `json:"version"`
+	InboundID               string `json:"inbound_id"`
+	Revision                int64  `json:"revision"`
+	Digest                  string `json:"digest"`
+	ClientSetSHA256         string `json:"client_set_sha256"`
+	H3Port                  int    `json:"h3_port,omitempty"`
 }
 
 const runnerStateFile = "runner-state.json"
 
 type runner struct {
-	root        string
-	binary      string
-	endpointUID uint32
-	endpointGID uint32
-	process     *exec.Cmd
-	done        chan struct{}
-	h3Process   *exec.Cmd
-	h3Done      chan struct{}
-	key         string
+	credentialReload bool
+	root             string
+	binary           string
+	endpointUID      uint32
+	endpointGID      uint32
+	process          *exec.Cmd
+	done             chan struct{}
+	h3Process        *exec.Cmd
+	h3Done           chan struct{}
+	key              string
 }
 
 func main() {
@@ -53,6 +59,10 @@ func main() {
 	if !filepath.IsAbs(r.root) || !filepath.IsAbs(r.binary) {
 		log.Fatal("[trusttunnel-runner] root and binary must be absolute")
 	}
+	versionCtx, versionCancel := context.WithTimeout(ctx, 3*time.Second)
+	version, versionErr := exec.CommandContext(versionCtx, r.binary, "--version").Output()
+	versionCancel()
+	r.credentialReload = versionErr == nil && strings.TrimSpace(string(version)) == "1.1.0-guardex-live-credentials.1"
 	log.Printf("[trusttunnel-runner] watching %s", r.root)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -82,11 +92,44 @@ func (r *runner) reconcile(ctx context.Context) error {
 		r.key = ""
 		return nil
 	}
+	if r.credentialReload {
+		// Derive the process identity from static configuration, independently
+		// of credentials. Old durable states are upgraded without an extra restart.
+		staticHash := sha256.New()
+		configurationFiles := []string{"vpn.toml", "hosts.toml"}
+		if current.H3Port != 0 {
+			configurationFiles = append(configurationFiles, "vpn-h3.toml", "hosts-h3.toml")
+		}
+		for _, name := range configurationFiles {
+			raw, err := os.ReadFile(filepath.Join(r.root, name))
+			if err != nil {
+				return err
+			}
+			_, _ = staticHash.Write(raw)
+			_, _ = staticHash.Write([]byte{0})
+		}
+		current.ConfigurationSHA256 = hex.EncodeToString(staticHash.Sum(nil))
+		raw, err := os.ReadFile(filepath.Join(r.root, "credentials.toml"))
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(raw)
+		current.CredentialsSHA256 = hex.EncodeToString(digest[:])
+		current.CredentialReloadVersion = 1
+	}
 	// Revision is controller acknowledgement metadata. The endpoint only needs
 	// a restart when its identity, rendered configuration, or exact client set
 	// changes; runner-state still acknowledges every newer revision below.
 	key := desiredProcessKey(current)
 	if r.running() && (current.H3Port == 0 || r.h3Running()) && r.key == key {
+		if r.credentialReload {
+			if err := r.allowCredentialRead(); err != nil {
+				return err
+			}
+			if err := r.waitForCredentials(ctx, current); err != nil {
+				return err
+			}
+		}
 		if err := r.writeRunnerState(current); err != nil {
 			return err
 		}
@@ -117,6 +160,12 @@ func (r *runner) reconcile(ctx context.Context) error {
 			return err
 		}
 	}
+	if r.credentialReload {
+		if err := r.prepareCredentialAcknowledgements(); err != nil {
+			return err
+		}
+		cmd.Env = append(os.Environ(), "GUARDEX_CREDENTIALS_ACK_FILE="+filepath.Join(r.root, "credentials-applied", "h2.sha256"))
+	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
@@ -134,6 +183,9 @@ func (r *runner) reconcile(ctx context.Context) error {
 		// the TCP endpoint continues to run as the dedicated unprivileged UID.
 		// The container is read-only, no-new-privileges, and exposes no Docker
 		// socket, so this does not grant host-level privilege.
+		if r.credentialReload {
+			h3.Env = append(os.Environ(), "GUARDEX_CREDENTIALS_ACK_FILE="+filepath.Join(r.root, "credentials-applied", "h3.sha256"))
+		}
 		h3.Stdout, h3.Stderr = nil, nil
 		if err := h3.Start(); err != nil {
 			_ = r.stop(context.Background())
@@ -148,6 +200,11 @@ func (r *runner) reconcile(ctx context.Context) error {
 			return errors.New("split TrustTunnel endpoint exited during startup")
 		}
 	}
+	if r.credentialReload {
+		if err := r.waitForCredentials(ctx, current); err != nil {
+			return err
+		}
+	}
 	if err := r.writeRunnerState(current); err != nil {
 		_ = r.stop(context.Background())
 		return err
@@ -157,6 +214,9 @@ func (r *runner) reconcile(ctx context.Context) error {
 }
 
 func desiredProcessKey(current state) string {
+	if current.CredentialReloadVersion == 1 && current.ConfigurationSHA256 != "" {
+		return current.InboundID + ":" + current.ConfigurationSHA256 + ":" + strconv.Itoa(current.H3Port)
+	}
 	return current.InboundID + ":" + current.Digest + ":" + current.ClientSetSHA256 + ":" + strconv.Itoa(current.H3Port)
 }
 
@@ -340,8 +400,69 @@ func getenv(key, fallback string) string {
 
 func parseDuration(value string) time.Duration {
 	duration, err := time.ParseDuration(value)
-	if err != nil || duration < 500*time.Millisecond {
-		return 2 * time.Second
+	if err != nil || duration < 100*time.Millisecond {
+		return 250 * time.Millisecond
 	}
 	return duration
+}
+
+func (r *runner) allowCredentialRead() error {
+	if err := requireManagedFile(r.root, "credentials.toml", r.endpointGID); err != nil {
+		return err
+	}
+	path := filepath.Join(r.root, "credentials.toml")
+	if r.endpointGID != 0 {
+		if err := os.Chown(path, os.Geteuid(), int(r.endpointGID)); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(path, 0640)
+}
+
+func (r *runner) prepareCredentialAcknowledgements() error {
+	path := filepath.Join(r.root, "credentials-applied")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return err
+	}
+	if r.endpointGID != 0 {
+		if err := os.Chown(path, os.Geteuid(), int(r.endpointGID)); err != nil {
+			return err
+		}
+	}
+	if err := os.Chmod(path, 0770); err != nil {
+		return err
+	}
+	for _, name := range []string{"h2.sha256", "h3.sha256"} {
+		_ = os.Remove(filepath.Join(path, name))
+	}
+	return nil
+}
+
+func (r *runner) waitForCredentials(ctx context.Context, expected state) error {
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		ready := r.running() && (expected.H3Port == 0 || r.h3Running())
+		for _, name := range []string{"h2.sha256", "h3.sha256"} {
+			if name == "h3.sha256" && expected.H3Port == 0 {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(r.root, "credentials-applied", name))
+			if err != nil || strings.TrimSpace(string(raw)) != expected.CredentialsSHA256 {
+				ready = false
+			}
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("endpoint did not acknowledge live credentials")
+		case <-ticker.C:
+		}
+	}
 }

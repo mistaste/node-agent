@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -256,4 +259,97 @@ func waitForStarts(t *testing.T, path string, expected int) {
 	}
 	raw, _ := os.ReadFile(path)
 	t.Fatalf("starts=%d want=%d", len(raw), expected)
+}
+
+func TestLiveCredentialReloadKeepsProcessAndRequiresEndpointAcknowledgement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX process fixture")
+	}
+	root := t.TempDir()
+	binary := filepath.Join(root, "endpoint.sh")
+	script := "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"vpn.toml", "hosts.toml", "credentials.toml"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("first"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current := state{Version: 1, InboundID: "tt", Revision: 1, Digest: testDigest, ClientSetSHA256: "first"}
+	writeRunnerState(t, root, current)
+	r := &runner{root: root, binary: binary, credentialReload: true}
+	defer r.stop(context.Background())
+	// Simulate the endpoint acknowledging actual bytes, independently of state.json.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				raw, err := os.ReadFile(filepath.Join(root, "credentials.toml"))
+				if err != nil {
+					continue
+				}
+				digest := sha256.Sum256(raw)
+				_ = os.WriteFile(filepath.Join(root, "credentials-applied", "h2.sha256"), []byte(hex.EncodeToString(digest[:])), 0600)
+			}
+		}
+	}()
+	if err := r.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := r.process.Process.Pid
+	current.Revision++
+	current.ClientSetSHA256 = "second"
+	current.Digest = strings.Repeat("b", 64)
+	if err := os.WriteFile(filepath.Join(root, "credentials.toml"), []byte("second"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeRunnerState(t, root, current)
+	if err := r.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.process.Process.Pid != pid {
+		t.Fatal("credential change restarted endpoint")
+	}
+	raw, _ := os.ReadFile(filepath.Join(root, runnerStateFile))
+	var acknowledged state
+	if json.Unmarshal(raw, &acknowledged) != nil || acknowledged.ClientSetSHA256 != "second" || acknowledged.CredentialReloadVersion != 1 {
+		t.Fatalf("not acknowledged: %s", raw)
+	}
+	cancel()
+	<-watchDone
+	// A live but non-acknowledging endpoint must not be reported current or restarted.
+	if err := os.WriteFile(filepath.Join(root, "credentials.toml"), []byte("third"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	current.Revision++
+	current.ClientSetSHA256 = "third"
+	writeRunnerState(t, root, current)
+	short, cancelShort := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancelShort()
+	if err := r.reconcile(short); err == nil {
+		t.Fatal("missing endpoint acknowledgement accepted")
+	}
+	if r.process.Process.Pid != pid {
+		t.Fatal("failed reload restarted other sessions")
+	}
+}
+
+func TestRunnerHonorsDefaultReconciliationInterval(t *testing.T) {
+	if got := parseDuration("250ms"); got != 250*time.Millisecond {
+		t.Fatalf("default interval silently changed: %s", got)
+	}
+	for _, input := range []string{"invalid", "0s", "1ms"} {
+		if got := parseDuration(input); got != 250*time.Millisecond {
+			t.Fatalf("unsafe retry interval for %q: %s", input, got)
+		}
+	}
 }

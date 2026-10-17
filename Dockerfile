@@ -19,23 +19,16 @@ RUN apk add --no-cache git \
        --output /caddy \
     && /caddy version
 
-FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS trusttunnel
-# BuildKit supplies TARGETARCH for the selected image platform. Do not set a
-# default here: doing so can silently put an amd64 endpoint in an arm64 image.
+FROM adguard/core-libs@sha256:79273e6cfee10546af7edbb0122660b9e53e3380742181f5afbe068b212810c4 AS trusttunnel
 ARG TARGETARCH
-RUN apk add --no-cache ca-certificates wget tar \
-    && case "$TARGETARCH" in \
-         amd64) tt_arch="x86_64"; tt_sha="91c2ea3db7416a01b5258a4c047ec22890490bc55e1b194206031aa75144f0e7" ;; \
-         arm64) tt_arch="aarch64"; tt_sha="c2aee17a1ced349283cba4775202e2baba053b8ea835d4cc23dc67d16c6b9686" ;; \
-         *) echo "unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
-       esac \
-    && tt_archive="trusttunnel-v1.1.0-linux-${tt_arch}.tar.gz" \
-    && wget -q -O "/${tt_archive}" "https://github.com/TrustTunnel/TrustTunnel/releases/download/v1.1.0/${tt_archive}" \
-    && echo "$tt_sha  /${tt_archive}" | sha256sum -c - \
-    && mkdir -p /trusttunnel-unpack \
-    && tar -xzf "/${tt_archive}" -C /trusttunnel-unpack \
-    && find /trusttunnel-unpack -type f -name trusttunnel_endpoint -perm -u+x -exec cp '{}' /trusttunnel_endpoint \; \
-    && test -x /trusttunnel_endpoint
+COPY ops/patches/trusttunnel-udp-rejection-v1.1.0.patch /patches/udp-rejection.patch
+COPY ops/patches/trusttunnel-live-credentials-v1.1.0.patch /patches/live-credentials.patch
+COPY ops/build-trusttunnel-live-credentials.sh /build-endpoint.sh
+RUN git clone --depth 1 --branch v1.1.0 https://github.com/TrustTunnel/TrustTunnel.git /trusttunnel-source \
+    && cd /trusttunnel-source \
+    && test "$(git rev-parse HEAD)" = fab5b8353a19332f935fa30869307d37d4a898d1 \
+    && git apply /patches/udp-rejection.patch /patches/live-credentials.patch \
+    && sh /build-endpoint.sh "$TARGETARCH"
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose git haproxy iproute2 iptables nftables wireguard-tools
