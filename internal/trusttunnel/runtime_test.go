@@ -1,7 +1,9 @@
 package trusttunnel
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -366,5 +368,78 @@ func TestRuntimeRejectsOccupiedPortBeforeStartingEndpoint(t *testing.T) {
 	}
 	if _, ok := runtime.State(); ok {
 		t.Fatal("failed deployment persisted active state")
+	}
+}
+
+func TestExternalLiveCredentialsPreserveStaticBundleAndRollbackUnacknowledgedChange(t *testing.T) {
+	runtime, starter, request := newFixedRuntime(t)
+	defer starter.close()
+	initial, err := runtime.Apply(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.UseExternalProcess()
+	initial.CredentialReloadVersion = 1
+	raw, _ := json.Marshal(initial)
+	if err := os.WriteFile(filepath.Join(runtime.root, runnerStateFile), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(runtime.root, "vpn.toml")
+	before, _ := os.Stat(settingsPath)
+	done := make(chan struct{})
+	ackDone := make(chan struct{})
+	go func() {
+		defer close(ackDone)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				raw, err := os.ReadFile(filepath.Join(runtime.root, "state.json"))
+				if err != nil {
+					continue
+				}
+				var state State
+				if json.Unmarshal(raw, &state) != nil {
+					continue
+				}
+				state.CredentialReloadVersion = 1
+				raw, _ = json.Marshal(state)
+				_ = writeAtomic(filepath.Join(runtime.root, runnerStateFile), raw, 0600)
+			}
+		}
+	}()
+	request.ClientSetSHA256 = "new-client-set"
+	request.Endpoint.ClientUUIDs = append(request.Endpoint.ClientUUIDs, "22222222-2222-4222-8222-222222222222")
+	updated, err := runtime.Apply(context.Background(), request)
+	close(done)
+	<-ackDone
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.Stat(settingsPath)
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Fatal("live credential update rewrote static endpoint settings")
+	}
+	if updated.Digest == initial.Digest || updated.CredentialsSHA256 == initial.CredentialsSHA256 {
+		t.Fatal("new client was not published")
+	}
+	previous, _ := os.ReadFile(filepath.Join(runtime.root, "credentials.toml"))
+	request.ClientSetSHA256 = "unacknowledged"
+	request.Endpoint.ClientUUIDs = append(request.Endpoint.ClientUUIDs, "33333333-3333-4333-8333-333333333333")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := runtime.Apply(ctx, request); err == nil {
+		t.Fatal("unacknowledged change succeeded")
+	}
+	restored, _ := os.ReadFile(filepath.Join(runtime.root, "credentials.toml"))
+	if !bytes.Equal(previous, restored) {
+		t.Fatal("last-known-good credentials not restored")
+	}
+	state, _ := runtime.State()
+	if state.ClientSetSHA256 != updated.ClientSetSHA256 {
+		t.Fatal("failed membership was published")
 	}
 }
