@@ -24,10 +24,14 @@ ARG TARGETARCH
 COPY ops/patches/trusttunnel-udp-rejection-v1.1.0.patch /patches/udp-rejection.patch
 COPY ops/patches/trusttunnel-live-credentials-v1.1.0.patch /patches/live-credentials.patch
 COPY ops/build-trusttunnel-live-credentials.sh /build-endpoint.sh
+COPY ops/patches/h2-0.3.27-reclaim-capacity.patch /patches/h2-capacity.patch
+COPY ops/prepare-h2-capacity.sh /prepare-h2-capacity.sh
+COPY ops/patches/trusttunnel-h2-capacity.lock /patches/endpoint.lock
 RUN git clone --depth 1 --branch v1.1.0 https://github.com/TrustTunnel/TrustTunnel.git /trusttunnel-source \
     && cd /trusttunnel-source \
     && test "$(git rev-parse HEAD)" = fab5b8353a19332f935fa30869307d37d4a898d1 \
     && git apply /patches/udp-rejection.patch /patches/live-credentials.patch \
+    && sh /prepare-h2-capacity.sh \
     && sh /build-endpoint.sh "$TARGETARCH"
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
