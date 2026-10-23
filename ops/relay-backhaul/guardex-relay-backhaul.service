@@ -1,0 +1,25 @@
+[Unit]
+Description=Guardex authenticated UDP backhaul selection
+Wants=network-online.target
+After=network-online.target wg-quick@gxrelay0.service
+BindsTo=wg-quick@gxrelay0.service
+PartOf=wg-quick@gxrelay0.service
+Requires=wg-quick@gxrelay0.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/sbin/nft delete table ip guardex_relay_backhaul
+ExecStart=/usr/bin/python3 /usr/local/lib/guardex-relay-backhaul/watchdog.py
+ExecStopPost=-/usr/sbin/nft delete table ip guardex_relay_backhaul
+Restart=always
+RestartSec=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target wg-quick@gxrelay0.service
