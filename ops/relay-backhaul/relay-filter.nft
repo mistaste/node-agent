@@ -1,0 +1,13 @@
+table inet guardex_relay_backhaul_guard {
+ chain input {
+  type filter hook input priority -4; policy accept;
+  iifname "gxrelay0" ct state established,related accept
+  iifname "gxrelay0" ip saddr 10.79.240.0/28 icmp type echo-request accept
+  iifname "gxrelay0" drop
+ }
+ chain forward {
+  type filter hook forward priority -6; policy accept;
+  iifname "gxrelay0" drop
+  oifname "gxrelay0" drop
+ }
+}
