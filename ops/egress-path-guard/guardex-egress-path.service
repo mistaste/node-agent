@@ -1,0 +1,27 @@
+[Unit]
+Description=Guardex authenticated egress IPv4/IPv6 recovery
+After=network-online.target docker.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/python3 /opt/guardex-egress-path/watchdog.py --check
+ExecStart=/usr/bin/python3 /opt/guardex-egress-path/watchdog.py
+Restart=on-failure
+RestartSec=5
+User=root
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

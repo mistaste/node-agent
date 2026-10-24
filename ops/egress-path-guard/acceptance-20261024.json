@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-24",
+  "namespace_fault_previous_5s_poll": {
+    "ipv4_healthy_before": true,
+    "ipv6_healthy_before": true,
+    "fault_injected_at": 1792805972.5360672,
+    "verified_files": 32,
+    "verified_bytes": 67108864,
+    "tcp_connections": 1,
+    "final_endpoint": "[2a14:7c0:1002:19c4::]:443",
+    "guard_events": [
+      {
+        "event": "egress_endpoint_switched",
+        "from": "94.249.195.63:443",
+        "to": "[2a14:7c0:1002:19c4::]:443",
+        "time": 1792805983.0237892
+      }
+    ],
+    "healthy_after": true
+  },
+  "production_load": {
+    "clients": 16,
+    "seconds": 600.2511501312256,
+    "aborted": null,
+    "verified_files": 2178,
+    "verified_bytes": 4567597056,
+    "all_sha256_correct": true,
+    "tcp_connections": 16,
+    "reported_exit_ips": [
+      "94.249.195.63"
+    ],
+    "unlogged_complete_files": 0,
+    "real_automatic_recovery_events": [
+      {
+        "event": "egress_endpoint_switched",
+        "from": "[2a14:7c0:1002:19c4::]:443",
+        "to": "94.249.195.63:443",
+        "time": 1792806953.9534695
+      }
+    ],
+    "vpn_process_restarts": 0
+  },
+  "production_owner_policy": {
+    "previous_ipv6_trial_failed_with_root_ping_healthy": true,
+    "scoped_rule": "meta skuid 65532 ip6 daddr 2a14:7c0:1002:19c4:: udp sport 51821 udp dport 443 counter accept",
+    "fixed_smoke_verified_files": 25,
+    "fixed_full_load": true,
+    "namespace_device_migration_can_scrub_owner_metadata": true
+  },
+  "validation_limits": {
+    "latest_strict_namespace_preflight": "IPv6 WG path unavailable after the production incident; failed before fault injection; no success claimed",
+    "unit_tests_passed": 11,
+    "final_guard_poll_seconds": 2,
+    "real_incident_used_5s_poll_before_final_timing_update": true,
+    "early_load_window_included_separate_QA_namespace_traffic": true,
+    "moscow_international_bandwidth_fixed": false,
+    "external_packet_drop_device_identified": false
+  },
+  "guard_sha256": "8b213d5eb515aafc348858df845e62fd64b05b662dab86977600b8c7048d7ec1"
+}
