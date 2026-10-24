@@ -1,0 +1,24 @@
+name: Egress path recovery checks
+
+on:
+  pull_request:
+    paths:
+      - 'ops/egress-path-guard/**'
+      - '.github/workflows/egress-path.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'ops/egress-path-guard/**'
+      - '.github/workflows/egress-path.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify safety and recovery state transitions
+        run: python3 -m unittest discover -v -s ops/egress-path-guard
