@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Guardex IPv6 entry readiness
+
+[Timer]
+OnBootSec=45
+OnUnitInactiveSec=60
+RandomizedDelaySec=5
+Persistent=true
+
+[Install]
+WantedBy=timers.target

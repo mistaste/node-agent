@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify optional Guardex IPv6 client entries
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/guardex-ipv6-entry/fleet.py --install --inventory /etc/guardex-ipv6-entry/inventory.json
+TimeoutStartSec=150
+User=root
+UMask=0077
