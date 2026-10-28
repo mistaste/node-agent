@@ -19,361 +19,8 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/config"
-	"github.com/guardex/node-agent/internal/inbound"
-	"github.com/guardex/node-agent/internal/inboundsync"
 	"github.com/guardex/node-agent/internal/metrics"
-	"github.com/guardex/node-agent/internal/store"
-	"github.com/guardex/node-agent/internal/userops"
-	"github.com/guardex/node-agent/internal/xray"
 )
-
-type handlers struct {
-	cfg        *config.Config
-	xray       *xray.Client
-	collector  *metrics.Collector
-	store      *store.Store
-	inbounds   *inboundsync.Manager
-	userOps    *userops.Coordinator
-	userCore   userRuntime
-	reconciler desiredStateReconciler
-}
-
-type desiredStateReconciler interface {
-	SyncOnce(context.Context) error
-	IsNaiveTag(string) bool
-}
-
-func (h *handlers) reconcileDesiredState(w http.ResponseWriter, r *http.Request) {
-	if h.reconciler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "controller reconciliation is unavailable"})
-		return
-	}
-	if err := h.reconciler.SyncOnce(r.Context()); err != nil {
-		log.Printf("[api] requested controller reconciliation failed")
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "controller reconciliation failed"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reconciled"})
-}
-
-type userRuntime interface {
-	AddUser(context.Context, xray.AddUserParams) error
-	RemoveUser(context.Context, string, string) error
-}
-
-func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
-	items := h.inbounds.Inventory()
-	applied := 0
-	udpDesired := 0
-	udpApplied := 0
-	for _, item := range items {
-		if item.Applied {
-			applied++
-		}
-		if item.Protocol == "hysteria" || item.Network == "hysteria" {
-			udpDesired++
-			if item.Applied {
-				udpApplied++
-			}
-		}
-	}
-	status := "ok"
-	if applied != len(items) {
-		status = "degraded"
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  status,
-		"version": h.cfg.AgentVersion(),
-		"xray": map[string]string{
-			"configured_core_version": h.cfg.XrayCoreVersion,
-			"control_plane_version":   xray.ControlPlaneVersion(),
-		},
-		"dynamic_inbounds": map[string]int{
-			"desired":  len(items),
-			"applied":  applied,
-			"degraded": len(items) - applied,
-		},
-		"udp_dynamic_inbounds": map[string]int{
-			"desired": udpDesired,
-			"applied": udpApplied,
-		},
-		"udp_firewall": map[string]any{
-			"managed_by_agent":        false,
-			"listener_apply_verified": udpDesired == udpApplied,
-			"external_probe_verified": false,
-			"udp_hop_requires_dnat":   true,
-		},
-		"capabilities": inboundCapabilities(h.cfg),
-	})
-}
-
-func (h *handlers) metricsOnlyHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": h.cfg.AgentVersion(),
-		"mode":    "metrics-only",
-		"capabilities": map[string]any{
-			"host_metrics":        true,
-			"agent_update":        true,
-			"xray_management":     false,
-			"inbound_management":  false,
-			"topology_management": false,
-		},
-	})
-}
-
-func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
-	snap := h.collector.Latest()
-	if snap == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "not ready yet"})
-		return
-	}
-	writeJSON(w, http.StatusOK, snap)
-}
-
-type addUserRequest struct {
-	UUID       string `json:"uuid"`
-	Flow       string `json:"flow"`
-	Level      uint32 `json:"level"`
-	InboundTag string `json:"inbound_tag"`
-}
-
-func (h *handlers) addUser(w http.ResponseWriter, r *http.Request) {
-	var req addUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
-	}
-	if err := inbound.ValidateClientID(req.UUID); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid uuid required"})
-		return
-	}
-	if req.InboundTag == "" {
-		req.InboundTag = h.cfg.DefaultInboundTag
-	}
-	protocol := "vless"
-	if h.inbounds != nil {
-		if managed, ok := h.inbounds.ManagedConfig(req.InboundTag); ok {
-			protocol = managed.Protocol
-			if ((managed.Network == "xhttp" || managed.Network == "grpc") || managed.Protocol == "hysteria") && strings.TrimSpace(req.Flow) != "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": strings.ToUpper(managed.Network) + " inbounds must not use a VLESS flow"})
-				return
-			}
-		}
-	}
-	// NaiveProxy membership is rendered into the atomic transport bundle; it
-	// is not an Xray runtime user. The backend stores profile membership before
-	// calling this endpoint, so reconcile the signed controller manifest now
-	// instead of attempting an invalid Xray HandlerService mutation.
-	if protocol == "naive" || (h.reconciler != nil && h.reconciler.IsNaiveTag(req.InboundTag)) {
-		if h.reconciler == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "controller reconciliation is unavailable"})
-			return
-		}
-		if err := h.reconciler.SyncOnce(r.Context()); err != nil {
-			log.Printf("[api] addUser NaiveProxy reconciliation failed")
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "NaiveProxy membership reconciliation failed"})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "reconciled", "uuid": req.UUID})
-		return
-	}
-
-	h.userOps.Lock()
-	defer h.userOps.Unlock()
-
-	err := h.runtimeUsers().AddUser(r.Context(), xray.AddUserParams{
-		InboundTag: req.InboundTag,
-		UUID:       req.UUID,
-		Protocol:   protocol,
-		Flow:       req.Flow,
-		Level:      req.Level,
-	})
-	if err != nil && !xray.IsAlreadyExists(err) {
-		log.Printf("[api] addUser runtime operation failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	// Persist so the user survives an Xray restart (re-applied by the syncer).
-	if h.store != nil {
-		if serr := h.store.Add(store.User{
-			UUID:       req.UUID,
-			InboundTag: req.InboundTag,
-			Protocol:   protocol,
-			Flow:       req.Flow,
-			Level:      req.Level,
-		}); serr != nil {
-			log.Printf("[api] addUser persist error: %v", serr)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "added", "uuid": req.UUID})
-}
-
-func (h *handlers) removeUser(w http.ResponseWriter, r *http.Request) {
-	uuid := r.PathValue("uuid")
-	if err := inbound.ValidateClientID(uuid); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid uuid required"})
-		return
-	}
-
-	inboundTag := r.URL.Query().Get("inbound_tag")
-	if inboundTag == "" {
-		inboundTag = h.cfg.DefaultInboundTag
-	}
-	h.userOps.Lock()
-	defer h.userOps.Unlock()
-
-	err := h.runtimeUsers().RemoveUser(r.Context(), inboundTag, uuid)
-	if err != nil && !xray.IsNotFound(err) {
-		log.Printf("[api] removeUser runtime operation failed")
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	// Drop from the durable store so it is not re-applied by the syncer.
-	if h.store != nil {
-		if serr := h.store.Remove(inboundTag, uuid); serr != nil {
-			log.Printf("[api] removeUser persist error: %v", serr)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "uuid": uuid})
-}
-
-func (h *handlers) runtimeUsers() userRuntime {
-	if h.userCore != nil {
-		return h.userCore
-	}
-	return h.xray
-}
-
-func (h *handlers) addInbound(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, inbound.MaxConfigBytes+1))
-	if err != nil || len(body) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty body"})
-		return
-	}
-	if len(body) > inbound.MaxConfigBytes {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "inbound config too large"})
-		return
-	}
-	cfg, err := inbound.Parse(body)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	desiredDigest := cfg.Digest
-	h.userOps.Lock()
-	defer h.userOps.Unlock()
-
-	var previous []byte
-	if managed, ok := h.inbounds.ManagedConfig(cfg.Tag); ok {
-		previous = managed.Raw
-	}
-	var patched []byte
-	var publicKey, shortID string
-	hysteriaMaterial := xray.HysteriaMaterial{}
-	if cfg.Protocol == "hysteria" {
-		patched, hysteriaMaterial, err = xray.EnsureManagedHysteriaMaterial(cfg.Raw, previous)
-	} else {
-		patched, publicKey, shortID, err = xray.EnsureRealityKey(cfg.Raw, previous)
-	}
-	if err != nil {
-		log.Printf("[api] prepare inbound %q failed", cfg.Tag)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "managed inbound material could not be prepared"})
-		return
-	}
-	cfg, err = inbound.Parse(patched)
-	if err != nil {
-		log.Printf("[api] validate prepared inbound %q: %v", cfg.Tag, err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid prepared inbound"})
-		return
-	}
-	if err := h.inbounds.ApplyDesiredWithRefresh(r.Context(), cfg, desiredDigest, hysteriaMaterial.CertificateRotated); err != nil {
-		log.Printf("[api] apply inbound %q: %v", cfg.Tag, err)
-		if errors.Is(err, inboundsync.ErrTagConflict) {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "inbound tag is already owned by a static or unmanaged config"})
-			return
-		}
-		if errors.Is(err, inboundsync.ErrControllerOwned) {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "inbound tag is managed by controller polling"})
-			return
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "node could not apply the inbound"})
-		return
-	}
-	log.Printf("[api] dynamic inbound %q applied", cfg.Tag)
-	response := map[string]any{
-		"status":         "applied",
-		"inbound":        cfg.Public(),
-		"desired_digest": desiredDigest,
-		"public_key":     publicKey,
-		"short_id":       shortID,
-	}
-	if cfg.Protocol == "hysteria" {
-		response["pin_sha256"] = hysteriaMaterial.PinSHA256
-		response["client_secret"] = map[string]string{"salamander_password": hysteriaMaterial.SalamanderPassword}
-	}
-	writeJSON(w, http.StatusOK, response)
-}
-
-func (h *handlers) listInbounds(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"inbounds":     h.inbounds.Inventory(),
-		"capabilities": inboundCapabilities(h.cfg),
-	})
-}
-
-func (h *handlers) removeInbound(w http.ResponseWriter, r *http.Request) {
-	tag := r.PathValue("tag")
-	if tag == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tag required"})
-		return
-	}
-	h.userOps.Lock()
-	defer h.userOps.Unlock()
-	if err := h.inbounds.Remove(r.Context(), tag); err != nil {
-		log.Printf("[api] removeInbound %q: %v", tag, err)
-		if errors.Is(err, inboundsync.ErrNotManaged) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "dynamic inbound not found"})
-			return
-		}
-		if errors.Is(err, inboundsync.ErrControllerOwned) {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "inbound tag is managed by controller polling"})
-			return
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "node could not remove the inbound"})
-		return
-	}
-	if h.store != nil {
-		if err := h.store.RemoveByInboundTag(tag); err != nil {
-			log.Printf("[api] removeInbound durable user cleanup failed")
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "durable user cleanup failed"})
-			return
-		}
-	}
-	log.Printf("[api] dynamic inbound %q removed", tag)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "removed", "tag": tag})
-}
-
-func inboundCapabilities(cfg *config.Config) map[string]any {
-	return map[string]any{
-		"protocols":                []string{"vless", "hysteria"},
-		"stream_networks":          []string{"raw", "xhttp", "grpc", "hysteria"},
-		"stream_securities":        []string{"reality", "tls"},
-		"listener_networks":        []string{"tcp", "udp"},
-		"hysteria_version":         2,
-		"hysteria_tls_mode":        "node_local_pinned_self_signed",
-		"hysteria_tls_root":        inbound.ManagedTLSRoot(),
-		"hysteria_salamander":      true,
-		"udp_firewall_managed":     false,
-		"udp_hop_external_dnat":    true,
-		"controller_tag_namespace": "gx-",
-		"durable_inventory":        true,
-		"startup_reconciliation":   true,
-		"desired_manifest_store":   true,
-		"controller_polling":       cfg != nil && cfg.ControllerPollingEnabled(),
-		"static_inbounds_managed":  false,
-	}
-}
 
 type updateRequest struct {
 	Mode   string `json:"mode"`
@@ -396,29 +43,45 @@ var binaryUpdateHTTPClient = &http.Client{
 	},
 }
 
-func (h *handlers) updateXray(w http.ResponseWriter, r *http.Request) {
-	var req updateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
-	}
-	updateURL, checksum, err := validateBinaryUpdate(req.URL, req.SHA256)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-
-	go func() {
-		if err := replaceAndRestart(updateURL, "/usr/local/bin/xray", "xray", checksum); err != nil {
-			log.Printf("[update] xray update error: %v", err)
-		} else {
-			log.Printf("[update] xray updated successfully")
-		}
-	}()
-
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "update started"})
+type handlers struct {
+	cfg        *config.Config
+	collector  *metrics.Collector
+	reconciler desiredStateReconciler
+}
+type desiredStateReconciler interface {
+	SyncOnce(context.Context) error
+	IsNaiveTag(string) bool
 }
 
+func (h *handlers) reconcileDesiredState(w http.ResponseWriter, r *http.Request) {
+	if h.reconciler == nil {
+		writeJSON(w, 503, map[string]string{"error": "controller unavailable"})
+		return
+	}
+	if err := h.reconciler.SyncOnce(r.Context()); err != nil {
+		writeJSON(w, 503, map[string]string{"error": "reconcile failed"})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "reconciled"})
+}
+func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.MetricsOnly {
+		writeJSON(w, 200, map[string]any{"status": "ok", "version": h.cfg.AgentVersion(), "mode": "metrics-only", "capabilities": map[string]bool{"host_metrics": true, "agent_update": true, "inbound_management": false, "topology_management": false}})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": "ok", "version": h.cfg.AgentVersion(), "capabilities": map[string]any{"engines": []string{"trusttunnel", "naiveproxy"}, "host_metrics": true}})
+}
+func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
+	snapshot := h.collector.Latest()
+	if snapshot == nil {
+		writeJSON(w, 503, map[string]string{"error": "not ready"})
+		return
+	}
+	writeJSON(w, 200, snapshot)
+}
+func (h *handlers) nativeUserChange(w http.ResponseWriter, r *http.Request) {
+	h.reconcileDesiredState(w, r)
+}
 func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 	var req updateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -515,12 +178,12 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 	}
 	if mode == "git-full" {
 		parts = append(parts,
-			"docker", "compose", "pull", "xray", "&&",
-			"docker", "compose", "up", "-d", "--build", "xray", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner",
+
+			"docker", "compose", "up", "-d", "--build", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner",
 		)
 	} else if mode == "git-runners" {
 		// Runner-only rollout updates the session-preserving supervisors without
-		// recreating Xray, node-agent, or topology-agent.
+		// recreating node-agent or topology-agent.
 		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "trusttunnel-runner", "transport-bundle-runner")
 	} else {
 		// Agent-only rollout must never recreate the topology controller or any
@@ -554,14 +217,11 @@ func gitUpdatePrefix(ref string) ([]string, error) {
 }
 
 func (h *handlers) restartNode(w http.ResponseWriter, r *http.Request) {
-	if err := runDetachedComposeHelper(h.cfg.RepoDir, []string{
-		"docker", "compose", "restart", "xray", "node-agent",
-	}); err != nil {
-		log.Printf("[restart] node restart error: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "restart failed"})
+	if err := runDetachedComposeHelper(h.cfg.RepoDir, []string{"docker", "compose", "restart", "trusttunnel-runner", "transport-bundle-runner", "node-agent"}); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "restart failed"})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "restart started"})
+	writeJSON(w, 202, map[string]string{"status": "restart started"})
 }
 
 func runDetachedComposeHelper(repoDir string, parts []string) error {
@@ -616,7 +276,7 @@ func detachedComposeHelperArgs(repoDir string, parts []string) ([]string, error)
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		// Docker Compose resolves relative bind mounts on the host daemon. Keep
 		// the repository at the same absolute path inside this helper; mounting
-		// it as /work would make ./xray-config.json resolve to host /work and
+		// it as /work would make ./data resolve to host /work and
 		// Docker would silently create a directory in place of the config file.
 		"-v", repoDir + ":" + repoDir,
 		"-w", repoDir,

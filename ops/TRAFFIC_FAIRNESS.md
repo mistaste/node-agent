@@ -63,7 +63,7 @@ authenticated account hidden inside an encrypted tunnel.
 
 The running TrustTunnel 1.1.0 build exposes per-user traffic metrics and
 connection limits, but has no existing bandwidth limiter to enable. NaiveProxy
-and legacy Xray must participate in the same node/account budget; limiting only
+must participate in the same node/account budget; limiting only
 one engine would allow another transport to consume the remaining CPU.
 
 Implement bounded per-account queues with backpressure and small bursts.

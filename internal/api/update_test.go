@@ -38,7 +38,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := strings.Join(full, " ")
-	if !strings.Contains(command, "docker compose pull xray") || !strings.Contains(command, "--build xray node-agent topology-agent trusttunnel-runner transport-bundle-runner") {
+	if strings.Contains(command, "compose pull") || !strings.Contains(command, "--build node-agent topology-agent trusttunnel-runner transport-bundle-runner") {
 		t.Fatalf("full command = %q", command)
 	}
 

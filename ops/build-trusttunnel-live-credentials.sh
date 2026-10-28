@@ -2,7 +2,7 @@
 # Pinned source build; run in the reviewed core-libs cross compiler image.
 set -eu
 export RUSTUP_TOOLCHAIN=1.95
-export TRUSTTUNNEL_VERSION=1.1.0-guardex-live-credentials.1
+export TRUSTTUNNEL_VERSION=1.1.0-guardex-account-qos.1
 case "${1:?target architecture required}" in
   amd64) arch=x86_64 ;;
   arm64) arch=aarch64 ;;

@@ -1,0 +1,8 @@
+[Unit]
+Description=Keep Poland QoS identities synchronized
+[Timer]
+OnBootSec=5s
+OnUnitInactiveSec=15s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

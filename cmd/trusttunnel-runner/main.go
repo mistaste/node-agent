@@ -62,7 +62,7 @@ func main() {
 	versionCtx, versionCancel := context.WithTimeout(ctx, 3*time.Second)
 	version, versionErr := exec.CommandContext(versionCtx, r.binary, "--version").Output()
 	versionCancel()
-	r.credentialReload = versionErr == nil && strings.TrimSpace(string(version)) == "1.1.0-guardex-live-credentials.1"
+	r.credentialReload = versionErr == nil && supportsCredentialReload(strings.TrimSpace(string(version)))
 	log.Printf("[trusttunnel-runner] watching %s", r.root)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -464,5 +464,14 @@ func (r *runner) waitForCredentials(ctx context.Context, expected state) error {
 			return errors.New("endpoint did not acknowledge live credentials")
 		case <-ticker.C:
 		}
+	}
+}
+
+func supportsCredentialReload(version string) bool {
+	switch version {
+	case "1.1.0-guardex-live-credentials.1", "1.1.0-guardex-account-qos.1":
+		return true
+	default:
+		return false
 	}
 }

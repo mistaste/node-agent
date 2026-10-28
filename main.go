@@ -2,82 +2,32 @@ package main
 
 import (
 	"context"
+	"github.com/guardex/node-agent/internal/api"
+	"github.com/guardex/node-agent/internal/config"
+	"github.com/guardex/node-agent/internal/controller"
+	"github.com/guardex/node-agent/internal/metrics"
+	"github.com/guardex/node-agent/internal/pusher"
+	"github.com/guardex/node-agent/internal/transportbundle"
+	"github.com/guardex/node-agent/internal/trusttunnel"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	"github.com/guardex/node-agent/internal/api"
-	"github.com/guardex/node-agent/internal/config"
-	"github.com/guardex/node-agent/internal/controller"
-	"github.com/guardex/node-agent/internal/inboundsync"
-	"github.com/guardex/node-agent/internal/metrics"
-	"github.com/guardex/node-agent/internal/pusher"
-	"github.com/guardex/node-agent/internal/store"
-	"github.com/guardex/node-agent/internal/transportbundle"
-	"github.com/guardex/node-agent/internal/trusttunnel"
-	"github.com/guardex/node-agent/internal/userops"
-	"github.com/guardex/node-agent/internal/usersync"
-	"github.com/guardex/node-agent/internal/xray"
 )
 
 func main() {
 	cfg := config.Load()
 	if !cfg.AgentAPISecretValid() {
-		log.Fatal("[agent] AGENT_SECRET must be a non-placeholder secret of at least 32 characters")
+		log.Fatal("invalid management secret")
 	}
-	if len(os.Args) == 2 && os.Args[1] == "check-rollback-v0.2.3" {
-		if err := store.CheckLegacyV3Rollback(cfg.InboundsFile); err != nil {
-			log.Fatalf("[rollback-check] unsafe: %v", err)
-		}
-		log.Printf("[rollback-check] safe: v3 store contains no active Hysteria records")
-		return
-	}
-	if cfg.MetricsOnly {
-		runMetricsOnly(cfg)
-		return
-	}
-
-	xrayClient, err := xray.NewClient(cfg.XrayGRPCAddr)
-	if err != nil {
-		log.Fatalf("[agent] failed to connect to xray gRPC: %v", err)
-	}
-	defer xrayClient.Close()
-	log.Printf("[agent] connected to xray at %s", cfg.XrayGRPCAddr)
-
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-
-	// Dynamic inbounds are desired state, not ephemeral API calls. Restore them
-	// before users so every stored user's inbound tag exists after a core restart.
-	inboundStore := store.NewInboundStore(cfg.InboundsFile)
-	if err := inboundStore.Load(); err != nil {
-		log.Fatalf("[agent] failed to load inbound store: %v", err)
-	}
-	inboundManager := inboundsync.New(xrayClient, inboundStore, cfg.ResyncInterval, cfg.DefaultInboundTag, "api")
-	appliedInbounds, failedInbounds := inboundManager.Bootstrap(ctx)
-	log.Printf("[inboundsync] bootstrap: applied=%d failed=%d desired=%d", appliedInbounds, failedInbounds, len(inboundManager.Inventory()))
-	go inboundManager.Run(ctx)
-
-	// Load the durable user inventory before controller tombstones can run so a
-	// deleted tag is cleaned atomically and cannot be resurrected by usersync.
-	userStore := store.New(cfg.UsersFile)
-	if err := userStore.Load(); err != nil {
-		log.Printf("[agent] failed to load user store: %v", err)
-	}
-	userOperations := userops.New()
-	var trustTunnelRuntime *trusttunnel.Runtime
 	var controllerReconciler *controller.Reconciler
 	var controllerErr error
-
-	// Restore durable users before the first controller pull. Both loops share
-	// userOperations afterwards, so an old usersync snapshot can never race an
-	// exact controller membership update or tombstone cleanup.
-	syncer := usersync.New(xrayClient, userStore, cfg.ResyncInterval, userOperations)
-	syncer.Bootstrap(ctx)
-	if cfg.ControllerPollingEnabled() {
-		controllerReconciler, controllerErr = controller.New(cfg, inboundManager, userStore, xrayClient, userOperations)
+	var trustTunnelRuntime *trusttunnel.Runtime
+	if !cfg.MetricsOnly && cfg.ControllerPollingEnabled() {
+		controllerReconciler, controllerErr = controller.New(cfg)
 		if controllerErr != nil {
 			log.Printf("[controller-inbounds] disabled: invalid controller configuration")
 		} else {
@@ -115,67 +65,30 @@ func main() {
 		log.Printf("[controller-inbounds] disabled: verified controller credentials are incomplete")
 	}
 
-	// Durable user store: Xray keeps users only in memory, so re-apply after any
-	// Xray restart while honoring the shared exact-set operation lock.
-	go syncer.Run(ctx)
-
-	collector := metrics.NewCollector(xrayClient, cfg.MetricsInterval, cfg.MetricsInterface)
+	collector := metrics.NewCollector(cfg.MetricsInterval, cfg.MetricsInterface)
+	if cfg.MetricsOnly {
+		collector.DisableNativeMetrics()
+	}
 	go collector.Run(ctx)
-
-	p := pusher.NewPusher(cfg, collector, userStore)
-	go p.Run(ctx)
-
-	serverOptions := []any{userOperations}
+	var inventory pusher.UserInventory
 	if controllerReconciler != nil {
-		serverOptions = append(serverOptions, controllerReconciler)
+		inventory = controllerReconciler
 	}
-	srv := api.NewServer(cfg, xrayClient, collector, userStore, inboundManager, serverOptions...)
+	go pusher.NewPusher(cfg, collector, inventory).Run(ctx)
+	srv := api.NewServer(cfg, collector, nil)
+	if controllerReconciler != nil {
+		srv = api.NewServer(cfg, collector, controllerReconciler)
+	}
 	go func() {
 		if err := srv.Run(); err != nil {
-			log.Printf("[agent] HTTP server error: %v", err)
+			log.Printf("management server: %v", err)
+			cancel()
 		}
 	}()
-	log.Printf("[agent] HTTP server listening on %s", cfg.ListenAddr)
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("[agent] shutting down")
-	cancel()
+	<-ctx.Done()
 	if trustTunnelRuntime != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 6*time.Second)
-		if err := trustTunnelRuntime.Close(shutdownCtx); err != nil {
-			log.Printf("[trusttunnel] shutdown cleanup failed: %v", err)
-		}
-		shutdownCancel()
+		shutdown, done := context.WithTimeout(context.Background(), 6*time.Second)
+		defer done()
+		_ = trustTunnelRuntime.Close(shutdown)
 	}
-}
-
-// runMetricsOnly is used by relay and exit hosts which do not run Xray. Those
-// infrastructure roles still report real host CPU, memory and network counters
-// to the controller, but must not start inbound or user-management runtimes.
-func runMetricsOnly(cfg *config.Config) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	userStore := store.New(cfg.UsersFile)
-	if err := userStore.Load(); err != nil {
-		log.Printf("[agent] metrics-only user store unavailable: %v", err)
-	}
-	collector := metrics.NewCollector(nil, cfg.MetricsInterval, cfg.MetricsInterface)
-	go collector.Run(ctx)
-	go pusher.NewPusher(cfg, collector, userStore).Run(ctx)
-	srv := api.NewMetricsOnlyServer(cfg, collector)
-	go func() {
-		if err := srv.Run(); err != nil {
-			log.Printf("[agent] metrics-only HTTP server error: %v", err)
-		}
-	}()
-	log.Printf("[agent] metrics-only HTTP server listening on %s", cfg.ListenAddr)
-	log.Printf("[agent] metrics-only mode active; Xray management disabled")
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("[agent] metrics-only mode shutting down")
 }

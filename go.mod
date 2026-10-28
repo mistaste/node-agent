@@ -4,56 +4,18 @@ go 1.26.8
 
 require (
 	github.com/shirou/gopsutil/v3 v3.24.5
-	github.com/xtls/xray-core v1.260327.1-0.20260601021109-94ffd50060f1
 	golang.org/x/crypto v0.56.0
-	google.golang.org/grpc v1.82.1
 )
 
 require (
-	github.com/andybalholm/brotli v1.1.0 // indirect
-	github.com/apernet/quic-go v0.59.1-0.20260425001925-6c6cc9bcb716 // indirect
-	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/google/btree v1.1.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
-	github.com/juju/ratelimit v1.0.2 // indirect
-	github.com/klauspost/compress v1.18.7 // indirect
-	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
-	github.com/miekg/dns v1.1.72 // indirect
-	github.com/pion/dtls/v3 v3.1.4 // indirect
-	github.com/pion/logging v0.2.4 // indirect
-	github.com/pion/stun/v3 v3.1.5 // indirect
-	github.com/pion/transport/v4 v4.0.2 // indirect
-	github.com/pires/go-proxyproto v0.12.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
-	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
-	github.com/sagernet/sing v0.5.1 // indirect
-	github.com/sagernet/sing-shadowsocks v0.2.7 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
-	github.com/vishvananda/netlink v1.3.1 // indirect
-	github.com/vishvananda/netns v0.0.5 // indirect
-	github.com/wlynxg/anet v0.0.5 // indirect
-	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/exp v0.0.0-20240531132922-fd00a4e0eefc // indirect
-	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/time v0.14.0 // indirect
-	golang.org/x/tools v0.48.0 // indirect
-	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb // indirect
-	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
-	gvisor.dev/gvisor v0.0.0-20260122175437-89a5d21be8f0 // indirect
-	lukechampine.com/blake3 v1.4.1 // indirect
 )

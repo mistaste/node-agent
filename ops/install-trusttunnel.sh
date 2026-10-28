@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # Installs the audited, pinned TrustTunnel endpoint without enabling it. The
 # Guardex node agent starts it only after a valid catalogue route and TLS files
-# are present. Existing Xray listeners are untouched.
+# are present. Existing native listeners are retained.
 
 VERSION="${TRUSTTUNNEL_VERSION:-1.1.0}"
 INSTALL_ROOT="${TRUSTTUNNEL_INSTALL_ROOT:-/opt/trusttunnel}"

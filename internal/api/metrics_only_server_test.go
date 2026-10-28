@@ -21,7 +21,7 @@ func TestMetricsOnlyServerIsAuthenticatedAndLeastPrivilege(t *testing.T) {
 		RepoDir:     t.TempDir(),
 		UpdateRef:   "master",
 	}
-	collector := metrics.NewCollector(nil, time.Hour, "")
+	collector := metrics.NewCollector(time.Hour, "")
 	server := NewMetricsOnlyServer(cfg, collector)
 	handler := server.auth(server.mux)
 
@@ -65,7 +65,7 @@ func TestMetricsOnlyServerIsAuthenticatedAndLeastPrivilege(t *testing.T) {
 			t.Fatalf("health capability %q = %#v, want true", capability, body.Capabilities[capability])
 		}
 	}
-	for _, capability := range []string{"xray_management", "inbound_management", "topology_management"} {
+	for _, capability := range []string{"inbound_management", "topology_management"} {
 		if enabled, ok := body.Capabilities[capability].(bool); !ok || enabled {
 			t.Fatalf("health capability %q = %#v, want false", capability, body.Capabilities[capability])
 		}

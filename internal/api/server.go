@@ -10,64 +10,19 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/config"
-	"github.com/guardex/node-agent/internal/inboundsync"
 	"github.com/guardex/node-agent/internal/metrics"
-	"github.com/guardex/node-agent/internal/store"
-	"github.com/guardex/node-agent/internal/userops"
-	"github.com/guardex/node-agent/internal/xray"
 )
 
 type Server struct {
 	cfg        *config.Config
-	xray       *xray.Client
 	collector  *metrics.Collector
-	store      *store.Store
-	inbounds   *inboundsync.Manager
-	userOps    *userops.Coordinator
 	reconciler desiredStateReconciler
 	mux        *http.ServeMux
 }
 
-func NewServer(cfg *config.Config, xrayClient *xray.Client, collector *metrics.Collector, st *store.Store, inbounds *inboundsync.Manager, options ...any) *Server {
-	coordinator := userops.New()
-	var reconciler desiredStateReconciler
-	for _, option := range options {
-		switch value := option.(type) {
-		case *userops.Coordinator:
-			if value != nil {
-				coordinator = value
-			}
-		case desiredStateReconciler:
-			if value != nil {
-				reconciler = value
-			}
-		}
-	}
-	s := &Server{
-		cfg:        cfg,
-		xray:       xrayClient,
-		collector:  collector,
-		store:      st,
-		inbounds:   inbounds,
-		userOps:    coordinator,
-		reconciler: reconciler,
-		mux:        http.NewServeMux(),
-	}
+func NewServer(cfg *config.Config, collector *metrics.Collector, reconciler desiredStateReconciler) *Server {
+	s := &Server{cfg: cfg, collector: collector, reconciler: reconciler, mux: http.NewServeMux()}
 	s.registerRoutes()
-	return s
-}
-
-// NewMetricsOnlyServer exposes the small authenticated control-plane surface
-// required by relay and exit hosts. It deliberately omits every Xray, inbound,
-// user and topology mutation route: those hosts are observed by this process,
-// while their forwarding data plane remains owned by topology-agent.
-func NewMetricsOnlyServer(cfg *config.Config, collector *metrics.Collector) *Server {
-	s := &Server{
-		cfg:       cfg,
-		collector: collector,
-		mux:       http.NewServeMux(),
-	}
-	s.registerMetricsOnlyRoutes()
 	return s
 }
 
@@ -113,38 +68,19 @@ func (s *Server) auth(next http.Handler) http.Handler {
 }
 
 func (s *Server) registerRoutes() {
-	h := &handlers{
-		cfg:        s.cfg,
-		xray:       s.xray,
-		collector:  s.collector,
-		store:      s.store,
-		inbounds:   s.inbounds,
-		userOps:    s.userOps,
-		reconciler: s.reconciler,
-	}
-
+	h := &handlers{cfg: s.cfg, collector: s.collector, reconciler: s.reconciler}
 	s.mux.HandleFunc("GET /v1/health", h.health)
 	s.mux.HandleFunc("GET /v1/metrics", h.getMetrics)
-
-	s.mux.HandleFunc("POST /v1/users", h.addUser)
-	s.mux.HandleFunc("POST /v1/controller/reconcile", h.reconcileDesiredState)
-	s.mux.HandleFunc("DELETE /v1/users/{uuid}", h.removeUser)
-
-	s.mux.HandleFunc("POST /v1/inbounds", h.addInbound)
-	s.mux.HandleFunc("GET /v1/inbounds", h.listInbounds)
-	s.mux.HandleFunc("DELETE /v1/inbounds/{tag}", h.removeInbound)
-
-	s.mux.HandleFunc("POST /v1/system/update-xray", h.updateXray)
 	s.mux.HandleFunc("POST /v1/system/update-agent", h.updateAgent)
-	s.mux.HandleFunc("POST /v1/system/restart", h.restartNode)
+	if !s.cfg.MetricsOnly {
+		s.mux.HandleFunc("POST /v1/controller/reconcile", h.reconcileDesiredState)
+		s.mux.HandleFunc("POST /v1/users", h.nativeUserChange)
+		s.mux.HandleFunc("DELETE /v1/users/{uuid}", h.nativeUserChange)
+		s.mux.HandleFunc("POST /v1/system/restart", h.restartNode)
+	}
 }
 
-func (s *Server) registerMetricsOnlyRoutes() {
-	h := &handlers{
-		cfg:       s.cfg,
-		collector: s.collector,
-	}
-	s.mux.HandleFunc("GET /v1/health", h.metricsOnlyHealth)
-	s.mux.HandleFunc("GET /v1/metrics", h.getMetrics)
-	s.mux.HandleFunc("POST /v1/system/update-agent", h.updateAgent)
+func NewMetricsOnlyServer(cfg *config.Config, collector *metrics.Collector) *Server {
+	cfg.MetricsOnly = true
+	return NewServer(cfg, collector, nil)
 }

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/trusttunnel"
-	"github.com/guardex/node-agent/internal/xray"
+
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/load"
@@ -19,7 +19,7 @@ import (
 	gopsNet "github.com/shirou/gopsutil/v3/net"
 )
 
-// Snapshot holds a point-in-time view of system + xray metrics.
+// Snapshot holds a point-in-time view of host and native tunnel metrics.
 type Snapshot struct {
 	CollectedAt                  time.Time
 	CPUPercent                   float64
@@ -46,7 +46,7 @@ type Snapshot struct {
 	WireGuardHandshakeAgeSeconds int64
 	Interface                    string
 	LinkCapacityMbps             int
-	UserTraffic                  []xray.UserTraffic
+	UserTraffic                  []UserTraffic
 	ActiveUsers                  []ActiveUser
 }
 
@@ -57,11 +57,11 @@ type ActiveUser struct {
 	LastSeen time.Time
 }
 
-// Collector periodically gathers system and Xray metrics.
+// Collector periodically gathers host and native tunnel metrics.
 type Collector struct {
-	xray        *xray.Client
-	trustTunnel *trusttunnel.MetricsClient
-	interval    time.Duration
+	nativeEnabled bool
+	trustTunnel   *trusttunnel.MetricsClient
+	interval      time.Duration
 
 	mu     sync.RWMutex
 	latest *Snapshot
@@ -72,13 +72,13 @@ type Collector struct {
 	previousCPU   *cpu.TimesStat
 }
 
-func NewCollector(xrayClient *xray.Client, interval time.Duration, interfaceName ...string) *Collector {
+func NewCollector(interval time.Duration, interfaceName ...string) *Collector {
 	configuredInterface := ""
 	if len(interfaceName) > 0 {
 		configuredInterface = strings.TrimSpace(interfaceName[0])
 	}
 	return &Collector{
-		xray:          xrayClient,
+		nativeEnabled: true,
 		trustTunnel:   trusttunnel.NewMetricsClient("http://127.0.0.1:1987"),
 		interval:      interval,
 		prevTraffic:   make(map[string]int64),
@@ -164,15 +164,8 @@ func (c *Collector) collect(ctx context.Context) {
 	snap.WireGuardHandshakeAgeSeconds = wireGuardHandshakeAge(time.Now())
 
 	connected := make(map[string]bool)
-	byUUID := make(map[string]xray.UserTraffic)
-	if c.xray != nil {
-		if traffic, err := c.xray.QueryAllUserStats(ctx); err == nil {
-			for _, user := range traffic {
-				byUUID[strings.ToLower(strings.TrimSpace(user.UUID))] = user
-			}
-		} else {
-			log.Printf("[metrics] xray stats error: %v", err)
-		}
+	byUUID := make(map[string]UserTraffic)
+	if c.nativeEnabled {
 		if clients, err := c.trustTunnel.Clients(ctx); err == nil {
 			for _, client := range clients {
 				current := byUUID[client.Username]
@@ -298,11 +291,11 @@ func wireGuardHandshakeAge(now time.Time) int64 {
 	return age
 }
 
-func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic, connected map[string]bool) []ActiveUser {
+func (c *Collector) markActiveUsers(now time.Time, traffic []UserTraffic, connected map[string]bool) []ActiveUser {
 	const activeWindow = 90 * time.Second
 
 	seen := make(map[string]struct{}, len(traffic))
-	byUUID := make(map[string]xray.UserTraffic, len(traffic))
+	byUUID := make(map[string]UserTraffic, len(traffic))
 	for _, user := range traffic {
 		user.UUID = strings.ToLower(strings.TrimSpace(user.UUID))
 		total := user.Uplink + user.Downlink
@@ -332,3 +325,11 @@ func (c *Collector) markActiveUsers(now time.Time, traffic []xray.UserTraffic, c
 	}
 	return active
 }
+
+type UserTraffic struct {
+	UUID     string
+	Uplink   int64
+	Downlink int64
+}
+
+func (c *Collector) DisableNativeMetrics() { c.nativeEnabled = false }

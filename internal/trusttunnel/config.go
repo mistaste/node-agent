@@ -1,5 +1,5 @@
 // Package trusttunnel owns Guardex's deterministic TrustTunnel endpoint files.
-// It deliberately does not share Xray's dynamic-inbound representation.
+// Endpoint configuration is validated independently from control-plane state.
 package trusttunnel
 
 import (
