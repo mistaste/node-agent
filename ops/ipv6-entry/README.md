@@ -2,7 +2,7 @@
 
 This is a separate IPv6-only TCP/443 HAProxy listener forwarding opaque TLS to
 the existing IPv4 SNI listener. It does not change relay, WireGuard, routing or
-UDP/H3. The API advertises fresh entries only to the tester group, retaining IPv4.
+UDP/H3. The API advertises fresh entries to eligible testers and CN/IR networks, retaining IPv4.
 
 The root-owned controller inventory contains server IDs and public IPv4 SSH
 addresses. Update it through provisioning when adding/removing a node; the timer
@@ -21,7 +21,8 @@ Missing address, route, listener, probe or verifier access cannot remove IPv4.
 
 ## Rollback
 
-1. Disable the controller timer: `systemctl disable --now guardex-ipv6-entry.timer`.
+1. Disable the controller timer: `systemctl disable --now guardex-ipv6-entry-verifier.timer`, then stop
+   `guardex-ipv6-entry-verifier.service` before removing its cache.
 2. Remove the published capabilities file. After its expiry the API omits IPv6
    even if a stale copy remains. Existing authenticated connections are unaffected.
 3. On nodes managed by this component, `systemctl disable --now guardex-ipv6-entry.service`.
