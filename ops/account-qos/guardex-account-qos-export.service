@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh account identities for the Poland QoS pilot
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/guardex-account-qos-export
+TimeoutStartSec=20
+UMask=0077

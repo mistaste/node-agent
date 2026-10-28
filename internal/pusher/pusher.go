@@ -15,15 +15,13 @@ import (
 
 	"github.com/guardex/node-agent/internal/config"
 	"github.com/guardex/node-agent/internal/metrics"
-	"github.com/guardex/node-agent/internal/store"
-	"github.com/guardex/node-agent/internal/xray"
 )
 
 // Pusher periodically sends collected metrics to the Central Controller.
 type Pusher struct {
 	cfg       *config.Config
 	collector *metrics.Collector
-	users     userInventory
+	users     UserInventory
 	http      *http.Client
 }
 
@@ -42,11 +40,11 @@ func detectedLinkCapacity(configured, detected int) int {
 	return 0
 }
 
-type userInventory interface {
-	All() []store.User
+type UserInventory interface {
+	UUIDs() []string
 }
 
-func NewPusher(cfg *config.Config, collector *metrics.Collector, users userInventory) *Pusher {
+func NewPusher(cfg *config.Config, collector *metrics.Collector, users UserInventory) *Pusher {
 	return &Pusher{
 		cfg:       cfg,
 		collector: collector,
@@ -258,7 +256,7 @@ func (p *Pusher) send(req *http.Request, body []byte) error {
 // two collector samples observe growth; sending the cumulative counter still
 // lets the controller account for those bytes without reporting the user as
 // currently online.
-func trafficPayload(users []xray.UserTraffic, provisioned map[string]struct{}) []activeUserPayload {
+func trafficPayload(users []metrics.UserTraffic, provisioned map[string]struct{}) []activeUserPayload {
 	result := make([]activeUserPayload, 0, len(users))
 	for _, user := range users {
 		uuid := strings.TrimSpace(user.UUID)
@@ -277,17 +275,14 @@ func trafficPayload(users []xray.UserTraffic, provisioned map[string]struct{}) [
 	return result
 }
 
-// provisionedUUIDs takes a fresh snapshot for every push. Xray deliberately
-// keeps monotonic stats after RemoveUser, so its stats inventory is not proof
-// that an identity is still provisioned. The durable store is the desired user
-// inventory for both legacy VLESS and managed Hysteria inbounds.
-func provisionedUUIDs(users userInventory) map[string]struct{} {
+// provisionedUUIDs snapshots successfully applied native membership for each push.
+func provisionedUUIDs(users UserInventory) map[string]struct{} {
 	result := make(map[string]struct{})
 	if users == nil {
 		return result
 	}
-	for _, user := range users.All() {
-		uuid := strings.ToLower(strings.TrimSpace(user.UUID))
+	for _, value := range users.UUIDs() {
+		uuid := strings.ToLower(strings.TrimSpace(value))
 		if uuid != "" {
 			result[uuid] = struct{}{}
 		}

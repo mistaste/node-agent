@@ -4,21 +4,8 @@ set -Eeo pipefail
 # Guardex Node Agent — one-command Docker setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
 
-# Keep the compatibility VLESS listener away from the standard HTTPS socket.
-# TrustTunnel owns TCP+UDP 443 on managed nodes; legacy VLESS remains available
-# on an explicit fallback port until the catalogue fully retires it.
-XRAY_PORT="${XRAY_PORT:-10443}"
 AGENT_PORT="${AGENT_PORT:-8099}"
-XRAY_GRPC_PORT="${XRAY_GRPC_PORT:-8080}"
-INBOUND_TAG="${INBOUND_TAG:-vless-in}"
 CONTROLLER_ORIGIN_IP="${CONTROLLER_ORIGIN_IP:-193.247.73.15}"
-
-# Pin xray-core close to the version the Flutter app's proxy_core bundles
-# (GFW-knocker fork v1.26.5-mahsa, based on upstream 26.5). Reality handshakes only
-# succeed when client and server speak the same protocol generation. Keep this in
-# lockstep with proxy_core's xray-core (and docker-compose.yml).
-XRAY_VERSION="26.6.1"
-XRAY_IMAGE="ghcr.io/xtls/xray-core:${XRAY_VERSION}@sha256:3943bddece5fab72308a4415917f0391917b7b81ddbf50708988b89e6e2bd213"
 
 NODE_ID="${NODE_ID:-}"
 CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com}"
@@ -102,107 +89,22 @@ install_docker() {
     log "Docker installed ✓"
 }
 
-# ── generate Reality keys with an immutable, multi-architecture Xray image ────
-generate_reality_keys() {
-    log "Generating Reality keypair..."
-    local keys
-    keys=$(docker run --rm --pull=always "$XRAY_IMAGE" x25519)
-    REALITY_PRIVATE_KEY=$(echo "$keys" | grep -E "PrivateKey:|Private key:" | awk '{print $NF}')
-    REALITY_PUBLIC_KEY=$(echo  "$keys" | grep -E "PublicKey|Public key:"   | awk '{print $NF}')
-    REALITY_SHORT_ID=$(openssl rand -hex 8)
-
-    [ -z "$REALITY_PRIVATE_KEY" ] && die "Failed to parse the generated Reality private key"
-    [ -z "$REALITY_PUBLIC_KEY"  ] && die "Failed to parse the generated Reality public key"
-
-    log "Public key:  $REALITY_PUBLIC_KEY"
-    log "Short ID:    $REALITY_SHORT_ID"
-}
-
-# ── write Xray config ─────────────────────────────────────────────────────────
-write_xray_config() {
-    log "Writing Xray config to ${INSTALL_DIR}/xray-config.json..."
-    mkdir -p "$INSTALL_DIR"
-    cat > "$INSTALL_DIR/xray-config.json" <<EOF
-{
-  "log": { "loglevel": "warning" },
-  "api": {
-    "tag": "api",
-    "services": ["HandlerService", "StatsService"]
-  },
-  "inbounds": [
-    {
-      "tag": "api",
-      "listen": "127.0.0.1",
-      "port": ${XRAY_GRPC_PORT},
-      "protocol": "dokodemo-door",
-      "settings": { "address": "127.0.0.1" }
-    },
-    {
-      "tag": "${INBOUND_TAG}",
-      "port": ${XRAY_PORT},
-      "protocol": "vless",
-      "settings": {
-        "clients": [],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "www.google.com:443",
-          "serverNames": ["www.google.com"],
-          "privateKey": "${REALITY_PRIVATE_KEY}",
-          "shortIds": ["${REALITY_SHORT_ID}"]
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct",
-      "settings": { "domainStrategy": "UseIPv4" }
-    },
-    { "protocol": "blackhole", "tag": "blocked" }
-  ],
-  "routing": {
-    "rules": [
-      { "inboundTag": ["api"], "outboundTag": "api", "type": "field" }
-    ]
-  },
-  "stats": {},
-  "policy": {
-    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
-    "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
-  }
-}
-EOF
-    chmod 600 "$INSTALL_DIR/xray-config.json"
-}
-
 # ── write .env for node-agent ─────────────────────────────────────────────────
 write_env() {
     log "Writing ${INSTALL_DIR}/.env..."
     cat > "$INSTALL_DIR/.env" <<EOF
-XRAY_GRPC_ADDR=127.0.0.1:${XRAY_GRPC_PORT}
 AGENT_LISTEN_ADDR=:${AGENT_PORT}
 AGENT_PUBLIC_HOST=${AGENT_PUBLIC_HOST}
 AGENT_TLS_HOST_DIR=${AGENT_TLS_HOST_DIR}
 AGENT_TLS_CERT_FILE=/run/guardex-management-tls/fullchain.pem
 AGENT_TLS_KEY_FILE=/run/guardex-management-tls/privkey.pem
 AGENT_SECRET=${AGENT_SECRET}
-XRAY_INBOUND_TAG=${INBOUND_TAG}
 METRICS_INTERVAL=15s
 NODE_ID=${NODE_ID}
 CONTROLLER_URL=${CONTROLLER_URL}
 INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN}
 CONTROLLER_ORIGIN_IP=${CONTROLLER_ORIGIN_IP}
-USERS_FILE=/data/users.json
-INBOUNDS_FILE=/data/inbounds.json
-HYSTERIA_TLS_DIR=/etc/guardex/tls
 RESYNC_INTERVAL=30s
-XRAY_CORE_VERSION=${XRAY_VERSION}
 AGENT_VERSION=git
 AGENT_REPO_DIR=${INSTALL_DIR}
 AGENT_UPDATE_REF=master
@@ -386,7 +288,6 @@ sync_existing_trusttunnel_certificate() {
 start_containers() {
     log "Starting containers with Docker Compose..."
     cd "$INSTALL_DIR"
-    docker compose pull xray 2>/dev/null || true
     docker compose up -d --build
     sleep 2
     docker compose ps
@@ -401,9 +302,6 @@ print_summary() {
     echo "╠══════════════════════════════════════════════════════════╣"
     printf "║  Server IP:       %-38s ║\n" "$ip"
     printf "║  Node Agent URL:  %-38s ║\n" "https://${AGENT_PUBLIC_HOST}:${AGENT_PORT}"
-    printf "║  Reality PBK:     %-38s ║\n" "$REALITY_PUBLIC_KEY"
-    printf "║  Reality SID:     %-38s ║\n" "$REALITY_SHORT_ID"
-    printf "║  Inbound Port:    %-38s ║\n" "$XRAY_PORT"
     echo "╠══════════════════════════════════════════════════════════╣"
     case "$REGISTRATION_STATUS" in
         ok)        echo "║  ✓ Запрос отправлен → Admin Panel → Servers              ║" ;;
@@ -429,13 +327,7 @@ register_node() {
 {
   "host": "${ip}",
   "node_url": "https://${AGENT_PUBLIC_HOST}:${AGENT_PORT}",
-  "node_secret": "${AGENT_SECRET}",
-  "reality_pbk": "${REALITY_PUBLIC_KEY}",
-  "reality_short_id": "${REALITY_SHORT_ID}",
-  "vless_port": ${XRAY_PORT},
-  "inbound_tag": "${INBOUND_TAG}",
-  "reality_sni": "www.google.com",
-  "reality_flow": "xtls-rprx-vision"
+  "node_secret": "${AGENT_SECRET}"
 }
 PAYLOAD
 )
@@ -470,10 +362,8 @@ main() {
 
     prompt_token
     install_docker
-    generate_reality_keys
     clone_repo
     install_certbot_hook
-    write_xray_config
     write_env
     install_management_firewall
     install_fail2ban

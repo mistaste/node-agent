@@ -353,3 +353,11 @@ func TestRunnerHonorsDefaultReconciliationInterval(t *testing.T) {
 		}
 	}
 }
+
+func TestCredentialReloadVersions(t *testing.T) {
+	for version, want := range map[string]bool{"1.1.0-guardex-live-credentials.1": true, "1.1.0-guardex-account-qos.1": true, "1.1.0": false, "unexpected": false} {
+		if got := supportsCredentialReload(version); got != want {
+			t.Errorf("%q: got %v", version, got)
+		}
+	}
+}

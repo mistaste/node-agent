@@ -1,4 +1,4 @@
-// Package userops serializes compound Xray-user and durable-store mutations.
+// Package userops serializes native endpoint membership mutations.
 // Individual stores and gRPC clients are thread-safe, but exact membership is a
 // transaction spanning both systems; one shared coordinator closes that gap.
 package userops

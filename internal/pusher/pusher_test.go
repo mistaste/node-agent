@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/config"
-	"github.com/guardex/node-agent/internal/store"
-	"github.com/guardex/node-agent/internal/xray"
+
+	"github.com/guardex/node-agent/internal/metrics"
 )
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -216,7 +216,7 @@ func TestPusherDoesNotStartWithPlainHTTPControllerCredentials(t *testing.T) {
 
 func TestTrafficPayloadIncludesFirstCumulativeSampleWithoutMakingItActive(t *testing.T) {
 	const provisioned = "53f47de3-9040-4c4a-818f-6a91b65eb612"
-	got := trafficPayload([]xray.UserTraffic{
+	got := trafficPayload([]metrics.UserTraffic{
 		{UUID: " " + provisioned + " ", Uplink: 120, Downlink: 34},
 		{UUID: "", Uplink: 1, Downlink: 2},
 		{UUID: "invalid-negative", Uplink: -1, Downlink: 2},
@@ -229,57 +229,19 @@ func TestTrafficPayloadIncludesFirstCumulativeSampleWithoutMakingItActive(t *tes
 	}
 }
 
-func TestTrafficPayloadIncludesOnlyDurablyProvisionedVLESSAndHysteriaUsers(t *testing.T) {
-	const (
-		vlessUUID    = "53f47de3-9040-4c4a-818f-6a91b65eb612"
-		hysteriaUUID = "f68fb5c5-3914-43a6-9034-a30e190fae10"
-		staleUUID    = "bb4131c0-316f-462b-a3ad-0dc344cbcb82"
-	)
-	users := store.New(t.TempDir() + "/users.json")
-	if err := users.Add(store.User{UUID: vlessUUID, InboundTag: "vless-in", Protocol: "vless"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := users.Add(store.User{UUID: strings.ToUpper(hysteriaUUID), InboundTag: "gx-hysteria", Protocol: "hysteria"}); err != nil {
-		t.Fatal(err)
-	}
+type fixtureInventory []string
 
-	got := trafficPayload([]xray.UserTraffic{
-		{UUID: vlessUUID, Uplink: 10, Downlink: 20},
-		{UUID: hysteriaUUID, Uplink: 30, Downlink: 40},
-		{UUID: staleUUID, Uplink: 50, Downlink: 60},
-	}, provisionedUUIDs(users))
-	if len(got) != 2 {
-		t.Fatalf("traffic payload = %+v, want only two durable users", got)
-	}
-	seen := map[string]bool{}
-	for _, item := range got {
-		seen[item.UUID] = true
-	}
-	if !seen[vlessUUID] || !seen[hysteriaUUID] || seen[staleUUID] {
-		t.Fatalf("filtered identities = %+v", seen)
-	}
-}
-
-func TestTrafficPayloadStopsSendingXrayCounterAfterDurableRemoval(t *testing.T) {
-	const uuid = "53f47de3-9040-4c4a-818f-6a91b65eb612"
-	users := store.New(t.TempDir() + "/users.json")
-	if err := users.Add(store.User{UUID: uuid, InboundTag: "gx-hysteria", Protocol: "hysteria"}); err != nil {
-		t.Fatal(err)
-	}
-	staleXrayCounter := []xray.UserTraffic{{UUID: uuid, Uplink: 100, Downlink: 200}}
-	if got := trafficPayload(staleXrayCounter, provisionedUUIDs(users)); len(got) != 1 {
-		t.Fatalf("provisioned traffic payload = %+v", got)
-	}
-	if err := users.Remove("gx-hysteria", uuid); err != nil {
-		t.Fatal(err)
-	}
-	if got := trafficPayload(staleXrayCounter, provisionedUUIDs(users)); len(got) != 0 {
-		t.Fatalf("removed user's stale Xray counter was sent: %+v", got)
+func (f fixtureInventory) UUIDs() []string { return f }
+func TestTrafficPayloadDropsRevokedNativeCounters(t *testing.T) {
+	users := fixtureInventory{"live"}
+	counters := []metrics.UserTraffic{{UUID: "live", Uplink: 5}, {UUID: "revoked", Downlink: 5}}
+	if got := trafficPayload(counters, provisionedUUIDs(users)); len(got) != 1 || got[0].UUID != "live" {
+		t.Fatalf("invalid native accounting: %+v", got)
 	}
 }
 
 func TestTrafficPayloadFailsClosedWithoutDurableInventory(t *testing.T) {
-	got := trafficPayload([]xray.UserTraffic{{
+	got := trafficPayload([]metrics.UserTraffic{{
 		UUID:     "53f47de3-9040-4c4a-818f-6a91b65eb612",
 		Uplink:   100,
 		Downlink: 200,
@@ -294,7 +256,7 @@ func TestMetricsPayloadSerializesTrafficCountersSeparately(t *testing.T) {
 		Sessions:    0,
 		ActiveUsers: []activeUserPayload{},
 		UserTraffic: trafficPayload(
-			[]xray.UserTraffic{{UUID: "short-session", Uplink: 7, Downlink: 9}},
+			[]metrics.UserTraffic{{UUID: "short-session", Uplink: 7, Downlink: 9}},
 			map[string]struct{}{"short-session": {}},
 		),
 	}

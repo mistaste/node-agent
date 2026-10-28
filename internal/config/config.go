@@ -10,12 +10,10 @@ import (
 )
 
 type Config struct {
-	XrayGRPCAddr           string
 	ListenAddr             string
 	TLSCertFile            string
 	TLSKeyFile             string
 	Secret                 string
-	DefaultInboundTag      string
 	MetricsInterval        time.Duration
 	MetricsOnly            bool
 	ControllerURL          string
@@ -25,7 +23,6 @@ type Config struct {
 	InboundsFile           string
 	ResyncInterval         time.Duration
 	Version                string
-	XrayCoreVersion        string
 	TrustTunnelEnabled     bool
 	TrustTunnelProcessMode string
 	TrustTunnelBinary      string
@@ -42,12 +39,10 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		XrayGRPCAddr:           getenv("XRAY_GRPC_ADDR", "127.0.0.1:10085"),
 		ListenAddr:             getenv("AGENT_LISTEN_ADDR", "0.0.0.0:8080"),
 		TLSCertFile:            getenv("AGENT_TLS_CERT_FILE", ""),
 		TLSKeyFile:             getenv("AGENT_TLS_KEY_FILE", ""),
 		Secret:                 getenv("AGENT_SECRET", "change-me-secret"),
-		DefaultInboundTag:      getenv("XRAY_INBOUND_TAG", "vless-in"),
 		MetricsInterval:        parseDuration(getenv("METRICS_INTERVAL", "15s")),
 		MetricsOnly:            parseBool(getenv("METRICS_ONLY", "false")),
 		ControllerURL:          canonicalControllerURL(getenv("CONTROLLER_URL", "")),
@@ -57,7 +52,6 @@ func Load() *Config {
 		InboundsFile:           getenv("INBOUNDS_FILE", "/data/inbounds.json"),
 		ResyncInterval:         parseDuration(getenv("RESYNC_INTERVAL", "30s")),
 		Version:                getenv("AGENT_VERSION", "git"),
-		XrayCoreVersion:        getenv("XRAY_CORE_VERSION", "unknown"),
 		TrustTunnelEnabled:     parseBool(getenv("TRUSTTUNNEL_ENABLED", "false")),
 		TrustTunnelProcessMode: getenv("TRUSTTUNNEL_PROCESS_MODE", "managed"),
 		TrustTunnelBinary:      getenv("TRUSTTUNNEL_BINARY", "/opt/trusttunnel/trusttunnel_endpoint"),
