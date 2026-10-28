@@ -1,5 +1,31 @@
 # Node host hardening
 
+## Opt-in receive ring for hosts reporting missed RX packets
+
+`systemd/guardex-rx-ring@.service` sets an explicitly selected interface's RX
+ring to 1024 descriptors. Before installing it, verify with `ethtool -g` that
+the driver supports that size and record the original value. Use only when
+`rx_missed_errors`/`rx_no_buffer_count` increase during a measured interval.
+Changing a live ring can briefly reset the NIC; prepare an automatic rollback
+and verify independent SSH and API health before cancelling that rollback.
+Enable the installed instance for reboot persistence after live verification.
+Rollback disables the instance and restores the recorded RX ring size.
+
+## Opt-in egress queue for a single-interface node
+
+`systemd/guardex-egress-queue@.service` uses `ops/guardex-egress-queue` (install as `/usr/local/sbin/guardex-egress-queue`)
+to replace simple FIFO/fq queues with `fq_codel`, which separates flows and
+controls persistent local queue delay. A multiqueue root is preserved and its
+standard leaf queues are updated individually; custom shapers are rejected.
+Install it in `/etc/systemd/system`, then enable the instance for the actual
+public interface, for example `guardex-egress-queue@net0.service`. Verify the
+interface and existing queue first; this is an explicit host operation and is
+not applied automatically to hosts with custom shaping or multiqueue setups.
+It does not raise CPU capacity or control buffering outside the host.
+
+To roll back a host that previously used `pfifo_fast`, disable the instance and
+run `tc qdisc replace dev net0 root pfifo_fast`, substituting its interface.
+
 `install.sh` installs these files before starting the node containers:
 
 - `firewall/guardex-agent-firewall.sh` and its systemd unit restrict TCP 8099

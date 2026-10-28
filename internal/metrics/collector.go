@@ -23,6 +23,7 @@ import (
 type Snapshot struct {
 	CollectedAt                  time.Time
 	CPUPercent                   float64
+	CPUStealPercent              float64
 	MemUsedMB                    uint64
 	MemTotalMB                   uint64
 	MemPercent                   float64
@@ -68,6 +69,7 @@ type Collector struct {
 	prevTraffic   map[string]int64
 	lastActive    map[string]time.Time
 	interfaceName string
+	previousCPU   *cpu.TimesStat
 }
 
 func NewCollector(xrayClient *xray.Client, interval time.Duration, interfaceName ...string) *Collector {
@@ -114,8 +116,8 @@ func (c *Collector) Run(ctx context.Context) {
 func (c *Collector) collect(ctx context.Context) {
 	snap := &Snapshot{CollectedAt: time.Now()}
 
-	if percents, err := cpu.Percent(time.Second, false); err == nil && len(percents) > 0 {
-		snap.CPUPercent = percents[0]
+	if busy, steal, err := c.sampleCPU(ctx); err == nil {
+		snap.CPUPercent, snap.CPUStealPercent = busy, steal
 	}
 
 	if vm, err := mem.VirtualMemory(); err == nil {
@@ -195,8 +197,9 @@ func (c *Collector) collect(ctx context.Context) {
 	c.latest = snap
 	c.mu.Unlock()
 
-	log.Printf("[metrics] cpu=%.1f%% mem=%dMB/%dMB net_rx=%dMB users=%d active=%d",
+	log.Printf("[metrics] cpu=%.1f%% steal=%.1f%% mem=%dMB/%dMB net_rx=%dMB users=%d active=%d",
 		snap.CPUPercent,
+		snap.CPUStealPercent,
 		snap.MemUsedMB, snap.MemTotalMB,
 		snap.NetBytesRecv/1024/1024,
 		len(snap.UserTraffic),

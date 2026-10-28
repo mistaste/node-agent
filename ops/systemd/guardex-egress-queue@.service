@@ -1,0 +1,12 @@
+[Unit]
+Description=Guardex fair egress queue on %I
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/guardex-egress-queue %I
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
