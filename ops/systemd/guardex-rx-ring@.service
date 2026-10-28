@@ -1,0 +1,12 @@
+[Unit]
+Description=Guardex receive ring for %I (opt-in e1000 host tuning)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ethtool -G %I rx 1024
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

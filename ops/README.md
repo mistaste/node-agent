@@ -1,5 +1,16 @@
 # Node host hardening
 
+## Opt-in receive ring for hosts reporting missed RX packets
+
+`systemd/guardex-rx-ring@.service` sets an explicitly selected interface's RX
+ring to 1024 descriptors. Before installing it, verify with `ethtool -g` that
+the driver supports that size and record the original value. Use only when
+`rx_missed_errors`/`rx_no_buffer_count` increase during a measured interval.
+Changing a live ring can briefly reset the NIC; prepare an automatic rollback
+and verify independent SSH and API health before cancelling that rollback.
+Enable the installed instance for reboot persistence after live verification.
+Rollback disables the instance and restores the recorded RX ring size.
+
 ## Opt-in egress queue for a single-interface node
 
 `systemd/guardex-egress-queue@.service` replaces a simple FIFO root queue with
