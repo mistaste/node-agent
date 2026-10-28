@@ -1,85 +1,80 @@
 # Node capacity and account fairness
 
-## Current deployment, 28 October 2026
+## Deployed scope, 29 October 2026
 
-All eight reachable active nodes use persistent `fq_codel` on public egress.
-Multiqueue NICs retain `mq`, with `fq_codel` on each transmit queue. The two
-disabled nodes (Amsterdam and Istanbul) are unreachable by SSH and unchanged.
-This controls local queue delay and separates flows. It does not implement
-account-level speed limits, a CPU budget, or repair packet loss elsewhere.
+Account shaping is enabled **only on Wroclaw, Poland (212.127.91.131)**.
+Other reachable nodes retain their existing fq_codel flow queues and no account
+broker. Amsterdam and Istanbul are disabled and inaccessible by SSH.
 
-## Recommended rate policy
+The pilot shares one payload budget between TrustTunnel and NaiveProxy after
+authentication. Profile UUIDs map to HMAC account identities; multiple profiles,
+devices, streams, protocols and both directions consume the same account share.
+Idle accounts consume no share. Low-demand accounts receive what they need;
+other accounts borrow unused capacity. Client IP is never the account identity.
 
-Use a shared, configurable node budget for the sum of logical upload and
-download traffic, then divide that budget with a work-conserving account
-scheduler. Count each forwarded byte once, not once on both NIC RX and TX.
+## Budget and load response
 
-An account with no queued data consumes no share. An account with low demand
-gets what it needs; other accounts borrow the surplus. Multiple devices,
-transport connections and streams of the same account share one account
-bucket on that node. A speed test cannot gain extra shares by opening streams.
+The initial and maximum aggregate upload-plus-download budget is **96 Mbps**,
+with a **32 Mbps** floor. This is payload bandwidth counted once, rather than
+NIC RX plus TX. Two demanding accounts normally receive about half each.
 
-For example, with a 450 Mbps node budget:
+The governor samples host CPU every five seconds. Three samples at or above
+80% reduce the budget by 15%; six samples at or below 60% increase it by 5%, up
+to 96 Mbps. The earlier 200 Mbps experiment failed the stream-count fairness
+criterion, so it is not enabled. Higher provisional node estimates are not
+validated account-scheduling limits.
 
-| Demand | Allocation |
-| --- | --- |
-| One downloading account, nine idle accounts | Up to 450 Mbps to the download |
-| Two accounts both demanding over 225 Mbps | About 225 Mbps each |
-| One needs 10 Mbps, one needs 500 Mbps | 10 Mbps and about 440 Mbps |
+The broker writes root-private counters to
+`/var/lib/guardex-account-qos/stats.json`, including budget, reason, pending
+requests and unknown identities. The mapping exporter refreshes every 15 seconds;
+the broker reloads the last valid mapping without a database lookup per packet.
+The current pilot has no public per-account metrics endpoint or admin UI.
 
-Use equal account weights initially. Keep rate policy separate from monthly
-traffic quotas and the connected-device count shown by native presence.
+## Failure behavior and rollback
 
-## Budget calibration and adaptation
+Native transports continue forwarding when the private broker is unavailable.
+They report ACCOUNT_QOS_UNAVAILABLE / ACCOUNT_QOS_RECOVERED. This fail-open
+behavior disables shaping while preserving the VPN data plane.
 
-The short tests indicate provisional pilot budgets of 450 Mbps for Helsinki,
-600 Mbps for Wroclaw and 800 Mbps for Frankfurt. These are starting hypotheses,
-not validated sustained capacity or currently enforced limits. Calibrate each
-node with both traffic directions and supported transports before enabling.
+Immediate shaping disable on Poland:
 
-Target approximately 65–75% sustained CPU, retaining steal time as unavailable
-capacity. Sample over the whole interval. Reduce the budget by 10% after two
-successive five-second windows above 80% CPU. Increase by at most 5% after
-30 seconds below 60%, up to the calibrated ceiling. Log adjustments and expose
-the current budget and reason in the admin panel. Do not drive this controller
-from a single admin TCP-connect latency sample: SYN retransmission and loss on
-the backend-to-node path have independently produced one-second outliers.
+```sh
+systemctl stop guardex-account-qos
+```
 
-The first pilot should use explicit bounds and a quick disable switch. Reject
-additional automatic placements on a persistently saturated node; preserve
-existing connections while reducing bulk demand rather than disconnecting them.
+Full pilot rollback restores the saved native transport images and persistent
+compose overrides, with no retired engine recreation:
 
-## Required enforcement boundary
+```sh
+python3 /var/lib/guardex-remediation/account-qos-20261028/rollback.py
+```
 
-Enforce after authentication inside each transport engine, using an internal
-account ID supplied by the existing profile registry. Do not query the database
-per packet. Reload the profile-to-account map when provisioning/revocation
-changes. A profile UUID or device is not an account: combine all its profiles.
+RuntimeDirectoryPreserve keeps the mounted directory stable across broker
+restarts. ExecStartPre removes a stale socket after an unclean exit. The local
+endpoint group must resolve to gid 65532; activation creates it when absent.
 
-Do not use client IP as the account identity. The blind relay is shared by
-multiple accounts, and an exit node sees the backbone peer rather than the
-original user. CAKE/host isolation or ordinary flow queues cannot recover an
-authenticated account hidden inside an encrypted tunnel.
+## Acceptance evidence
 
-The running TrustTunnel 1.1.0 build exposes per-user traffic metrics and
-connection limits, but has no existing bandwidth limiter to enable. NaiveProxy
-must participate in the same node/account budget; limiting only
-one engine would allow another transport to consume the remaining CPU.
+Native-only isolated tests used the production 0.35 CPU limit on each endpoint
+container and 20-second transfer windows:
 
-Implement bounded per-account queues with backpressure and small bursts.
-Use a common scheduler/token-bucket service across transports, with graceful
-fallback if policy delivery fails. Verify TLS and UDP behavior under throttling.
+| Workload | Account A | Account B |
+| --- | --- | --- |
+| One account, one stream | 92.61 Mbps | idle |
+| A has 16 streams, B has one | 47.01 Mbps | 46.48 Mbps |
+| A spans two profiles and both native protocols | 47.46 Mbps | 46.35 Mbps |
 
-## Acceptance checks for the limiter
+A bulk downloader reached 93.50 Mbps while a separate low-demand account
+completed 35/35 SHA-verified short requests, p95 0.367 seconds, max 0.414 seconds.
+Unknown identity requests were zero. Unit tests cover scheduler fairness,
+idle borrowing, mapping reload, cancellation, directions and CPU hysteresis.
 
-- One account using 1 versus 32 connections gets the same total share.
-- Two accounts behind the same relay remain separately scheduled.
-- Two devices of one account share one budget.
-- Idle VPN sessions do not reduce download speed.
-- A low-demand account keeps responsive small requests during a bulk download.
-- Upload plus download together respect the CPU-safe aggregate budget.
-- Protocol switching and reconnects do not create additional shares.
-- Budget changes avoid oscillation and preserve active sessions.
-- The admin panel shows configured/current budgets and measured per-account rates.
+Stopping the isolated broker during 20 MiB native transfers preserved both
+SHA-256 hashes. Public-port authenticated TrustTunnel and Naive probes on Poland
+passed with the expected exit IP. Graceful restart and SIGKILL of the production
+broker preserved both checked transfers; the latter restarted automatically
+after two seconds and subsequent traffic was accounted again.
 
-This scheduler is a proposed implementation, not a deployed per-user limit.
+These checks establish this bounded pilot, not a fleet capacity guarantee.
+UDP throughput, sustained real-user mixed workloads and a higher budget require
+separate acceptance before any wider rollout.
