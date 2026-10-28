@@ -5,7 +5,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/tc qdisc replace dev %I root fq_codel
+ExecStart=/usr/local/sbin/guardex-egress-queue %I
 RemainAfterExit=yes
 
 [Install]

@@ -13,8 +13,10 @@ Rollback disables the instance and restores the recorded RX ring size.
 
 ## Opt-in egress queue for a single-interface node
 
-`systemd/guardex-egress-queue@.service` replaces a simple FIFO root queue with
-`fq_codel`, which separates flows and controls persistent local queue delay.
+`systemd/guardex-egress-queue@.service` uses `ops/guardex-egress-queue` (install as `/usr/local/sbin/guardex-egress-queue`)
+to replace simple FIFO/fq queues with `fq_codel`, which separates flows and
+controls persistent local queue delay. A multiqueue root is preserved and its
+standard leaf queues are updated individually; custom shapers are rejected.
 Install it in `/etc/systemd/system`, then enable the instance for the actual
 public interface, for example `guardex-egress-queue@net0.service`. Verify the
 interface and existing queue first; this is an explicit host operation and is
