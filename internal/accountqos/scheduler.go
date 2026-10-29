@@ -11,6 +11,8 @@ import (
 
 const MaxGrant = 64 * 1024
 
+const accountIdleGrace = 8 * time.Millisecond
+
 type request struct {
 	bytes    int
 	finish   chan struct{}
@@ -18,11 +20,13 @@ type request struct {
 	enqueued time.Time
 }
 type account struct {
-	virtual float64
-	queue   []*request
-	granted uint64
-	last    time.Time
-	order   uint64
+	virtual    float64
+	queue      []*request
+	granted    uint64
+	last       time.Time
+	lastGrant  time.Time
+	burstBytes int
+	order      uint64
 }
 type AccountSnapshot struct {
 	Pending      int     `json:"pending"`
@@ -116,11 +120,15 @@ func (s *Scheduler) next(now time.Time) (time.Duration, bool) {
 	}
 	credit := s.rate * 0.25 / math.Max(1, float64(demanding))
 	var chosen *account
+	var anticipating *account
 	for key, a := range s.accounts {
 		for len(a.queue) > 0 && a.queue[0].ctx.Err() != nil {
 			a.queue = a.queue[1:]
 		}
 		if len(a.queue) == 0 {
+			if a.burstBytes >= MaxGrant && now.Sub(a.lastGrant) < accountIdleGrace && (anticipating == nil || a.virtual < anticipating.virtual) {
+				anticipating = a
+			}
 			if now.Sub(a.last) > 10*time.Minute {
 				delete(s.accounts, key)
 			}
@@ -134,10 +142,21 @@ func (s *Scheduler) next(now time.Time) (time.Duration, bool) {
 	if chosen == nil {
 		return time.Hour, false
 	}
+	// A continuously reading single stream briefly leaves no queued grant
+	// while forwarding the previous chunk. Preserve its turn across that gap;
+	// otherwise many streams can consume every token before it re-enters.
+	if anticipating != nil && chosen.virtual > anticipating.virtual {
+		return accountIdleGrace - now.Sub(anticipating.lastGrant), false
+	}
 	r := chosen.queue[0]
 	if s.tokens < float64(r.bytes) {
 		return time.Duration((float64(r.bytes) - s.tokens) / s.rate * float64(time.Second)), false
 	}
+	if now.Sub(chosen.lastGrant) > 100*time.Millisecond {
+		chosen.burstBytes = 0
+	}
+	chosen.burstBytes = min(MaxGrant, chosen.burstBytes+r.bytes)
+	chosen.lastGrant = now
 	chosen.virtual += float64(r.bytes)
 	chosen.last = now
 	chosen.queue = chosen.queue[1:]

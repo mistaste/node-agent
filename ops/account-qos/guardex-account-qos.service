@@ -9,7 +9,8 @@ RuntimeDirectory=guardex-account-qos
 RuntimeDirectoryMode=0710
 RuntimeDirectoryPreserve=yes
 ExecStartPre=/usr/bin/rm -f /run/guardex-account-qos/broker.sock
-ExecStart=/usr/local/sbin/guardex-account-qos --socket-gid=65532 --initial-mbps=96 --max-mbps=96 --min-mbps=32
+ExecStart=/usr/local/sbin/guardex-account-qos --socket-gid=65532 --initial-mbps=256 --max-mbps=256 --min-mbps=32
+ExecStopPost=/usr/bin/rm -f /run/guardex-account-qos/broker.sock
 Restart=on-failure
 RestartSec=2
 UMask=0077

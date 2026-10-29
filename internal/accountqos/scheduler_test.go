@@ -117,3 +117,47 @@ func TestSingleStreamRetainsFairnessAcrossGrantRoundTrips(t *testing.T) {
 		t.Fatalf("stream count advantage: A=%d B=%d", a.granted, b.granted)
 	}
 }
+
+func TestBulkAccountRetainsTurnAcrossBriefReadGap(t *testing.T) {
+	now := time.Now()
+	ctx := context.Background()
+	s := New(200)
+	s.last = now
+	s.tokens = MaxGrant
+	enqueue := func(a *account) {
+		a.queue = append(a.queue, &request{bytes: 16384, ctx: ctx, finish: make(chan struct{})})
+	}
+	a := &account{virtual: MaxGrant, order: 1, last: now, lastGrant: now, burstBytes: MaxGrant}
+	b := &account{virtual: MaxGrant, order: 2, last: now, lastGrant: now, burstBytes: MaxGrant}
+	s.accounts["a"] = a
+	s.accounts["b"] = b
+	for i := 0; i < 4; i++ {
+		enqueue(a)
+	}
+	if _, ok := s.next(now); !ok {
+		t.Fatal("initial turn absent")
+	}
+	if delay, ok := s.next(now); ok || delay <= 0 || delay > accountIdleGrace {
+		t.Fatal("many streams consumed the absent single stream's turn")
+	}
+	enqueue(b)
+	now = now.Add(500 * time.Microsecond)
+	if _, ok := s.next(now); !ok || b.granted != 16384 {
+		t.Fatal("returning single stream did not retain its turn")
+	}
+	now = now.Add(accountIdleGrace + time.Millisecond)
+	if _, ok := s.next(now); !ok {
+		t.Fatal("idle account kept reserving bandwidth after the bounded gap")
+	}
+}
+func TestSmallRequestDoesNotReserveBulkShare(t *testing.T) {
+	now := time.Now()
+	s := New(200)
+	s.last = now
+	s.tokens = MaxGrant
+	s.accounts["small"] = &account{virtual: 0, last: now, lastGrant: now, burstBytes: 4096}
+	s.accounts["bulk"] = &account{virtual: MaxGrant, queue: []*request{{bytes: 16384, ctx: context.Background(), finish: make(chan struct{})}}}
+	if _, ok := s.next(now); !ok {
+		t.Fatal("a short low-demand request reserved a bulk share")
+	}
+}
