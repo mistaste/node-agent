@@ -9,7 +9,7 @@ for service,record in state.items():
 env=root/'.env';raw=env.read_text();line=re.search(r'^COMPOSE_FILE=(.*)$',raw,re.M);assert line
 files=[str(root/x)if not pathlib.Path(x).is_absolute()else x for x in line.group(1).strip().strip('"').strip("'").split(':')];(save/'compose-files.json').write_text(json.dumps(files));shutil.copy2(env,save/'env.before');(save/'env.before').chmod(0o600)
 overlay=root/'docker-compose.account-qos.yml';assert not overlay.exists()
-overlay.write_text('services:\n'+''.join('  '+service+':\n'+'    image: guardex-poland-qos-'+service+':pilot1\n    environment:\n      GUARDEX_ACCOUNT_QOS_SOCKET: /run/guardex-account-qos/broker.sock\n    volumes:\n      - /run/guardex-account-qos:/run/guardex-account-qos\n'for service in state))
+overlay.write_text('services:\n'+''.join('  '+service+':\n'+'    image: guardex-poland-qos-'+service+':pilot1\n    cpus: 0.75\n    environment:\n      GUARDEX_ACCOUNT_QOS_SOCKET: /run/guardex-account-qos/broker.sock\n    volumes:\n      - /run/guardex-account-qos:/run/guardex-account-qos\n'for service in state))
 cmd=['docker','compose','--project-directory',str(root),'-p','guardex-node']
 for f in files+[str(overlay)]:cmd+=['-f',f]
 subprocess.run(cmd+['config','--quiet'],check=True)
