@@ -33,17 +33,25 @@ run `tc qdisc replace dev net0 root pfifo_fast`, substituting its interface.
 - `fail2ban/guardex-sshd.local` enables rate limiting for SSH authentication;
 - `ssh/00-guardex-hardening.conf` disables password-based SSH authentication.
 
-Set `CONTROLLER_ORIGIN_IP` when installing against a controller other than
-`193.247.73.15`. This must be the outbound source address of the API backend,
-not the public reverse proxy address (`80.241.216.139`). Allowing only the proxy
-blocks profile reconciliation even while node heartbeats remain healthy.
-The generated `/etc/guardex/node-firewall.conf` is the durable
-source of the controller address and agent port. After changing it, apply the
-new rules with:
+Set `CONTROLLER_HOST` to the DNS-only name of the API backend's outbound
+controller address (default `api.guardex-vpn.com`). Do not use a CDN/proxy hostname:
+the allowlist must match the backend that initiates node management connections.
+No server address is pinned in Compose `/etc/hosts` or the installer.
+
+`/etc/guardex/node-firewall.conf` stores `CONTROLLER_HOST` and `AGENT_PORT`.
+The service resolves IPv4 addresses through the system resolver and atomically
+replaces only its own rules. A timer refreshes DNS every five minutes. DNS failure
+retains the last working rules; a missing chain gets deny-only rules. The agent
+port remains blocked over IPv6. Refresh after changing the hostname with:
 
 ```sh
-systemctl reload guardex-agent-firewall
+systemctl start guardex-agent-firewall.service
+systemctl status guardex-agent-firewall.timer
 ```
+
+Migrate old configurations by replacing `CONTROLLER_ORIGIN_IP` with
+`CONTROLLER_HOST`; numeric host settings are rejected. Install the updated service
+and timer together. No Docker or VPN restart is required for an ACL refresh.
 
 SSH key-only mode is installed only when `/root/.ssh/authorized_keys` is
 non-empty and the host's main `sshd_config` includes its drop-in directory. The
