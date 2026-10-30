@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Guardex controller firewall addresses from DNS
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=5min
+RandomizedDelaySec=20s
+Unit=guardex-agent-firewall.service
+
+[Install]
+WantedBy=timers.target

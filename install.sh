@@ -5,7 +5,8 @@ set -Eeo pipefail
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
 
 AGENT_PORT="${AGENT_PORT:-8099}"
-CONTROLLER_ORIGIN_IP="${CONTROLLER_ORIGIN_IP:-193.247.73.15}"
+CONTROLLER_HOST="${CONTROLLER_HOST:-api.guardex-vpn.com}"
+[ -z "${CONTROLLER_ORIGIN_IP:-}" ] || { echo "Use CONTROLLER_HOST (DNS name), not CONTROLLER_ORIGIN_IP" >&2; exit 1; }
 
 NODE_ID="${NODE_ID:-}"
 CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com}"
@@ -103,7 +104,7 @@ METRICS_INTERVAL=15s
 NODE_ID=${NODE_ID}
 CONTROLLER_URL=${CONTROLLER_URL}
 INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN}
-CONTROLLER_ORIGIN_IP=${CONTROLLER_ORIGIN_IP}
+CONTROLLER_HOST=${CONTROLLER_HOST}
 RESYNC_INTERVAL=30s
 AGENT_VERSION=git
 AGENT_REPO_DIR=${INSTALL_DIR}
@@ -116,24 +117,29 @@ EOF
 install_management_firewall() {
     command -v systemctl >/dev/null 2>&1 || die "systemd is required for the persistent management firewall"
 
-    log "Restricting node-agent TCP ${AGENT_PORT} to ${CONTROLLER_ORIGIN_IP}..."
+    log "Restricting node-agent TCP ${AGENT_PORT} to DNS host ${CONTROLLER_HOST}..."
     install -D -m 0755 \
         "$INSTALL_DIR/ops/firewall/guardex-agent-firewall.sh" \
         /usr/local/sbin/guardex-agent-firewall
     install -D -m 0644 \
         "$INSTALL_DIR/ops/systemd/guardex-agent-firewall.service" \
         /etc/systemd/system/guardex-agent-firewall.service
+    install -D -m 0644 \
+        "$INSTALL_DIR/ops/systemd/guardex-agent-firewall.timer" \
+        /etc/systemd/system/guardex-agent-firewall.timer
     install -d -m 0755 /etc/guardex
     {
-        printf 'CONTROLLER_ORIGIN_IP=%s\n' "$CONTROLLER_ORIGIN_IP"
+        printf 'CONTROLLER_HOST=%s\n' "$CONTROLLER_HOST"
         printf 'AGENT_PORT=%s\n' "$AGENT_PORT"
     } > /etc/guardex/node-firewall.conf
     chmod 0644 /etc/guardex/node-firewall.conf
 
     systemctl daemon-reload
-    systemctl enable --now guardex-agent-firewall.service
-    systemctl is-active --quiet guardex-agent-firewall.service \
-        || die "Management firewall service did not become active"
+    systemctl enable guardex-agent-firewall.service
+    systemctl restart guardex-agent-firewall.service
+    [ "$(systemctl show -p Result --value guardex-agent-firewall.service)" = success ] \
+        || die "Management firewall DNS resolution/rules failed"
+    systemctl enable --now guardex-agent-firewall.timer
 }
 
 # ── rate-limit SSH authentication attempts ───────────────────────────────────

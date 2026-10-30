@@ -5,11 +5,7 @@ services:
     build: .
     restart: unless-stopped
     network_mode: host
-    # Controller machine traffic must not traverse Cloudflare's browser/WAF
-    # challenge. Keep the public hostname for SNI and certificate validation,
-    # but resolve it directly to the Guardex API origin inside this container.
-    extra_hosts:
-      - "api.guardex-vpn.com:${CONTROLLER_ORIGIN_IP:-193.247.73.15}"
+    # Resolve the controller through DNS; never pin its address in /etc/hosts.
     env_file: .env
     environment:
       TRUSTTUNNEL_ENABLED: "${TRUSTTUNNEL_ENABLED:-true}"
@@ -127,8 +123,6 @@ services:
     restart: unless-stopped
     network_mode: host
     command: topology-agent
-    extra_hosts:
-      - "api.guardex-vpn.com:${CONTROLLER_ORIGIN_IP:-193.247.73.15}"
     env_file: .env
     environment:
       TOPOLOGY_ROOT: "/data/topology"
