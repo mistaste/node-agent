@@ -27,6 +27,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check Caddy timeout compatibility
+        run: |
+          python3 ops/check_caddy_idle_policy.py
+          python3 -m unittest discover -s ops -p test_caddy_idle_policy.py
+          python3 -m unittest discover -s ops -p 'test_*transport*.py'
       - name: Test
         run: go test -race ./...
       - name: Build binaries
@@ -55,6 +60,29 @@ jobs:
           tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
           cache-from: type=gha,scope=node-agent-release
           cache-to: type=gha,mode=max,scope=node-agent-release
+      - name: Verify built Caddy survives idle CONNECT streams
+        id: idle_check
+        timeout-minutes: 8
+        env:
+          CHECK_IMAGE: ghcr.io/${{ github.repository }}@${{ steps.image.outputs.digest }}
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -trimpath -o release/naive-idle-check ./cmd/naive-idle-check
+          sha256sum release/naive-idle-check > release/naive-idle-check.sha256
+          docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --memory 128m --pids-limit 64 --read-only --user 65532:65532 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=16m \
+            -v "$PWD/release/naive-idle-check:/guardex-idle-check:ro" \
+            --entrypoint /guardex-idle-check "$CHECK_IMAGE" \
+            -caddy /usr/bin/caddy -idle 90s,180s,300s | tee release/naive-idle-results.jsonl
+      - name: Retain idle acceptance evidence on success or failure
+        if: ${{ always() && steps.idle_check.outcome != 'skipped' && steps.idle_check.outcome != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: naive-idle-${{ github.sha }}
+          path: |
+            release/naive-idle-results.jsonl
+            release/naive-idle-check.sha256
+          if-no-files-found: warn
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       - name: Keyless-sign immutable image
         run: cosign sign --yes ghcr.io/${{ github.repository }}@${{ steps.image.outputs.digest }}
