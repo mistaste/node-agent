@@ -20,8 +20,8 @@ func TestProbePhasesAndNoPayload(t *testing.T) {
 	roots := x509.NewCertPool()
 	roots.AddCert(server.Certificate())
 	events, err := probe(context.Background(), server.URL, roots)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("HTTP503 must fail the probe")
 	}
 	seen := map[string]bool{}
 	for _, e := range events {

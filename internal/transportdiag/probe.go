@@ -34,7 +34,7 @@ func probe(ctx context.Context, raw string, roots *x509.CertPool) ([]Event, erro
 	started := time.Now()
 	var mu sync.Mutex
 	events := []Event{}
-	phase := "dns"
+	phase := "request"
 	add := func(p, o string, status int) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -77,7 +77,7 @@ func probe(ctx context.Context, raw string, roots *x509.CertPool) ([]Event, erro
 	}
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), "GET", raw, nil)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid HTTP probe request")
 	}
 	tr := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 8 * time.Second}
 	defer tr.CloseIdleConnections()
@@ -106,6 +106,7 @@ func probe(ctx context.Context, raw string, roots *x509.CertPool) ([]Event, erro
 		outcome := "ok"
 		if resp.StatusCode >= 500 {
 			outcome = "server_error"
+			err = errors.New("HTTP server error")
 		} else if resp.StatusCode >= 400 {
 			outcome = "http_rejection"
 		}

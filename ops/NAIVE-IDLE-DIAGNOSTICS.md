@@ -109,5 +109,8 @@ in an isolated network-none container: duplex and quiet TLS streams at 90,
 `naive-idle-baseline-20261101.json`. Full Go race suite, the negative idle-reset
 fixture, go vet for new packages and seven Python tests passed. The direct API
 health probe completed DNS/TCP/TLS/HTTP with HTTP200. Temporary test container
-and remote test binary were removed. Changes remain in the isolated local
-worktree; no signed release, registry publication or rollout was triggered.
+and remote test binary were removed. The baseline was obtained in an isolated local worktree; no signed runtime
+release, registry publication or rollout was triggered by that baseline. The
+nonpublishing Naive idle CI workflow now tests PRs and master changes, builds
+the pinned Caddy stage, runs all seven scenarios and publishes downloadable
+probe binaries and results as CI artifacts.
