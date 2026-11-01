@@ -1,0 +1,84 @@
+{
+  "date": "2026-11-01",
+  "scope": "read-only production version inventory; isolated Caddy HTTP/2 CONNECT acceptance; local tooling changes",
+  "inventory": {
+    "DE-FRA-FREE-1": "v2.11.4",
+    "FI-HEL-PREM-1": "v2.11.4",
+    "ID-JAK-PREM-1": "v2.11.4",
+    "NL-DRO-FREE-1": "v2.11.4",
+    "NL-EYG-EXIT-1": "v2.11.4",
+    "PL-WRO-PREM-1": "v2.11.4",
+    "RU-MOW-RELAY-1": "v2.11.4",
+    "US-WIL-PREM-1": "v2.11.4"
+  },
+  "tested_runtime_image": "guardex-node-native:6089f86",
+  "isolation": {
+    "network": "none",
+    "capabilities": "none",
+    "root_filesystem": "read_only",
+    "production_containers_changed": false
+  },
+  "results": [
+    {
+      "scenario": "cancel_idle",
+      "idle_seconds": 1,
+      "outcome": "pass",
+      "stage": "caller_canceled",
+      "elapsed_ms": 12
+    },
+    {
+      "scenario": "duplex_after_idle",
+      "idle_seconds": 90,
+      "outcome": "pass",
+      "stage": "resume_bidirectional",
+      "elapsed_ms": 90083
+    },
+    {
+      "scenario": "quiet_tls_stream",
+      "idle_seconds": 90,
+      "outcome": "pass",
+      "stage": "quiet_tls_stream_resume",
+      "elapsed_ms": 90083
+    },
+    {
+      "scenario": "duplex_after_idle",
+      "idle_seconds": 180,
+      "outcome": "pass",
+      "stage": "resume_bidirectional",
+      "elapsed_ms": 180095
+    },
+    {
+      "scenario": "quiet_tls_stream",
+      "idle_seconds": 180,
+      "outcome": "pass",
+      "stage": "quiet_tls_stream_resume",
+      "elapsed_ms": 180095
+    },
+    {
+      "scenario": "duplex_after_idle",
+      "idle_seconds": 300,
+      "outcome": "pass",
+      "stage": "resume_bidirectional",
+      "elapsed_ms": 300110
+    },
+    {
+      "scenario": "quiet_tls_stream",
+      "idle_seconds": 300,
+      "outcome": "pass",
+      "stage": "quiet_tls_stream_resume",
+      "elapsed_ms": 300110
+    }
+  ],
+  "validation": {
+    "go_test_race_all": "pass",
+    "go_vet_new_packages": "pass",
+    "python_policy_capture_summary_tests": 7,
+    "negative_idle_disconnect_test": "pass",
+    "direct_api_health_probe": "HTTP200; dns/tcp/tls/http separated"
+  },
+  "limitations": [
+    "No full Naive padding/client/mobile handover certification",
+    "No live customer traffic capture",
+    "Release workflow change remains local; no publishing or rollout triggered"
+  ]
+}
