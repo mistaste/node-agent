@@ -1,0 +1,408 @@
+diff --git a/lib/src/http3_codec.rs b/lib/src/http3_codec.rs
+index 3c802f0..ab62aed 100644
+--- a/lib/src/http3_codec.rs
++++ b/lib/src/http3_codec.rs
+@@ -22,7 +22,7 @@ pub(crate) struct Http3Codec {
+ }
+ 
+ enum StreamMessage {
+-    WaitingWritable(/* stream ID */ u64),
++    WaitingWritable(/* stream ID */ u64, /* minimum capacity */ usize),
+     /// stream ID, shutdown direction (`None` means both directions)
+     Shutdown(u64, Option<quiche::Shutdown>),
+ }
+@@ -34,6 +34,7 @@ struct Stream {
+     writable_event_tx: mpsc::Sender<()>,
+     read_shutdown: bool,
+     write_shutdown: bool,
++    minimum_writable_capacity: usize,
+ }
+ 
+ struct DetachedStream {
+@@ -85,8 +86,14 @@ impl Http3Codec {
+ 
+     fn on_stream_message(&mut self, message: StreamMessage) -> io::Result<()> {
+         match message {
+-            StreamMessage::WaitingWritable(stream_id) => {
+-                self.socket.notify_stream_waiting_writable(stream_id);
++            StreamMessage::WaitingWritable(stream_id, minimum_capacity) => {
++                let stream = self
++                    .streams
++                    .get_mut(&stream_id)
++                    .ok_or_else(|| io::Error::from(ErrorKind::NotFound))?;
++                stream.minimum_writable_capacity = minimum_capacity;
++                self.socket
++                    .notify_stream_waiting_writable(stream_id, minimum_capacity);
+                 Ok(())
+             }
+             StreamMessage::Shutdown(stream_id, direction) => {
+@@ -172,6 +179,7 @@ impl Http3Codec {
+                 writable_event_tx: writable_tx,
+                 read_shutdown: false,
+                 write_shutdown: false,
++                minimum_writable_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
+             },
+         );
+ 
+@@ -222,8 +230,11 @@ impl Http3Codec {
+                 .and_then(|s| Ok((self.socket.stream_capacity(stream_id)?, s)))
+             {
+                 // Guard against capacity race between listen() and notification delivery.
+-                Ok((cap, _)) if cap < net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY => {
+-                    self.socket.notify_stream_waiting_writable(stream_id);
++                Ok((cap, stream)) if cap < stream.minimum_writable_capacity => {
++                    self.socket.notify_stream_waiting_writable(
++                        stream_id,
++                        stream.minimum_writable_capacity,
++                    );
+                     Ok(())
+                 }
+                 Ok((_, stream)) => {
+@@ -316,7 +327,7 @@ impl HttpCodec for Http3Codec {
+ impl StreamMessage {
+     fn stream_id(&self) -> u64 {
+         match self {
+-            StreamMessage::WaitingWritable(stream_id) => *stream_id,
++            StreamMessage::WaitingWritable(stream_id, _) => *stream_id,
+             StreamMessage::Shutdown(stream_id, _) => *stream_id,
+         }
+     }
+@@ -434,7 +445,10 @@ impl StreamSink {
+                 Ok(n) if n > self.data_frame_overhead => return Ok(()),
+                 Ok(_) => {
+                     self.codec_tx
+-                        .send(StreamMessage::WaitingWritable(self.stream_id))
++                        .send(StreamMessage::WaitingWritable(
++                            self.stream_id,
++                            self.data_frame_overhead + 1,
++                        ))
+                         .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
+                     match self.writable_event_rx.recv().await {
+                         None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
+@@ -528,7 +542,10 @@ impl pipe::Sink for StreamSink {
+     async fn flush(&mut self) -> io::Result<()> {
+         while self.pending_response.is_some() {
+             self.codec_tx
+-                .send(StreamMessage::WaitingWritable(self.stream_id))
++                .send(StreamMessage::WaitingWritable(
++                    self.stream_id,
++                    net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++                ))
+                 .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
+             match self.writable_event_rx.recv().await {
+                 None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
+@@ -567,3 +584,60 @@ impl Drop for StreamSink {
+         }
+     }
+ }
++
++#[cfg(test)]
++pub(crate) mod tests {
++    use super::*;
++
++    pub(crate) async fn assert_body_wait_capacity(socket: Arc<QuicSocket>) -> Arc<QuicSocket> {
++        let socket = Arc::try_unwrap(socket).unwrap_or_else(|_| panic!("fixture socket is shared"));
++        let parent = log_utils::IdChain::from(log_utils::IdItem::new("fixture={}", 1));
++        let mut codec = Http3Codec::new(socket, parent.clone());
++        let (read_tx, _read_rx) = mpsc::channel(1);
++        let (write_tx, write_rx) = mpsc::channel(1);
++        codec.streams.insert(
++            0,
++            Stream {
++                readable_event_tx: read_tx,
++                writable_event_tx: write_tx,
++                read_shutdown: false,
++                write_shutdown: false,
++                minimum_writable_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++            },
++        );
++        let mut sink = StreamSink {
++            stream_id: 0,
++            socket: codec.socket.clone(),
++            writable_event_rx: write_rx,
++            codec_tx: codec.codec_tx.clone(),
++            data_frame_overhead: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++            id: parent,
++            pending_response: None,
++        };
++        let remaining = pipe::Sink::write(&mut sink, Bytes::from(vec![0; 65536])).unwrap();
++        assert_eq!(remaining.len(), 65536);
++        let message = {
++            let waiting = sink.wait_body_capacity();
++            tokio::pin!(waiting);
++            tokio::select! {
++                result = &mut waiting => panic!("body wait completed without capacity: {result:?}"),
++                message = codec.stream_rx.recv() => message.unwrap(),
++            }
++        };
++        assert!(matches!(message, StreamMessage::WaitingWritable(0, 6)));
++        codec.on_stream_message(message).unwrap();
++        assert_eq!(codec.streams[&0].minimum_writable_capacity, 6);
++        codec.notify_writable_streams(vec![0]);
++        assert!(matches!(
++            sink.writable_event_rx.try_recv(),
++            Err(mpsc::error::TryRecvError::Empty)
++        ));
++        assert!(tokio::time::timeout(
++            std::time::Duration::from_millis(10),
++            sink.wait_body_capacity(),
++        )
++        .await
++        .is_err());
++        codec.socket.clone()
++    }
++}
+diff --git a/lib/src/quic_multiplexer.rs b/lib/src/quic_multiplexer.rs
+index 60e13a0..3027fad 100644
+--- a/lib/src/quic_multiplexer.rs
++++ b/lib/src/quic_multiplexer.rs
+@@ -9,7 +9,7 @@ use http::header::InvalidHeaderName;
+ use lazy_static::lazy_static;
+ use quiche::h3;
+ use quiche::h3::NameValue;
+-use std::collections::{BTreeSet, HashMap, HashSet};
++use std::collections::{BTreeSet, HashMap};
+ use std::io;
+ use std::io::ErrorKind;
+ use std::net::SocketAddr;
+@@ -53,7 +53,7 @@ pub(crate) struct QuicSocket {
+     udp_socket: Arc<UdpSocket>,
+     quic_conn: Arc<std::sync::Mutex<QuicConnection>>,
+     h3_conn: Arc<std::sync::Mutex<h3::Connection>>,
+-    waiting_writable_streams: std::sync::Mutex<HashSet<u64>>,
++    waiting_writable_streams: std::sync::Mutex<HashMap<u64, usize>>,
+     id: log_utils::IdChain<u64>,
+     tls_connection_meta: tls_demultiplexer::ConnectionMeta,
+     /// TLS client_random extracted from QUIC handshake
+@@ -879,11 +879,11 @@ impl QuicSocket {
+         self.quic_conn.lock().unwrap().stream_finished(stream_id)
+     }
+ 
+-    pub fn notify_stream_waiting_writable(&self, stream_id: u64) {
++    pub fn notify_stream_waiting_writable(&self, stream_id: u64, minimum_capacity: usize) {
+         self.waiting_writable_streams
+             .lock()
+             .unwrap()
+-            .insert(stream_id);
++            .insert(stream_id, minimum_capacity);
+     }
+ 
+     pub fn shutdown_stream(&self, stream_id: u64, direction: quiche::Shutdown) {
+@@ -933,27 +933,28 @@ impl QuicSocket {
+         self.flush_pending_data()
+     }
+ 
++    fn take_writable_streams(&self) -> Vec<u64> {
++        let mut quic_conn = self.quic_conn.lock().unwrap();
++        let mut waiting_streams = self.waiting_writable_streams.lock().unwrap();
++        let mut writable = Vec::new();
++        waiting_streams.retain(|&stream_id, minimum_capacity| {
++            let ready = quic_conn
++                .stream_capacity(stream_id)
++                .map_or(true, |capacity| capacity >= *minimum_capacity);
++            if ready {
++                writable.push(stream_id);
++            }
++            !ready
++        });
++        writable
++    }
++
+     pub async fn listen(&self) -> io::Result<QuicSocketEvent> {
+         loop {
+             let event = loop {
+                 match self.process_pending_h3_events()? {
+                     None => {
+-                        let writable_streams: Vec<_> = {
+-                            let mut quic_conn = self.quic_conn.lock().unwrap();
+-                            let mut waiting_streams = self.waiting_writable_streams.lock().unwrap();
+-                            // Avoid emitting Writable events for streams with negligible capacity.
+-                            let writable_streams: Vec<_> = waiting_streams
+-                                .iter()
+-                                .filter(|id| {
+-                                    quic_conn.stream_capacity(**id).map_or(true, |x| {
+-                                        x >= net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY
+-                                    })
+-                                })
+-                                .copied()
+-                                .collect();
+-                            waiting_streams.retain(|id| !writable_streams.contains(id));
+-                            writable_streams
+-                        };
++                        let writable_streams = self.take_writable_streams();
+ 
+                         if !writable_streams.is_empty() {
+                             break Some(QuicSocketEvent::Writable(writable_streams));
+@@ -1343,7 +1344,10 @@ mod tests {
+         }
+     }
+ 
+-    async fn connected_socket(probe: Arc<LockProbe>) -> (Arc<QuicSocket>, UdpSocket) {
++    async fn connected_socket(
++        probe: Arc<LockProbe>,
++        stream_count: u64,
++    ) -> (Arc<QuicSocket>, UdpSocket) {
+         let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+         let mut name = X509NameBuilder::new().unwrap();
+         name.append_entry_by_text("CN", "localhost").unwrap();
+@@ -1425,41 +1429,43 @@ mod tests {
+             &quiche::h3::Config::new().unwrap(),
+         )
+         .unwrap();
+-        let stream = client_h3
+-            .send_request(
+-                &mut client,
+-                &[
+-                    quiche::h3::Header::new(b":method", b"GET"),
+-                    quiche::h3::Header::new(b":scheme", b"https"),
+-                    quiche::h3::Header::new(b":authority", b"localhost"),
+-                    quiche::h3::Header::new(b":path", b"/"),
+-                ],
+-                true,
+-            )
+-            .unwrap();
+-        transfer(&mut client, &mut server);
+-        let mut headers = false;
+-        while let Ok((id, event)) = server_h3.poll(&mut server) {
+-            if id == stream && matches!(event, quiche::h3::Event::Headers { .. }) {
+-                headers = true;
++        for index in 0..stream_count {
++            let stream = client_h3
++                .send_request(
++                    &mut client,
++                    &[
++                        quiche::h3::Header::new(b":method", b"GET"),
++                        quiche::h3::Header::new(b":scheme", b"https"),
++                        quiche::h3::Header::new(b":authority", b"localhost"),
++                        quiche::h3::Header::new(b":path", b"/"),
++                    ],
++                    true,
++                )
++                .unwrap();
++            transfer(&mut client, &mut server);
++            let mut headers = false;
++            while let Ok((id, event)) = server_h3.poll(&mut server) {
++                if id == stream && matches!(event, quiche::h3::Event::Headers { .. }) {
++                    headers = true;
++                }
+             }
+-        }
+-        assert!(headers);
+-        server_h3
+-            .send_response(
+-                &mut server,
+-                stream,
+-                &[quiche::h3::Header::new(b":status", b"200")],
+-                false,
+-            )
+-            .unwrap();
+-        assert_eq!(
++            assert!(headers);
+             server_h3
+-                .send_body(&mut server, stream, b"fixture", false)
+-                .unwrap(),
+-            7
+-        );
+-        assert_eq!(stream, 0);
++                .send_response(
++                    &mut server,
++                    stream,
++                    &[quiche::h3::Header::new(b":status", b"200")],
++                    false,
++                )
++                .unwrap();
++            assert_eq!(
++                server_h3
++                    .send_body(&mut server, stream, b"fixture", false)
++                    .unwrap(),
++                7
++            );
++            assert_eq!(stream, index * 4);
++        }
+         let (_conn_tx, conn_rx) = mpsc::channel(1);
+         let (mux_tx, _mux_rx) = mpsc::channel(1);
+         let socket = QuicSocket {
+@@ -1529,7 +1535,7 @@ mod tests {
+             .enable_all()
+             .build()
+             .unwrap();
+-        let (socket, _client_socket) = runtime.block_on(connected_socket(probe));
++        let (socket, _client_socket) = runtime.block_on(connected_socket(probe, 1));
+         let (done_tx, done_rx) = std::sync::mpsc::channel();
+         let writer = {
+             let socket = socket.clone();
+@@ -1564,4 +1570,74 @@ mod tests {
+             "real methods failed: {results:?}"
+         );
+     }
++    #[test]
++    fn writable_notifications_respect_pending_frame_capacity() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        for wanted_capacity in 3..=6 {
++            runtime.block_on(async {
++                let (write_ready, _) = std::sync::mpsc::sync_channel(1);
++                let (_, write_action) = std::sync::mpsc::sync_channel(1);
++                let (shutdown_entered, _) = std::sync::mpsc::sync_channel(1);
++                let (shutdown_first, _) = std::sync::mpsc::sync_channel(1);
++                let probe = Arc::new(LockProbe {
++                    write_ready,
++                    write_action: std::sync::Mutex::new(write_action),
++                    shutdown_entered,
++                    shutdown_first,
++                });
++                let (mut socket, _client_socket) = connected_socket(probe, 2).await;
++                Arc::get_mut(&mut socket).unwrap().lock_probe = None;
++                {
++                    let mut h3 = socket.h3_conn.lock().unwrap();
++                    let mut quic = socket.quic_conn.lock().unwrap();
++                    let capacity = quic.stream_capacity(0).unwrap();
++                    let length =
++                        capacity - wanted_capacity - net_utils::http3_data_frame_overhead(capacity);
++                    assert_eq!(
++                        h3.send_body(&mut quic, 0, &vec![0; length], false).unwrap(),
++                        length
++                    );
++                    assert_eq!(quic.stream_capacity(0).unwrap(), wanted_capacity);
++                }
++                socket.notify_stream_waiting_writable(0, 6);
++                socket.notify_stream_waiting_writable(4, 3);
++                let mut ready = socket.take_writable_streams();
++                ready.sort_unstable();
++                assert_eq!(
++                    ready,
++                    if wanted_capacity < 6 {
++                        vec![4]
++                    } else {
++                        vec![0, 4]
++                    }
++                );
++                socket.notify_stream_waiting_writable(8, 6);
++                assert_eq!(socket.take_writable_streams(), vec![8]);
++                assert!(socket.take_writable_streams().is_empty());
++                if wanted_capacity < 6 {
++                    assert_eq!(
++                        socket.waiting_writable_streams.lock().unwrap().get(&0),
++                        Some(&6)
++                    );
++                    socket.notify_stream_waiting_writable(0, wanted_capacity);
++                    assert_eq!(socket.take_writable_streams(), vec![0]);
++                }
++                assert!(socket.waiting_writable_streams.lock().unwrap().is_empty());
++                if wanted_capacity == 4 {
++                    let socket = crate::http3_codec::tests::assert_body_wait_capacity(socket).await;
++                    assert_eq!(
++                        socket.waiting_writable_streams.lock().unwrap().get(&0),
++                        Some(&6)
++                    );
++                    assert!(socket.take_writable_streams().is_empty());
++                } else if wanted_capacity == 6 {
++                    let data = Bytes::from(vec![0; 65536]);
++                    assert!(socket.write(0, data).unwrap().len() < 65536);
++                }
++            });
++        }
++    }
+ }

@@ -1,0 +1,343 @@
+diff --git a/lib/src/quic_multiplexer.rs b/lib/src/quic_multiplexer.rs
+index 5181900..60e13a0 100644
+--- a/lib/src/quic_multiplexer.rs
++++ b/lib/src/quic_multiplexer.rs
+@@ -58,6 +58,8 @@ pub(crate) struct QuicSocket {
+     tls_connection_meta: tls_demultiplexer::ConnectionMeta,
+     /// TLS client_random extracted from QUIC handshake
+     client_random: Vec<u8>,
++    #[cfg(test)]
++    lock_probe: Option<Arc<tests::LockProbe>>,
+ }
+ 
+ pub(crate) enum QuicSocketEvent {
+@@ -561,6 +563,8 @@ impl QuicMultiplexer {
+             )),
+             tls_connection_meta: conn.tls_connection_meta,
+             client_random: extracted_client_random,
++            #[cfg(test)]
++            lock_probe: None,
+         })
+     }
+ 
+@@ -842,15 +846,22 @@ impl QuicSocket {
+     }
+ 
+     pub fn write(&self, stream_id: u64, mut data: Bytes) -> io::Result<Bytes> {
+-        match self.h3_conn.lock().unwrap().send_body(
+-            &mut self.quic_conn.lock().unwrap(),
+-            stream_id,
+-            data.as_ref(),
+-            false,
+-        ) {
+-            Ok(n) => data.advance(n),
+-            Err(h3::Error::Done | h3::Error::StreamBlocked) => (),
+-            Err(e) => return Err(io::Error::other(e.to_string())),
++        {
++            let mut h3_conn = self.h3_conn.lock().unwrap();
++            #[cfg(test)]
++            if self.lock_probe.as_ref().is_some_and(|p| p.write_locked()) {
++                return Err(io::Error::new(ErrorKind::Interrupted, "fixture abort"));
++            }
++            match h3_conn.send_body(
++                &mut self.quic_conn.lock().unwrap(),
++                stream_id,
++                data.as_ref(),
++                false,
++            ) {
++                Ok(n) => data.advance(n),
++                Err(h3::Error::Done | h3::Error::StreamBlocked) => (),
++                Err(e) => return Err(io::Error::other(e.to_string())),
++            }
+         }
+ 
+         self.flush_pending_data().map(|_| data)
+@@ -897,9 +908,17 @@ impl QuicSocket {
+     }
+ 
+     pub fn graceful_shutdown(&self) -> io::Result<()> {
++        #[cfg(test)]
++        if let Some(probe) = &self.lock_probe {
++            probe.shutdown_entered();
++        }
+         {
+-            let mut quic_conn = self.quic_conn.lock().unwrap();
+             let mut h3_conn = self.h3_conn.lock().unwrap();
++            #[cfg(test)]
++            if let Some(probe) = &self.lock_probe {
++                probe.shutdown_first_lock();
++            }
++            let mut quic_conn = self.quic_conn.lock().unwrap();
+             for stream_id in quic_conn.writable() {
+                 let _ = h3_conn.send_body(&mut quic_conn, stream_id, &[], true);
+             }
+@@ -1280,3 +1299,269 @@ fn validate_token<'a>(
+         .and_then(|token| token.strip_prefix(socket_addr_to_vec(peer).as_slice()))
+         .map(quiche::ConnectionId::from_ref)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use boring::asn1::Asn1Time;
++    use boring::bn::BigNum;
++    use boring::hash::MessageDigest;
++    use boring::pkey::PKey;
++    use boring::rsa::Rsa;
++    use boring::ssl::{SslContextBuilder, SslMethod};
++    use boring::x509::{X509NameBuilder, X509};
++
++    fn limits(config: &mut quiche::Config) {
++        config
++            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
++            .unwrap();
++        config.set_initial_max_data(1_000_000);
++        config.set_initial_max_stream_data_uni(1_000_000);
++        config.set_initial_max_streams_uni(100);
++        config.set_initial_max_streams_bidi(100);
++        config.set_initial_max_stream_data_bidi_local(1_000_000);
++        config.set_initial_max_stream_data_bidi_remote(1_000_000);
++    }
++
++    fn transfer(from: &mut quiche::Connection, to: &mut quiche::Connection) {
++        let mut packet = [0; 65535];
++        loop {
++            match from.send(&mut packet) {
++                Ok((n, info)) => {
++                    to.recv(
++                        &mut packet[..n],
++                        quiche::RecvInfo {
++                            from: info.from,
++                            to: info.to,
++                        },
++                    )
++                    .unwrap();
++                }
++                Err(quiche::Error::Done) => return,
++                Err(error) => panic!("fixture packet send: {error:?}"),
++            }
++        }
++    }
++
++    async fn connected_socket(probe: Arc<LockProbe>) -> (Arc<QuicSocket>, UdpSocket) {
++        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
++        let mut name = X509NameBuilder::new().unwrap();
++        name.append_entry_by_text("CN", "localhost").unwrap();
++        let name = name.build();
++        let mut certificate = X509::builder().unwrap();
++        certificate.set_version(2).unwrap();
++        certificate
++            .set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
++            .unwrap();
++        certificate.set_subject_name(&name).unwrap();
++        certificate.set_issuer_name(&name).unwrap();
++        certificate.set_pubkey(&key).unwrap();
++        certificate
++            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
++            .unwrap();
++        certificate
++            .set_not_after(&Asn1Time::days_from_now(1).unwrap())
++            .unwrap();
++        certificate.sign(&key, MessageDigest::sha256()).unwrap();
++        let certificate = certificate.build();
++        let mut ssl = SslContextBuilder::new(SslMethod::tls()).unwrap();
++        ssl.set_certificate(&certificate).unwrap();
++        ssl.set_private_key(&key).unwrap();
++        let mut server_config =
++            quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, ssl).unwrap();
++        limits(&mut server_config);
++        let mut client_config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
++        limits(&mut client_config);
++        client_config.verify_peer(false);
++        let client_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let server_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        server_udp.writable().await.unwrap();
++        let client_address = client_udp.local_addr().unwrap();
++        let server_address = server_udp.local_addr().unwrap();
++        let scid = quiche::ConnectionId::from_ref(&[1; 16]);
++        let mut client = quiche::connect(
++            Some("localhost"),
++            &scid,
++            client_address,
++            server_address,
++            &mut client_config,
++        )
++        .unwrap();
++        let mut first = [0; 65535];
++        let (n, _) = client.send(&mut first).unwrap();
++        let header = quiche::Header::from_slice(&mut first[..n], quiche::MAX_CONN_ID_LEN).unwrap();
++        let mut server = quiche::accept(
++            &header.dcid,
++            None,
++            server_address,
++            client_address,
++            &mut server_config,
++        )
++        .unwrap();
++        server
++            .recv(
++                &mut first[..n],
++                quiche::RecvInfo {
++                    from: client_address,
++                    to: server_address,
++                },
++            )
++            .unwrap();
++        for _ in 0..100 {
++            transfer(&mut server, &mut client);
++            transfer(&mut client, &mut server);
++            if client.is_established() && server.is_established() {
++                break;
++            }
++        }
++        assert!(client.is_established() && server.is_established());
++        let mut client_h3 = quiche::h3::Connection::with_transport(
++            &mut client,
++            &quiche::h3::Config::new().unwrap(),
++        )
++        .unwrap();
++        let mut server_h3 = quiche::h3::Connection::with_transport(
++            &mut server,
++            &quiche::h3::Config::new().unwrap(),
++        )
++        .unwrap();
++        let stream = client_h3
++            .send_request(
++                &mut client,
++                &[
++                    quiche::h3::Header::new(b":method", b"GET"),
++                    quiche::h3::Header::new(b":scheme", b"https"),
++                    quiche::h3::Header::new(b":authority", b"localhost"),
++                    quiche::h3::Header::new(b":path", b"/"),
++                ],
++                true,
++            )
++            .unwrap();
++        transfer(&mut client, &mut server);
++        let mut headers = false;
++        while let Ok((id, event)) = server_h3.poll(&mut server) {
++            if id == stream && matches!(event, quiche::h3::Event::Headers { .. }) {
++                headers = true;
++            }
++        }
++        assert!(headers);
++        server_h3
++            .send_response(
++                &mut server,
++                stream,
++                &[quiche::h3::Header::new(b":status", b"200")],
++                false,
++            )
++            .unwrap();
++        assert_eq!(
++            server_h3
++                .send_body(&mut server, stream, b"fixture", false)
++                .unwrap(),
++            7
++        );
++        assert_eq!(stream, 0);
++        let (_conn_tx, conn_rx) = mpsc::channel(1);
++        let (mux_tx, _mux_rx) = mpsc::channel(1);
++        let socket = QuicSocket {
++            conn_rx: tokio::sync::Mutex::new(conn_rx),
++            mux_tx: Arc::new(std::sync::Mutex::new(mux_tx)),
++            peer: client_address,
++            udp_socket: Arc::new(server_udp),
++            quic_conn: Arc::new(std::sync::Mutex::new(server)),
++            h3_conn: Arc::new(std::sync::Mutex::new(server_h3)),
++            waiting_writable_streams: Default::default(),
++            id: log_utils::IdChain::from(log_utils::IdItem::new(SOCKET_ID_FMT, 1)),
++            tls_connection_meta: tls_demultiplexer::ConnectionMeta {
++                sni: "localhost".into(),
++                protocol: tls_demultiplexer::Protocol::Http3,
++                channel: net_utils::Channel::Tunnel,
++                cert_chain: vec![],
++                key: rustls_pki_types::PrivateKeyDer::Pkcs8(
++                    rustls_pki_types::PrivatePkcs8KeyDer::from(vec![]),
++                ),
++                cert_chain_path: String::new(),
++                key_path: String::new(),
++                sni_auth_creds: None,
++                boring: tls_demultiplexer::BoringIdentity {
++                    chain: Arc::new(vec![certificate]),
++                    key: Arc::new(key),
++                },
++            },
++            client_random: vec![],
++            lock_probe: Some(probe),
++        };
++        (Arc::new(socket), client_udp)
++    }
++
++    pub(super) struct LockProbe {
++        write_ready: std::sync::mpsc::SyncSender<()>,
++        write_action: std::sync::Mutex<std::sync::mpsc::Receiver<bool>>,
++        shutdown_entered: std::sync::mpsc::SyncSender<()>,
++        shutdown_first: std::sync::mpsc::SyncSender<()>,
++    }
++
++    impl LockProbe {
++        pub(super) fn write_locked(&self) -> bool {
++            let _ = self.write_ready.send(());
++            self.write_action.lock().unwrap().recv().unwrap_or(true)
++        }
++        pub(super) fn shutdown_entered(&self) {
++            let _ = self.shutdown_entered.send(());
++        }
++        pub(super) fn shutdown_first_lock(&self) {
++            let _ = self.shutdown_first.send(());
++        }
++    }
++
++    #[test]
++    fn graceful_shutdown_does_not_hold_quic_while_waiting_for_h3() {
++        let (write_ready_tx, write_ready_rx) = std::sync::mpsc::sync_channel(1);
++        let (write_action_tx, write_action_rx) = std::sync::mpsc::sync_channel(1);
++        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
++        let (first_tx, first_rx) = std::sync::mpsc::sync_channel(1);
++        let probe = Arc::new(LockProbe {
++            write_ready: write_ready_tx,
++            write_action: std::sync::Mutex::new(write_action_rx),
++            shutdown_entered: entered_tx,
++            shutdown_first: first_tx,
++        });
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let (socket, _client_socket) = runtime.block_on(connected_socket(probe));
++        let (done_tx, done_rx) = std::sync::mpsc::channel();
++        let writer = {
++            let socket = socket.clone();
++            let done = done_tx.clone();
++            std::thread::spawn(move || {
++                let result = socket.write(0, Bytes::from_static(b"payload"));
++                let _ = done.send(("writer", result.is_ok_and(|left| left.is_empty())));
++            })
++        };
++        write_ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
++        let shutdown = {
++            let socket = socket.clone();
++            let done = done_tx;
++            std::thread::spawn(move || {
++                let result = socket.graceful_shutdown();
++                let _ = done.send(("shutdown", result.is_ok()));
++            })
++        };
++        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
++        let inverted = first_rx.recv_timeout(Duration::from_secs(1)).is_ok();
++        // Abort the paused writer on inversion so the regression cannot hang.
++        write_action_tx.send(inverted).unwrap();
++        let results = [
++            done_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
++            done_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
++        ];
++        writer.join().unwrap();
++        shutdown.join().unwrap();
++        assert!(!inverted, "shutdown held QUIC while a writer held HTTP3");
++        assert!(
++            results.iter().all(|(_, success)| *success),
++            "real methods failed: {results:?}"
++        );
++    }
++}

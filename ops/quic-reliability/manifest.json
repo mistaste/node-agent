@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "upstream_repository": "https://github.com/TrustTunnel/TrustTunnel",
+  "upstream_commit": "fab5b8353a19332f935fa30869307d37d4a898d1",
+  "recorded_baseline_node_commit": "61b93eb",
+  "recorded_baseline_runtime_sha256": "5cb6ee002d89c1012c0ac4873f6e3def1f752ef5fdcda16b608ab6f58ab5ff08",
+  "endpoint_version": "1.1.0-guardex-live-credentials.1",
+  "credential_reload_abi": 1,
+  "compiler_image": "adguard/core-libs@sha256:79273e6cfee10546af7edbb0122660b9e53e3380742181f5afbe068b212810c4",
+  "h2": {
+    "version": "0.3.27",
+    "crate_sha256": "0beca50380b1fc32983fc1cb4587bfa4bb9e78fc259aad4a0032d2080309222d",
+    "upstream_fix": "b1098038b07745576008662dd09fe93ed573f1fc",
+    "upstream_url": "https://github.com/hyperium/h2/pull/832"
+  },
+  "native_commits": [
+    "506588f1c8c563c918edff8e8017f4e7687a494b",
+    "77864967942d88bdaf40137691c7451772fe716e"
+  ],
+  "inputs": {
+    "h2-0.3.27-reclaim-capacity.patch": "6b2d340e6924878419d852a6adc666e2decbf23a9225b6498be8313a282d0209",
+    "quic-shutdown-lock-order.patch": "f86290fcc91dba502ce0197c5909e74656e9a207bdd8ab88728e1872817c1634",
+    "quic-writable-capacity.patch": "919dcd17d4e58876b8763bb7aff0cf698b299c5eff14ab4ba78ad4bb4a8d8796",
+    "trusttunnel-h2-capacity.lock": "3da09e64ab67a23a9502ca2cedbe2d3bbe435edb7ae75db6950252322cd8a995",
+    "trusttunnel-live-credentials-v1.1.0.patch": "8f41b8bfbcce7a155e714f228a52fc238296836cd4a1928c0fe8e8dd24b797a7",
+    "trusttunnel-udp-rejection-v1.1.0.patch": "67d684bde00bc8ddf9855eb1bdb59a49ae86c293c9987533efa71684c927f75a"
+  },
+  "endpoint_patches": [
+    "trusttunnel-udp-rejection-v1.1.0.patch",
+    "trusttunnel-live-credentials-v1.1.0.patch",
+    "quic-shutdown-lock-order.patch",
+    "quic-writable-capacity.patch"
+  ],
+  "h2_patch": "h2-0.3.27-reclaim-capacity.patch",
+  "lockfile": "trusttunnel-h2-capacity.lock",
+  "scope": "Endpoint-only candidate on the recorded Jakarta baseline; no account-QoS, Caddy, node-agent or controller changes.",
+  "validation_status": "Local absolute Rust1.95 gates and intentional regression controls passed; private Linux artifact and canary pending.",
+  "expected_source_sha256": {
+    "lib/src/quic_multiplexer.rs": "37c154454323987d26a0f8255a531905903f414c653b63083a67bfa56ae7e67c",
+    "lib/src/http3_codec.rs": "6cac362c48579fab39e36b358eb1364a6fe411fc3737c1af9d095d831defa4c4"
+  },
+  "effective_local_toolchain": {
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "rustdoc": "rustdoc 1.95.0 (59807616e 2026-04-14)"
+  },
+  "local_workspace_tests": 257,
+  "regression_controls": {
+    "old_behavior_failures": 4,
+    "final_green_tests": 2,
+    "shutdown_limit": "The absence-of-first-lock observation is scheduling bounded to one second, not an arbitrary-starvation guarantee."
+  }
+}
