@@ -1,0 +1,30 @@
+diff --git a/lib/src/udp_pipe.rs b/lib/src/udp_pipe.rs
+--- a/lib/src/udp_pipe.rs
++++ b/lib/src/udp_pipe.rs
+@@ -95,6 +95,14 @@
+             return Ok(());
+         }
+ 
++        // Do not publish a flow until its outbound socket exists. Otherwise a
++        // repeated rejected datagram skips creation, reaches a missing socket,
++        // and terminates the shared UDP pipe instead of rejecting only the flow.
++        self.shared
++            .forwarder_shared
++            .on_new_udp_connection(meta)
++            .await?;
++
+         let is_plain_dns = meta.destination.port() == net_utils::PLAIN_DNS_PORT_NUMBER;
+         self.shared.udp_connections.lock().unwrap().insert(
+             forwarder::UdpDatagramMeta::from(meta),
+@@ -107,11 +115,6 @@
+             },
+         );
+ 
+-        self.shared
+-            .forwarder_shared
+-            .on_new_udp_connection(meta)
+-            .await?;
+-
+         if let Some(c) = self
+             .shared
+             .udp_connections

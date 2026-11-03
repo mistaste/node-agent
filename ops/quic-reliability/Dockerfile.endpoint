@@ -1,0 +1,11 @@
+FROM adguard/core-libs@sha256:79273e6cfee10546af7edbb0122660b9e53e3380742181f5afbe068b212810c4 AS endpoint
+ARG TARGETARCH=amd64
+RUN test "$TARGETARCH" = amd64
+COPY ops/quic-reliability /recipe
+RUN git clone --depth 1 --branch v1.1.0 https://github.com/TrustTunnel/TrustTunnel.git /trusttunnel-source \
+    && mkdir /out \
+    && python3 /recipe/prepare_source.py /trusttunnel-source > /out/prepared-source.json \
+    && sh /recipe/build_endpoint.sh
+
+FROM scratch AS artifact
+COPY --from=endpoint /out/ /
