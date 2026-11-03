@@ -1,5 +1,5 @@
 FROM golang:1.26.8-alpine3.24@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS builder
-ENV GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY="https://proxy.golang.org|https://goproxy.cn|direct"
 WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
@@ -13,7 +13,7 @@ RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /node-age
     && CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /quota-broker ./cmd/quota-broker
 
 FROM golang:1.26.8-alpine3.24@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS caddy-naive
-ENV GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY="https://proxy.golang.org|https://goproxy.cn|direct"
 COPY ops/patches/forwardproxy-account-qos.patch /patches/account-qos.patch
 COPY ops/patches/forwardproxy-live-credentials.patch /patches/live-credentials.patch
 COPY ops/patches/forwardproxy-hard-quota.patch /patches/hard-quota.patch
