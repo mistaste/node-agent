@@ -93,3 +93,22 @@ func TestBuildFailsClosed(t *testing.T) {
 		t.Fatal("equal SNI hostnames must fail")
 	}
 }
+
+func TestAuthoritativeEmptyPreservesAuthAndPublishesEmptyRegistry(t *testing.T) {
+	cfg := Config{PublicPort: 443, TrustTunnelHostname: "vpn.example.com", TrustTunnelPort: 8443, NaiveHostname: "naive.example.com", NaivePort: 9443, DecoyPort: 9080, CertificateFile: "/cert.pem", PrivateKeyFile: "/key.pem", ClientUUIDs: []string{}}
+	files, err := Build(testSecret, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(files.Caddy), "guardex_credentials\n") || !strings.Contains(string(files.Caddy), "guardex_live_credentials") || !strings.Contains(string(files.Caddy), "basic_auth __guardex_disabled__ disabled") {
+		t.Fatal("deny-all authority or authentication missing")
+	}
+	cfg.ClientUUIDs = nil
+	if _, err := Build(testSecret, cfg); err == nil {
+		t.Fatal("missing inventory became deny-all")
+	}
+	cfg.ClientUUIDs = []string{"invalid"}
+	if _, err := Build(testSecret, cfg); err == nil {
+		t.Fatal("invalid inventory became deny-all")
+	}
+}

@@ -414,6 +414,26 @@ func TestExternalLiveCredentialsPreserveStaticBundleAndRollbackUnacknowledgedCha
 	request.ClientSetSHA256 = "new-client-set"
 	request.Endpoint.ClientUUIDs = append(request.Endpoint.ClientUUIDs, "22222222-2222-4222-8222-222222222222")
 	updated, err := runtime.Apply(context.Background(), request)
+
+	if err == nil {
+		saved := append([]string{}, request.Endpoint.ClientUUIDs...)
+		request.Endpoint.ClientUUIDs = []string{}
+		request.ClientSetSHA256 = "empty-authoritative"
+		empty, emptyErr := runtime.Apply(context.Background(), request)
+		if emptyErr != nil || empty.ClientCount != 0 {
+			t.Fatal("last-user revoke failed", emptyErr)
+		}
+		raw, _ := os.ReadFile(filepath.Join(runtime.root, "credentials.toml"))
+		if !bytes.Contains(raw, []byte("max_http2_conns = 0")) || !bytes.Contains(raw, []byte("max_http3_conns = 0")) {
+			t.Fatal("deny-all credentials not published")
+		}
+		request.Endpoint.ClientUUIDs = saved
+		request.ClientSetSHA256 = "new-client-set"
+		updated, err = runtime.Apply(context.Background(), request)
+		if starter.starts != 1 {
+			t.Fatal("empty transition restarted the endpoint")
+		}
+	}
 	close(done)
 	<-ackDone
 	if err != nil {

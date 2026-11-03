@@ -98,3 +98,25 @@ func TestBuildFilesRejectsEscapedPrivateKey(t *testing.T) {
 		t.Fatal("escaped private key path was accepted")
 	}
 }
+
+func TestAuthoritativeEmptyUsesUnissuedZeroLimitCredential(t *testing.T) {
+	root := "/etc/guardex/trusttunnel"
+	endpoint := Endpoint{Port: 8443, Hostname: "vpn.example.com", CertificateFile: root + "/cert.pem", PrivateKeyFile: root + "/key.pem", EnableHTTP2: true, ClientUUIDs: []string{}}
+	files, err := BuildFiles(root, testSecret, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"__guardex_disabled__", "max_http2_conns = 0", "max_http3_conns = 0"} {
+		if !strings.Contains(string(files.Credentials), required) {
+			t.Fatal("deny-all contract missing", required)
+		}
+	}
+	endpoint.ClientUUIDs = nil
+	if _, err := BuildFiles(root, testSecret, endpoint); err == nil {
+		t.Fatal("missing inventory became deny-all")
+	}
+	endpoint.ClientUUIDs = []string{"invalid"}
+	if _, err := BuildFiles(root, testSecret, endpoint); err == nil {
+		t.Fatal("invalid inventory became deny-all")
+	}
+}

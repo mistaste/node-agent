@@ -60,9 +60,12 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 	if !strings.HasPrefix(cfg.CertificateFile, "/") || !strings.HasPrefix(cfg.PrivateKeyFile, "/") {
 		return Files{}, errors.New("certificate paths must be absolute")
 	}
+	if cfg.ClientUUIDs == nil {
+		return Files{}, errors.New("Naive client inventory is missing")
+	}
 	clients := normalizeUUIDs(cfg.ClientUUIDs)
-	if len(clients) == 0 {
-		return Files{}, errors.New("at least one Naive client is required")
+	if len(clients) == 0 && len(cfg.ClientUUIDs) != 0 {
+		return Files{}, errors.New("Naive client inventory is invalid")
 	}
 
 	var users, credentialKeys strings.Builder
@@ -75,6 +78,12 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 		token := base64.StdEncoding.EncodeToString([]byte(id + ":" + password))
 		digest := sha256.Sum256([]byte(token))
 		fmt.Fprintf(&credentialKeys, " %x", digest)
+	}
+
+	if len(clients) == 0 {
+		// Keep forward_proxy authentication configured for probe resistance. The
+		// separate authoritative empty credential app rejects every identity.
+		users.WriteString("\t\t\tbasic_auth __guardex_disabled__ disabled\n")
 	}
 	caddy := fmt.Sprintf(`{
 	order forward_proxy before file_server

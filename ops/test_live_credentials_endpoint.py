@@ -89,6 +89,9 @@ def main():
             revision += 1
             credentials = "invalid [" if malformed else "\n".join(
                 f'[[client]]\nusername="{user}"\npassword="fixture"\n' for user in users)
+            if not users and not malformed:
+                credentials = ('[[client]]\nusername="__guardex_disabled__"\npassword="disabled"\n'
+                               'max_http2_conns=0\nmax_http3_conns=0\n')
             temporary = root / "credentials.next"
             temporary.write_text(credentials)
             os.chmod(temporary, 0o600)
@@ -111,12 +114,12 @@ def main():
             except (OSError, ValueError):
                 return False
 
-        def download(user, name, stream=True):
+        def download(user, name, stream=True, password="fixture"):
             output = root / name
             process = subprocess.Popen([
                 "curl", "--silent", "--show-error", "--fail", "--max-time", "20", "--noproxy", "",
                 "--proxy", f"https://localhost:{port}", "--proxytunnel", "--proxy-cacert", str(cert),
-                "--proxy-user", f"{user}:fixture", "--output", str(output),
+                "--proxy-user", f"{user}:{password}", "--output", str(output),
                 f"http://127.0.0.1:{server.server_port}/" + ("stream" if stream else "small")],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             transfers.append(process)
@@ -156,9 +159,24 @@ def main():
                 assert alice.wait(timeout=15) == 0, alice.stderr.read().decode()
                 assert alice_file.stat().st_size == payload_bytes
                 assert hashlib.sha256(alice_file.read_bytes()).hexdigest() == hashlib.sha256(chunk * (payload_bytes // len(chunk))).hexdigest()
+
+                last, last_file = download("alice", "last-user.bin")
+                wait_for(lambda: last_file.exists() and last_file.stat().st_size >= len(chunk))
+                digest = publish([])
+                wait_for(lambda: acknowledged(digest))
+                assert last.wait(timeout=2) != 0, "last eligible user's flow survived deny-all"
+                denied, _ = download("alice", "deny-all.bin", stream=False)
+                assert denied.wait(timeout=3) != 0, "last revoked credential reconnected"
+                disabled, _ = download("__guardex_disabled__", "disabled.bin", stream=False, password="disabled")
+                assert disabled.wait(timeout=3) != 0, "zero-limit sentinel forwarded traffic"
+                digest = publish(["alice"])
+                wait_for(lambda: acknowledged(digest))
+                restored, restored_file = download("alice", "restored.bin", stream=False)
+                assert restored.wait(timeout=3) == 0, "restored membership could not authenticate"
+                assert restored_file.stat().st_size == len(chunk)
                 assert children_of_runner() == [endpoint]
                 assert (root / "runner.log").read_text().count("endpoint started") == 1
-                print("PASS: real endpoint PID unchanged; 8 MiB verified across add, malformed update and revoke; only revoked flow closed")
+                print("PASS: real endpoint PID unchanged; 8 MiB verified across add, malformed update and revoke; only revoked flow closed; last-user deny-all, zero-limit sentinel rejection and restoration verified")
             finally:
                 for process in transfers:
                     if process.poll() is None:

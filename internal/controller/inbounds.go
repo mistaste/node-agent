@@ -512,6 +512,12 @@ func (r *Reconciler) prepareApply(item desiredItem) (preparedItem, error) {
 	if item.UserFlow != "" {
 		return preparedItem{}, errors.New("native transports do not use flow overrides")
 	}
+
+	// A complete, authenticated empty set revokes the last user. Missing/null or
+	// incomplete inventory is a control-plane error and must retain LKG instead.
+	if len(item.ClientUUIDs) == 0 && (item.ClientUUIDs == nil || item.ClientCount == nil || *item.ClientCount != 0 || !strings.EqualFold(item.ClientSetSHA256, emptyClientSetHash())) {
+		return preparedItem{}, errors.New("empty client inventory is not authoritative")
+	}
 	clients, clientHash, err := normalizeClientUUIDs(item.ClientUUIDs)
 	if err != nil {
 		return preparedItem{}, err

@@ -74,6 +74,12 @@ func BuildFiles(root, nodeSecret string, endpoint Endpoint) (Files, error) {
 		return Files{}, errors.New("certificate paths must stay inside the managed root")
 	}
 
+	if len(strings.TrimSpace(nodeSecret)) < 32 {
+		return Files{}, errors.New("node secret must contain at least 32 characters")
+	}
+	if endpoint.ClientUUIDs == nil {
+		return Files{}, errors.New("endpoint client inventory is missing")
+	}
 	clients := normalizeUUIDs(endpoint.ClientUUIDs)
 	var credentials strings.Builder
 	for _, client := range clients {
@@ -84,9 +90,13 @@ func BuildFiles(root, nodeSecret string, endpoint Endpoint) (Files, error) {
 		fmt.Fprintf(&credentials, "[[client]]\nusername = %s\npassword = %s\n\n", quote(client), quote(password))
 	}
 	if len(clients) == 0 {
-		// The endpoint refuses a public listener without credentials. A staged
-		// route must remain stopped until at least one active profile exists.
-		return Files{}, errors.New("endpoint requires at least one active client")
+		if len(endpoint.ClientUUIDs) != 0 {
+			return Files{}, errors.New("endpoint client inventory is invalid")
+		}
+		// The ABI1 parser requires a nonempty credentials file. A reserved identity
+		// with zero H1/H2 and H3 connection limits admits no request, even if guessed.
+		// It is never included in profile inventory or issued to a client.
+		credentials.WriteString("[[client]]\nusername = \"__guardex_disabled__\"\npassword = \"disabled\"\nmax_http2_conns = 0\nmax_http3_conns = 0\n")
 	}
 
 	var protocols strings.Builder

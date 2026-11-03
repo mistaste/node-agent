@@ -287,6 +287,84 @@ func TestControllerSeparatesPublicAndMuxListenerPorts(t *testing.T) {
 	}
 }
 
+func TestControllerAuthoritativeEmptyRevokesLastUserAndRestoresPerInbound(t *testing.T) {
+	trust := desiredItem{InboundID: "quota-tt", Engine: "trusttunnel", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-quota-tt", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"trusttunnel","hostname":"vpn.example.com","upstream_protocol":"http2","listen_port":8443}`), ClientUUIDs: []string{testClientUUID}}
+	naive := desiredItem{InboundID: "quota-naive", Engine: "naiveproxy", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-quota-naive", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"naive","hostname":"naive.example.com","trusttunnel_hostname":"vpn.example.com","trusttunnel_port":8443,"naive_port":9443,"decoy_port":9080,"transport":"http2","security":"tls"}`), ClientUUIDs: []string{testClientUUID}}
+	set := func(item *desiredItem, ids []string) {
+		item.ClientUUIDs = ids
+		count := len(ids)
+		item.ClientCount = &count
+		_, item.ClientSetSHA256, _ = normalizeClientUUIDs(ids)
+	}
+	set(&trust, trust.ClientUUIDs)
+	set(&naive, naive.ClientUUIDs)
+	h := newControllerHarness(t, []desiredItem{trust, naive})
+	h.reconciler.cfg.TrustTunnelRoot = t.TempDir()
+	tt := &fakeTrustTunnelRuntime{available: true}
+	np := &fakeTransportBundleRuntime{}
+	h.reconciler.EnableTrustTunnel(tt)
+	h.reconciler.EnableTransportBundle(np)
+	sync := func() {
+		t.Helper()
+		h.setItems([]desiredItem{trust, naive})
+		if err := h.reconciler.SyncOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sync()
+	set(&naive, []string{})
+	sync()
+	if np.state.ClientCount != 0 || tt.state.ClientCount != 1 {
+		t.Fatal("empty Naive inventory retained last user or changed TT membership")
+	}
+	last := np.applied[len(np.applied)-1].Config
+	if last.ClientUUIDs == nil {
+		t.Fatal("explicit empty inventory became missing")
+	}
+	files, err := transportbundle.Build(testControllerSecret, last)
+	if err != nil || !strings.Contains(string(files.Caddy), "guardex_credentials\n") {
+		t.Fatal("deny-all Caddy configuration was not rendered", err)
+	}
+	set(&naive, []string{testClientUUID})
+	set(&trust, []string{})
+	sync()
+	if tt.state.ClientCount != 0 || np.state.ClientCount != 1 {
+		t.Fatal("empty TT inventory retained last user or changed Naive membership")
+	}
+	endpoint := tt.applied[len(tt.applied)-1].Endpoint
+	root := h.reconciler.cfg.TrustTunnelRoot
+	filesTT, err := trusttunnel.BuildFiles(root, testControllerSecret, endpoint)
+	if err != nil || !strings.Contains(string(filesTT.Credentials), "max_http2_conns = 0") || !strings.Contains(string(filesTT.Credentials), "max_http3_conns = 0") {
+		t.Fatal("TT deny-all was not rendered", err)
+	}
+	set(&trust, []string{testClientUUID})
+	sync()
+	if tt.state.ClientCount != 1 || np.state.ClientCount != 1 {
+		t.Fatal("membership restore failed")
+	}
+	// Missing/null, incomplete metadata and failed fetch must retain LKG.
+	for _, mode := range []string{"missing", "count", "digest"} {
+		broken := naive
+		set(&broken, []string{})
+		switch mode {
+		case "missing":
+			broken.ClientUUIDs = nil
+		case "count":
+			broken.ClientCount = nil
+		case "digest":
+			broken.ClientSetSHA256 = ""
+		}
+		before := len(np.applied)
+		h.setItems([]desiredItem{trust, broken})
+		if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+			t.Fatal("incomplete empty inventory accepted", mode)
+		}
+		if len(np.applied) != before || np.state.ClientCount != 1 {
+			t.Fatal("incomplete empty inventory mutated LKG", mode)
+		}
+	}
+}
+
 func TestControllerAppliesNaiveProxyTransportBundle(t *testing.T) {
 	item := desiredItem{InboundID: "catalog-naive", Engine: "naiveproxy", Action: "apply", DesiredRevision: 1, EffectiveTag: "gx-naive-h2", EffectivePort: 443, ConfigJSON: json.RawMessage(`{"protocol":"naive","tag":"gx-naive-h2","port":443,"hostname":"naive.node.example.com","trusttunnel_hostname":"node.example.com","trusttunnel_port":8443,"naive_port":9443,"decoy_port":9080,"transport":"http2","security":"tls"}`), ClientUUIDs: []string{testClientUUID}}
 	count := 1

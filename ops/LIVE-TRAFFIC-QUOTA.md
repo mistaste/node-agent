@@ -22,7 +22,10 @@ A graceful reload closes only removed identities' CONNECT target sockets and
 cancels their request contexts, including requests owned by old handler
 configurations. New requests on old HTTP/2 transports also check current
 membership. Unchanged users retain their existing streams. Startup failure
-restores the previous live authority; already closed revoked flows stay closed.
+restores the previous live authority through both App.Stop and idempotent module
+Cleanup. Caddy post-Start finishSettingUp failures use context cleanup without
+calling App.Stop; the full-Caddy regression exercises that exact path. Already
+closed revoked flows stay closed; new requests use the restored authority.
 
 Naive counts actual upstream socket reads/writes. Its loopback Caddy admin route
 `GET /guardex/clients` exposes UUID, active flow count and cumulative bytes, never
@@ -31,6 +34,27 @@ Backend persists `naive:<UUID>` counters separately from TrustTunnel, so a reset
 of either runtime never re-charges the other's cumulative total. Both sources
 still consume the same account quota. Naive UDP is not supported; UDP/datagrams
 use TrustTunnel and its existing revocation path.
+
+## Authoritative empty membership
+
+A last-user revoke is an active apply with `client_uuids: []`, `client_count: 0`
+and SHA256 of the empty set. Backend must serialize [] explicitly, not omit it
+or turn it into null. Node validation rejects missing/null/incomplete metadata
+before any runtime mutation, retaining LKG on a fetch/validation failure.
+
+Caddy's global credential app accepts explicit empty keys and rejects missing
+keys. The rendered forward_proxy retains a reserved authentication entry for
+probe resistance, while the separate empty live registry denies every identity,
+closes the final H1/H2 streams and permits restoration without process restart.
+
+TrustTunnel ABI1 rejects an empty credential file, so the agent renders one
+reserved unissued `__guardex_disabled__` entry with both `max_http2_conns = 0`
+and `max_http3_conns = 0`. Its limiter rejects H1/H2/H3 even with the known
+sentinel password; it is not a profile or a usable fallback. Publishing the
+sentinel removes every former credential epoch, cancelling final flows through
+the existing live reload. Core/runner ABI1 and zero-limit behavior must be
+verified on the exact endpoint binary before rollout. No endpoint restart is
+used for this transition; restoring users replaces the sentinel normally.
 
 ## Coordinated release order
 
@@ -74,7 +98,8 @@ GO_TEST_RACE=1 sh ops/test-forwardproxy-live-credentials.sh /path/to/patched/for
 
 The suite uses real loopback Caddy HTTP/1 and HTTP/2 CONNECT streams for two
 synthetic users. It verifies targeted close, unchanged original streams,
-reconnect denial, membership restoration, invalid-config isolation, cumulative
+reconnect denial, last-user deny-all/restoration, missing inventory rejection,
+post-Start failure rollback, invalid-config isolation, cumulative
 traffic across reload and the Caddyfile adapter. It avoids upstream TestMain,
 which starts unrelated fixed-port services and writes an autosaved config.
 No production credentials, listeners or database are used by this suite.
