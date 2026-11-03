@@ -3,8 +3,8 @@ ARG TARGETARCH=amd64
 RUN test "$TARGETARCH" = amd64
 COPY ops/quic-reliability /recipe
 RUN git clone --depth 1 --branch v1.1.0 https://github.com/TrustTunnel/TrustTunnel.git /trusttunnel-source \
-    && python3 /recipe/prepare_source.py /trusttunnel-source \
     && mkdir /out \
+    && python3 /recipe/prepare_source.py /trusttunnel-source > /out/prepared-source.json \
     && sh /recipe/build_endpoint.sh
 
 FROM scratch AS artifact

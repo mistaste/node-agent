@@ -9,8 +9,10 @@ cargo_bin="$(rustup which --toolchain 1.95 cargo)"
 export PATH="$(dirname "$RUSTC"):$PATH"
 "$RUSTC" --version | tee /out/rustc-version.txt
 "$cargo_bin" --version | tee /out/cargo-version.txt
+"$RUSTDOC" --version | tee /out/rustdoc-version.txt
 grep -q '^rustc 1.95.' /out/rustc-version.txt
 grep -q '^cargo 1.95.' /out/cargo-version.txt
+grep -q '^rustdoc 1.95.' /out/rustdoc-version.txt
 export TRUSTTUNNEL_VERSION=1.1.0-guardex-live-credentials.1
 export CC=x86_64-linux-musl-gcc
 export CXX=x86_64-linux-musl-g++
@@ -29,4 +31,4 @@ fi
 test "$("$binary" --version)" = "$TRUSTTUNNEL_VERSION"
 cp "$binary" /out/trusttunnel_endpoint
 cp /recipe/manifest.json /out/source-manifest.json
-(cd /out && sha256sum trusttunnel_endpoint source-manifest.json > SHA256SUMS)
+(cd /out && sha256sum trusttunnel_endpoint source-manifest.json prepared-source.json rustc-version.txt cargo-version.txt rustdoc-version.txt > SHA256SUMS)

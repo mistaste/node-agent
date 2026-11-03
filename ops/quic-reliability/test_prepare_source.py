@@ -60,6 +60,16 @@ class SourceAssembly(unittest.TestCase):
             module.prepare(self.source, recipe, archive)
         self.assert_untouched()
 
+    def test_wrong_expected_postimage_rejected_before_compilation(self):
+        altered = self.root / "recipe"
+        shutil.copytree(recipe, altered)
+        path = altered / "manifest.json"
+        config = json.loads(path.read_text())
+        config["expected_source_sha256"]["lib/src/quic_multiplexer.rs"] = "0" * 64
+        path.write_text(json.dumps(config))
+        with self.assertRaisesRegex(ValueError, "prepared module checksum"):
+            module.prepare(self.source, altered, options.h2_crate)
+
     def test_modified_source_rejected_before_mutation(self):
         target = self.source / "lib/src/quic_multiplexer.rs"
         target.write_text(target.read_text() + "\n// unrelated change\n")

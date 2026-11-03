@@ -55,6 +55,9 @@ def prepare(source, recipe, crate=None):
     with (source / "Cargo.toml").open("a") as output:
         output.write('\n[patch.crates-io]\nh2 = { path = "vendor/h2" }\n')
     shutil.copyfile(inputs / manifest["lockfile"], source / "Cargo.lock")
+    for path, expected in manifest["expected_source_sha256"].items():
+        if sha(source / path) != expected:
+            raise ValueError("prepared module checksum mismatch: " + path)
     return {"upstream": manifest["upstream_commit"], "lock_sha256": sha(source / "Cargo.lock"),
             "quic_sha256": sha(source / "lib/src/quic_multiplexer.rs"),
             "codec_sha256": sha(source / "lib/src/http3_codec.rs")}
