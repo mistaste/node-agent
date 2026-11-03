@@ -10,4 +10,5 @@ done
 if [ "${GO_TEST_RACE:-0}" = 1 ]; then
  set -- -race "$@"
 fi
+if [ -f hard_quota_test.go ]; then set -- "$@" hard_quota_test.go; fi
 GOMAXPROCS=${GOMAXPROCS:-2} go test -mod=mod -v -count=1 -timeout=60s "$@" live_credentials_test.go

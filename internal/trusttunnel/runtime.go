@@ -105,6 +105,8 @@ type Runtime struct {
 }
 
 type State struct {
+	HardQuotaRequired       bool   `json:"hard_quota_required,omitempty"`
+	HardQuotaVersion        int    `json:"hard_quota_version,omitempty"`
 	ConfigurationSHA256     string `json:"configuration_sha256,omitempty"`
 	CredentialsSHA256       string `json:"credentials_sha256,omitempty"`
 	CredentialReloadVersion int    `json:"credential_reload_version,omitempty"`
@@ -162,6 +164,9 @@ func (r *Runtime) Available(ctx context.Context) bool {
 func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if request.Endpoint.HardQuotaRequired && !r.external {
+		return State{}, errors.New("hard quota requires external supporting runner")
+	}
 	if strings.TrimSpace(request.InboundID) == "" || strings.TrimSpace(request.Tag) == "" || request.Revision < 1 {
 		return State{}, errors.New("TrustTunnel desired identity is invalid")
 	}
@@ -179,6 +184,10 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	}
 	digestFiles := []Files{files}
 	state := State{Version: stateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: "", Port: request.Endpoint.Port, ClientCount: len(normalizeUUIDs(request.Endpoint.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256}
+	if request.Endpoint.HardQuotaRequired {
+		state.HardQuotaRequired = true
+		state.HardQuotaVersion = 1
+	}
 	if h3Files != nil {
 		digestFiles = append(digestFiles, *h3Files)
 		state.H3Port = 443
@@ -332,6 +341,7 @@ func (r *Runtime) externalRunnerReady(expected State) bool {
 	var observed State
 	if json.Unmarshal(raw, &observed) != nil ||
 		observed.Version != expected.Version ||
+		observed.HardQuotaVersion != expected.HardQuotaVersion ||
 		observed.InboundID != expected.InboundID ||
 		observed.Revision != expected.Revision ||
 		observed.Digest != expected.Digest ||

@@ -1,0 +1,339 @@
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,8 @@
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+ 
+ ## [Unreleased]
++
++- [Security] Enforce TCP and UDP byte grants when `GUARDEX_HARD_QUOTA_REQUIRED=1`.
+ 
+ - [Feature] Add opt-in account bandwidth scheduling via `GUARDEX_ACCOUNT_QOS_SOCKET`.
+ 
+--- a/lib/src/lib.rs
++++ b/lib/src/lib.rs
+@@ -9,6 +9,7 @@
+ pub mod client_config;
+ pub mod client_random_prefix;
+ pub mod core;
++mod hard_quota;
+ pub mod log_utils;
+ pub mod net_utils;
+ pub mod rules;
+--- a/lib/src/tunnel.rs
++++ b/lib/src/tunnel.rs
+@@ -413,6 +413,8 @@
+             }
+         };
+ 
++        let upload_quota = crate::hard_quota::Budget::from_auth(&forwarder_auth, 0);
++        let download_quota = crate::hard_quota::Budget::from_auth(&forwarder_auth, 1);
+         let upload_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 0);
+         let download_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 1);
+         let meta = forwarder::TcpConnectionMeta {
+@@ -473,12 +475,18 @@
+         let mut pipe = DuplexPipe::new(
+             (
+                 pipe::SimplexDirection::Outgoing,
+-                crate::account_qos::bytes(dstr_rx, upload_budget),
++                crate::account_qos::bytes(
++                    crate::hard_quota::bytes(dstr_rx, upload_quota),
++                    upload_budget,
++                ),
+                 fwd_tx,
+             ),
+             (
+                 pipe::SimplexDirection::Incoming,
+-                crate::account_qos::bytes(fwd_rx, download_budget),
++                crate::account_qos::bytes(
++                    crate::hard_quota::bytes(fwd_rx, download_quota),
++                    download_budget,
++                ),
+                 dstr_tx,
+             ),
+             update_metrics,
+@@ -543,6 +551,8 @@
+             }
+         }
+ 
++        let upload_quota = crate::hard_quota::Budget::from_auth(&forwarder_auth, 0);
++        let download_quota = crate::hard_quota::Budget::from_auth(&forwarder_auth, 1);
+         let upload_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 0);
+         let download_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 1);
+         let mut pipe: Box<dyn datagram_pipe::DuplexPipe> = match request.promote_to_next_state() {
+@@ -570,17 +580,28 @@
+ 
+                 Box::new(udp_pipe::DuplexPipe::new(
+                     (
+-                        crate::account_qos::datagrams(dstr_source, upload_budget, |d| {
+-                            d.payload.len()
+-                        }),
++                        crate::account_qos::datagrams(
++                            crate::hard_quota::datagrams(dstr_source, upload_quota, |d| {
++                                d.payload.len()
++                            }),
++                            upload_budget,
++                            |d| d.payload.len(),
++                        ),
+                         dstr_sink,
+                     ),
+                     (
+                         fwd_shared,
+-                        crate::account_qos::datagrams(fwd_source, download_budget, |d| match d {
+-                            forwarder::UdpDatagramReadStatus::Read(x) => x.payload.len(),
+-                            _ => 0,
+-                        }),
++                        crate::account_qos::datagrams(
++                            crate::hard_quota::datagrams(fwd_source, download_quota, |d| match d {
++                                forwarder::UdpDatagramReadStatus::Read(x) => x.payload.len(),
++                                _ => 0,
++                            }),
++                            download_budget,
++                            |d| match d {
++                                forwarder::UdpDatagramReadStatus::Read(x) => x.payload.len(),
++                                _ => 0,
++                            },
++                        ),
+                         fwd_sink,
+                     ),
+                     update_metrics,
+@@ -614,7 +635,11 @@
+                     (
+                         pipe::SimplexDirection::Outgoing,
+                         crate::account_qos::datagrams(
+-                            dstr_source,
++                            crate::hard_quota::datagrams(
++                                dstr_source,
++                                upload_quota,
++                                datagram_pipe::Datagram::len,
++                            ),
+                             upload_budget,
+                             datagram_pipe::Datagram::len,
+                         ),
+@@ -623,7 +648,11 @@
+                     (
+                         pipe::SimplexDirection::Incoming,
+                         crate::account_qos::datagrams(
+-                            fwd_source,
++                            crate::hard_quota::datagrams(
++                                fwd_source,
++                                download_quota,
++                                datagram_pipe::Datagram::len,
++                            ),
+                             download_budget,
+                             datagram_pipe::Datagram::len,
+                         ),
+--- a/lib/src/hard_quota.rs
++++ b/lib/src/hard_quota.rs
+@@ -0,0 +1,212 @@
++use crate::{authentication, datagram_pipe, log_utils, pipe};
++use async_trait::async_trait;
++use bytes::Bytes;
++use std::{future::Future, io, pin::Pin, time::Duration};
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++#[derive(Clone)]
++pub(crate) struct Budget {
++    path: String,
++    username: String,
++    direction: u8,
++}
++type Grant = Pin<Box<dyn Future<Output = io::Result<usize>> + Send>>;
++impl Budget {
++    pub fn from_auth(
++        auth: &Option<authentication::Source<'static>>,
++        direction: u8,
++    ) -> Option<Self> {
++        if std::env::var("GUARDEX_HARD_QUOTA_REQUIRED").as_deref() != Ok("1") {
++            return None;
++        }
++        let mut budget = Self {
++            path: std::env::var("GUARDEX_HARD_QUOTA_SOCKET").unwrap_or_default(),
++            username: String::new(),
++            direction,
++        };
++        if let Some(
++            authentication::Source::ProxyBasic(encoded) | authentication::Source::Sni(encoded),
++        ) = auth
++        {
++            if let Ok(decoded) = base64::Engine::decode(
++                &base64::engine::general_purpose::STANDARD,
++                encoded.as_bytes(),
++            ) {
++                if let Ok(raw) = std::str::from_utf8(&decoded) {
++                    if let Some((username, _)) = raw.split_once(':') {
++                        budget.username = username.to_owned();
++                    }
++                }
++            }
++        }
++        Some(budget)
++    }
++    fn grant(&self, n: usize, atomic: bool) -> Grant {
++        let budget = self.clone();
++        Box::pin(async move {
++            if n == 0 {
++                return Ok(0);
++            }
++            if budget.username.len() != 36 || !budget.path.starts_with('/') || n > 65536 {
++                return Err(io::Error::new(
++                    io::ErrorKind::PermissionDenied,
++                    "HARD_QUOTA_INVALID",
++                ));
++            }
++            tokio::time::timeout(Duration::from_secs(3), async {
++                let mut socket = tokio::net::UnixStream::connect(&budget.path).await?;
++                let mut frame = [0u8; 42];
++                frame[..36].copy_from_slice(budget.username.as_bytes());
++                frame[36] = budget.direction;
++                frame[37] = u8::from(atomic);
++                frame[38..].copy_from_slice(&(n as u32).to_be_bytes());
++                socket.write_all(&frame).await?;
++                let mut reply = [0u8; 5];
++                socket.read_exact(&mut reply).await?;
++                let granted = u32::from_be_bytes(reply[1..].try_into().unwrap()) as usize;
++                if reply[0] != 1 || granted == 0 || granted > n || (atomic && granted != n) {
++                    return Err(io::Error::new(
++                        io::ErrorKind::PermissionDenied,
++                        "TRAFFIC_QUOTA_EXHAUSTED",
++                    ));
++                }
++                Ok(granted)
++            })
++            .await
++            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "HARD_QUOTA_TIMEOUT"))?
++        })
++    }
++}
++struct ByteSource {
++    source: Box<dyn pipe::Source>,
++    budget: Budget,
++    pending: Option<Bytes>,
++    grant: Option<Grant>,
++    size: usize,
++}
++pub(crate) fn bytes(
++    source: Box<dyn pipe::Source>,
++    budget: Option<Budget>,
++) -> Box<dyn pipe::Source> {
++    match budget {
++        Some(budget) => Box::new(ByteSource {
++            source,
++            budget,
++            pending: None,
++            grant: None,
++            size: 0,
++        }),
++        None => source,
++    }
++}
++#[async_trait]
++impl pipe::Source for ByteSource {
++    fn id(&self) -> log_utils::IdChain<u64> {
++        self.source.id()
++    }
++    async fn read(&mut self) -> io::Result<pipe::Data> {
++        if self.pending.is_none() {
++            match self.source.read().await? {
++                pipe::Data::Eof => return Ok(pipe::Data::Eof),
++                pipe::Data::Chunk(x) => self.pending = Some(x),
++            }
++        }
++        if self.grant.is_none() {
++            self.size = self.pending.as_ref().unwrap().len().min(16384);
++            self.grant = Some(self.budget.grant(self.size, false));
++        }
++        let granted = self.grant.as_mut().unwrap().await?;
++        self.grant = None;
++        self.size = granted;
++        let data = self.pending.as_mut().unwrap().split_to(self.size);
++        if self.pending.as_ref().unwrap().is_empty() {
++            self.pending = None;
++        }
++        Ok(pipe::Data::Chunk(data))
++    }
++    fn consume(&mut self, size: usize) -> io::Result<()> {
++        self.source.consume(size)
++    }
++}
++
++struct DatagramSource<T> {
++    source: Box<dyn datagram_pipe::Source<Output = T>>,
++    budget: Budget,
++    pending: Option<T>,
++    grant: Option<Grant>,
++    size: fn(&T) -> usize,
++}
++pub(crate) fn datagrams<T: Send + 'static>(
++    source: Box<dyn datagram_pipe::Source<Output = T>>,
++    budget: Option<Budget>,
++    size: fn(&T) -> usize,
++) -> Box<dyn datagram_pipe::Source<Output = T>> {
++    match budget {
++        Some(budget) => Box::new(DatagramSource {
++            source,
++            budget,
++            pending: None,
++            grant: None,
++            size,
++        }),
++        None => source,
++    }
++}
++#[async_trait]
++impl<T: Send> datagram_pipe::Source for DatagramSource<T> {
++    type Output = T;
++    fn id(&self) -> log_utils::IdChain<u64> {
++        self.source.id()
++    }
++    async fn read(&mut self) -> io::Result<T> {
++        if self.pending.is_none() {
++            self.pending = Some(self.source.read().await?);
++        }
++        if self.grant.is_none() {
++            self.grant = Some(
++                self.budget
++                    .grant((self.size)(self.pending.as_ref().unwrap()), true),
++            );
++        }
++        self.grant.as_mut().unwrap().await?;
++        self.grant = None;
++        Ok(self.pending.take().unwrap())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[tokio::test]
++    async fn missing_broker_is_denial() {
++        let b = Budget {
++            path: "/nonexistent/mandatory-quota.sock".into(),
++            username: "00000000-0000-4000-8000-000000000001".into(),
++            direction: 0,
++        };
++        assert!(b.grant(1, false).await.is_err());
++    }
++    #[tokio::test]
++    async fn partial_tcp_credit_and_atomic_datagram_gate() {
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path().join("quota.sock");
++        let listener = tokio::net::UnixListener::bind(&path).unwrap();
++        let b = Budget {
++            path: path.to_str().unwrap().into(),
++            username: "00000000-0000-4000-8000-000000000001".into(),
++            direction: 1,
++        };
++        let server = tokio::spawn(async move {
++            for atomic in [false, true] {
++                let (mut s, _) = listener.accept().await.unwrap();
++                let mut f = [0u8; 42];
++                s.read_exact(&mut f).await.unwrap();
++                assert_eq!(f[37], u8::from(atomic));
++                assert_eq!(u32::from_be_bytes(f[38..].try_into().unwrap()), 10);
++                s.write_all(&[1, 0, 0, 0, 3]).await.unwrap();
++            }
++        });
++        assert_eq!(b.grant(10, false).await.unwrap(), 3);
++        assert!(b.grant(10, true).await.is_err());
++        server.await.unwrap();
++    }
++}

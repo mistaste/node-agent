@@ -571,14 +571,15 @@ func (r *Reconciler) prepareNaiveProxyApply(item desiredItem, clients []string, 
 	if config.PrivateKeyFile == "" {
 		config.PrivateKeyFile = filepath.Join(root, "certs", "privkey.pem")
 	}
-	bundle := transportbundle.Config{PublicPort: item.EffectivePort, TrustTunnelHostname: config.TrustTunnelHostname, TrustTunnelPort: config.TrustTunnelPort, NaiveHostname: config.Hostname, NaivePort: config.NaivePort, DecoyPort: config.DecoyPort, CertificateFile: config.CertificateFile, PrivateKeyFile: config.PrivateKeyFile, ClientUUIDs: clients}
+	bundle := transportbundle.Config{HardQuotaRequired: r.cfg.HardQuotaRequired, PublicPort: item.EffectivePort, TrustTunnelHostname: config.TrustTunnelHostname, TrustTunnelPort: config.TrustTunnelPort, NaiveHostname: config.Hostname, NaivePort: config.NaivePort, DecoyPort: config.DecoyPort, CertificateFile: config.CertificateFile, PrivateKeyFile: config.PrivateKeyFile, ClientUUIDs: clients}
 	if _, err := transportbundle.Build(r.cfg.Secret, bundle); err != nil {
 		return preparedItem{}, err
 	}
 	digestRaw, _ := json.Marshal(struct {
-		Config  json.RawMessage `json:"config"`
-		Clients []string        `json:"clients"`
-	}{Config: item.ConfigJSON, Clients: clients})
+		Config            json.RawMessage `json:"config"`
+		Clients           []string        `json:"clients"`
+		HardQuotaRequired bool            `json:"hard_quota_required,omitempty"`
+	}{Config: item.ConfigJSON, Clients: clients, HardQuotaRequired: r.cfg.HardQuotaRequired})
 	digest := sha256.Sum256(digestRaw)
 	clientParams := json.RawMessage(`{}`)
 	// This file belongs to the decoy, not Caddy's managed Naive certificate.
@@ -652,11 +653,12 @@ func (r *Reconciler) prepareTrustTunnelApply(item desiredItem, clients []string,
 		}
 		listenPort = config.ListenPort
 	}
-	endpoint := trusttunnel.Endpoint{Port: listenPort, Hostname: hostname, CertificateFile: cert, PrivateKeyFile: filepath.Join(root, "certs", "privkey.pem"), ClientUUIDs: clients, EnableHTTP1: false, EnableHTTP2: http2, EnableHTTP3: http3, IPv6Available: ipv6}
+	endpoint := trusttunnel.Endpoint{HardQuotaRequired: r.cfg.HardQuotaRequired, Port: listenPort, Hostname: hostname, CertificateFile: cert, PrivateKeyFile: filepath.Join(root, "certs", "privkey.pem"), ClientUUIDs: clients, EnableHTTP1: false, EnableHTTP2: http2, EnableHTTP3: http3, IPv6Available: ipv6}
 	digestRaw, _ := json.Marshal(struct {
-		Config  json.RawMessage `json:"config"`
-		Clients []string        `json:"clients"`
-	}{Config: item.ConfigJSON, Clients: clients})
+		Config            json.RawMessage `json:"config"`
+		Clients           []string        `json:"clients"`
+		HardQuotaRequired bool            `json:"hard_quota_required,omitempty"`
+	}{Config: item.ConfigJSON, Clients: clients, HardQuotaRequired: r.cfg.HardQuotaRequired})
 	digest := sha256.Sum256(digestRaw)
 	clientParams := json.RawMessage(`{}`)
 	if pin, err := certificateSPKIPin(cert); err == nil {
@@ -850,6 +852,7 @@ func (r *Reconciler) report(ctx context.Context, deployments []deploymentReport)
 	}
 	rawCapabilities, _ := json.Marshal(map[string]any{
 		"controller_polling":       true,
+		"hard_quota_version":       r.hardQuotaVersion(),
 		"controller_tag_namespace": "gx-",
 		"durable_inventory":        true,
 		"startup_reconciliation":   true,
@@ -972,4 +975,33 @@ func (r *Reconciler) UUIDs() []string {
 		result = append(result, ids...)
 	}
 	return result
+}
+
+func (r *Reconciler) hardQuotaVersion() int {
+	if !r.cfg.HardQuotaRequired {
+		return 0
+	}
+	seen := false
+	if r.trustTunnel != nil {
+		state, ok := r.trustTunnel.State()
+		if ok {
+			seen = true
+			if state.HardQuotaVersion != 1 {
+				return 0
+			}
+		}
+	}
+	if r.transportBundle != nil {
+		state, ok := r.transportBundle.State()
+		if ok {
+			seen = true
+			if state.HardQuotaVersion != 1 {
+				return 0
+			}
+		}
+	}
+	if seen {
+		return 1
+	}
+	return 0
 }

@@ -12,6 +12,8 @@ services:
       TRUSTTUNNEL_VERSION: "1.0.33"
       TRUSTTUNNEL_BINARY: "/opt/trusttunnel/trusttunnel_endpoint"
       TRUSTTUNNEL_ROOT: "/data/trusttunnel"
+      GUARDEX_HARD_QUOTA_REQUIRED: "${GUARDEX_HARD_QUOTA_REQUIRED:-false}"
+      GUARDEX_HARD_QUOTA_SOCKET: "/run/guardex-quota/broker.sock"
       TRUSTTUNNEL_PROCESS_MODE: "external"
       TRANSPORT_BUNDLE_ENABLED: "${TRANSPORT_BUNDLE_ENABLED:-true}"
       TRANSPORT_BUNDLE_ROOT: "/data/transport-bundle"
@@ -56,6 +58,8 @@ services:
     environment:
       TRUSTTUNNEL_BINARY: "/opt/trusttunnel/trusttunnel_endpoint"
       TRUSTTUNNEL_ROOT: "/data/trusttunnel"
+      GUARDEX_HARD_QUOTA_REQUIRED: "${GUARDEX_HARD_QUOTA_REQUIRED:-false}"
+      GUARDEX_HARD_QUOTA_SOCKET: "/run/guardex-quota/broker.sock"
       TRUSTTUNNEL_RUNNER_INTERVAL: "250ms"
     read_only: true
     tmpfs:
@@ -79,6 +83,7 @@ services:
         max-size: 5m
         max-file: "3"
     volumes:
+      - ./data/quota:/run/guardex-quota
       - ./data/trusttunnel:/data/trusttunnel
 
   transport-bundle-runner:
@@ -89,6 +94,7 @@ services:
     environment:
       TRANSPORT_BUNDLE_ROOT: "/data/transport-bundle"
       CADDY_BINARY: "/usr/bin/caddy"
+      GUARDEX_HARD_QUOTA_SOCKET: "/run/guardex-quota/broker.sock"
       HAPROXY_BINARY: "/usr/sbin/haproxy"
     read_only: true
     tmpfs:
@@ -114,6 +120,7 @@ services:
         max-size: 5m
         max-file: "3"
     volumes:
+      - ./data/quota:/run/guardex-quota
       - ./data/transport-bundle:/data/transport-bundle
       - ./data/trusttunnel:/data/trusttunnel:ro
       - ./data/caddy:/data/caddy
@@ -148,3 +155,29 @@ services:
     volumes:
       - ./data/topology:/data/topology
       - ./data/trusttunnel:/data/trusttunnel:ro
+
+  quota-broker:
+    build: .
+    command: quota-broker
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      GUARDEX_HARD_QUOTA_SOCKET: "/run/guardex-quota/broker.sock"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    volumes:
+      - ./data/quota:/run/guardex-quota
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

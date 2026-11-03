@@ -20,6 +20,7 @@ var (
 )
 
 type Config struct {
+	HardQuotaRequired   bool     `json:"hard_quota_required,omitempty"`
 	PublicPort          int      `json:"public_port"`
 	TrustTunnelHostname string   `json:"trusttunnel_hostname"`
 	TrustTunnelPort     int      `json:"trusttunnel_port"`
@@ -69,6 +70,10 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 	}
 
 	var users, credentialKeys strings.Builder
+	if cfg.HardQuotaRequired {
+		credentialKeys.WriteString(" hard-v1")
+		users.WriteString("\t\t\tguardex_hard_quota\n")
+	}
 	for _, id := range clients {
 		password, err := NaiveCredential(nodeSecret, id)
 		if err != nil {

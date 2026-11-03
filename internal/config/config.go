@@ -10,6 +10,7 @@ import (
 )
 
 type Config struct {
+	HardQuotaRequired      bool
 	ListenAddr             string
 	TLSCertFile            string
 	TLSKeyFile             string
@@ -42,6 +43,7 @@ func Load() *Config {
 		ListenAddr:             getenv("AGENT_LISTEN_ADDR", "0.0.0.0:8080"),
 		TLSCertFile:            getenv("AGENT_TLS_CERT_FILE", ""),
 		TLSKeyFile:             getenv("AGENT_TLS_KEY_FILE", ""),
+		HardQuotaRequired:      strings.EqualFold(getenv("GUARDEX_HARD_QUOTA_REQUIRED", "false"), "true"),
 		Secret:                 getenv("AGENT_SECRET", "change-me-secret"),
 		MetricsInterval:        parseDuration(getenv("METRICS_INTERVAL", "15s")),
 		MetricsOnly:            parseBool(getenv("METRICS_ONLY", "false")),

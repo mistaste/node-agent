@@ -2,7 +2,7 @@
 # Pinned source build; run in the reviewed core-libs cross compiler image.
 set -eu
 export RUSTUP_TOOLCHAIN=1.95
-export TRUSTTUNNEL_VERSION=1.1.0-guardex-account-qos.1
+export TRUSTTUNNEL_VERSION=1.1.0-guardex-hard-quota.1
 case "${1:?target architecture required}" in
   amd64) arch=x86_64 ;;
   arm64) arch=aarch64 ;;
@@ -24,7 +24,7 @@ if [ "$arch" = x86_64 ]; then
 else
   export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
 fi
-cargo build --release --locked --target "$target" --bin trusttunnel_endpoint -j 2
+cargo build --release --locked --target "$target" -p trusttunnel_endpoint --bin trusttunnel_endpoint -j 2
 binary="target/$target/release/trusttunnel_endpoint"
 if readelf -l "$binary" | grep -q INTERP; then
   echo 'Dynamic endpoint interpreter is forbidden' >&2

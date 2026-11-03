@@ -221,6 +221,13 @@ func TestTrustTunnelActiveReportPreservesCertificatePin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	h.reconciler.cfg.HardQuotaRequired = true
+	strict, err := h.reconciler.prepareTrustTunnelApply(item, []string{testClientUUID}, "clients")
+	if err != nil || strict.desiredDigest == prepared.desiredDigest || !strict.trustTunnel.HardQuotaRequired {
+		t.Fatal("quota activation did not change TT desired state", err)
+	}
+	h.reconciler.cfg.HardQuotaRequired = false
 	report := h.reconciler.reconcileTrustTunnel(context.Background(), prepared)
 	if report.Status != "active" {
 		t.Fatalf("report status = %s", report.Status)
@@ -376,6 +383,17 @@ func TestControllerAppliesNaiveProxyTransportBundle(t *testing.T) {
 	if _, err := h.reconciler.prepareApply(item); err != nil {
 		t.Fatalf("prepare NaiveProxy bundle: %v", err)
 	}
+
+	legacy, err := h.reconciler.prepareApply(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.reconciler.cfg.HardQuotaRequired = true
+	strict, err := h.reconciler.prepareApply(item)
+	if err != nil || strict.desiredDigest == legacy.desiredDigest || !strict.transportBundle.HardQuotaRequired {
+		t.Fatal("quota activation did not change Naive desired state", err)
+	}
+	h.reconciler.cfg.HardQuotaRequired = false
 	if err := h.reconciler.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("%v: %+v", err, h.latestReport().Deployments)
 	}

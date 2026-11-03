@@ -19,6 +19,8 @@ import (
 )
 
 type state struct {
+	HardQuotaRequired       bool   `json:"hard_quota_required,omitempty"`
+	HardQuotaVersion        int    `json:"hard_quota_version,omitempty"`
 	ConfigurationSHA256     string `json:"configuration_sha256,omitempty"`
 	CredentialsSHA256       string `json:"credentials_sha256,omitempty"`
 	CredentialReloadVersion int    `json:"credential_reload_version,omitempty"`
@@ -33,6 +35,7 @@ type state struct {
 const runnerStateFile = "runner-state.json"
 
 type runner struct {
+	hardQuota        bool
 	credentialReload bool
 	root             string
 	binary           string
@@ -62,6 +65,7 @@ func main() {
 	versionCtx, versionCancel := context.WithTimeout(ctx, 3*time.Second)
 	version, versionErr := exec.CommandContext(versionCtx, r.binary, "--version").Output()
 	versionCancel()
+	r.hardQuota = versionErr == nil && strings.TrimSpace(string(version)) == "1.1.0-guardex-hard-quota.1"
 	r.credentialReload = versionErr == nil && supportsCredentialReload(strings.TrimSpace(string(version)))
 	log.Printf("[trusttunnel-runner] watching %s", r.root)
 	ticker := time.NewTicker(interval)
@@ -91,6 +95,13 @@ func (r *runner) reconcile(ctx context.Context) error {
 		}
 		r.key = ""
 		return nil
+	}
+	if current.HardQuotaRequired && !r.hardQuota {
+		return errors.New("endpoint lacks mandatory hard quota ABI")
+	}
+	current.HardQuotaVersion = 0
+	if current.HardQuotaRequired {
+		current.HardQuotaVersion = 1
 	}
 	if r.credentialReload {
 		// Derive the process identity from static configuration, independently
@@ -165,6 +176,9 @@ func (r *runner) reconcile(ctx context.Context) error {
 			return err
 		}
 		cmd.Env = append(os.Environ(), "GUARDEX_CREDENTIALS_ACK_FILE="+filepath.Join(r.root, "credentials-applied", "h2.sha256"))
+	}
+	if current.HardQuotaRequired {
+		cmd.Env = append(cmd.Env, "GUARDEX_HARD_QUOTA_REQUIRED=1")
 	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -469,7 +483,7 @@ func (r *runner) waitForCredentials(ctx context.Context, expected state) error {
 
 func supportsCredentialReload(version string) bool {
 	switch version {
-	case "1.1.0-guardex-live-credentials.1", "1.1.0-guardex-account-qos.1":
+	case "1.1.0-guardex-hard-quota.1", "1.1.0-guardex-live-credentials.1", "1.1.0-guardex-account-qos.1":
 		return true
 	default:
 		return false

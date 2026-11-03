@@ -22,16 +22,17 @@ var (
 )
 
 type Endpoint struct {
-	Port            int
-	Hostname        string
-	CertificateFile string
-	PrivateKeyFile  string
-	ClientUUIDs     []string
-	EnableHTTP1     bool
-	EnableHTTP2     bool
-	EnableHTTP3     bool
-	IPv6Available   bool
-	MetricsPort     int
+	HardQuotaRequired bool `json:"hard_quota_required,omitempty"`
+	Port              int
+	Hostname          string
+	CertificateFile   string
+	PrivateKeyFile    string
+	ClientUUIDs       []string
+	EnableHTTP1       bool
+	EnableHTTP2       bool
+	EnableHTTP3       bool
+	IPv6Available     bool
+	MetricsPort       int
 }
 
 type Files struct {
@@ -128,6 +129,9 @@ func BuildFiles(root, nodeSecret string, endpoint Endpoint) (Files, error) {
 		quote(filepath.Join(root, "credentials.toml")), protocols.String(), quote("127.0.0.1:"+strconv.Itoa(metricsPort)))
 	hosts := fmt.Sprintf("[[main_hosts]]\nhostname = %s\ncert_chain_path = %s\nprivate_key_path = %s\n",
 		quote(host), quote(cert), quote(key))
+	if endpoint.HardQuotaRequired {
+		settings += "\n# guardex_hard_quota_required=true\n"
+	}
 	return Files{Settings: []byte(settings), Hosts: []byte(hosts), Credentials: []byte(credentials.String())}, nil
 }
 

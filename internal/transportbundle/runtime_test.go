@@ -106,3 +106,26 @@ func TestRuntimeRejectsSameInboundRevisionDowngradeBeforeMutation(t *testing.T) 
 		}
 	}
 }
+
+func TestMandatoryQuotaRejectsLegacyRunnerAcknowledgement(t *testing.T) {
+	root := t.TempDir()
+	r, e := NewRuntime(root, testSecret)
+	if e != nil {
+		t.Fatal(e)
+	}
+	r.readyWait = 20 * time.Millisecond
+	expected := State{InboundID: "quota", Revision: 1, Digest: "same", ClientSetSHA256: "clients", HardQuotaRequired: true, HardQuotaVersion: 1}
+	legacy := expected
+	legacy.HardQuotaVersion = 0
+	legacy.HardQuotaRequired = false
+	raw, _ := json.Marshal(legacy)
+	os.WriteFile(filepath.Join(root, "runner-state.json"), raw, 0600)
+	if _, e := r.waitForRunner(context.Background(), expected); e == nil {
+		t.Fatal("legacy runner acknowledged mandatory quota")
+	}
+	raw, _ = json.Marshal(expected)
+	os.WriteFile(filepath.Join(root, "runner-state.json"), raw, 0600)
+	if _, e := r.waitForRunner(context.Background(), expected); e != nil {
+		t.Fatal(e)
+	}
+}

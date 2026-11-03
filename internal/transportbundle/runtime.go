@@ -31,18 +31,20 @@ type ApplyRequest struct {
 }
 
 type State struct {
-	Version         int    `json:"version"`
-	InboundID       string `json:"inbound_id"`
-	Tag             string `json:"tag"`
-	Revision        int64  `json:"revision"`
-	Digest          string `json:"digest"`
-	HAProxyDigest   string `json:"haproxy_digest,omitempty"`
-	CaddyDigest     string `json:"caddy_digest,omitempty"`
-	ClientCount     int    `json:"client_count"`
-	ClientSetSHA256 string `json:"client_set_sha256"`
-	TrustTunnelPort int    `json:"trusttunnel_port"`
-	NaivePort       int    `json:"naive_port"`
-	DecoyPort       int    `json:"decoy_port"`
+	HardQuotaRequired bool   `json:"hard_quota_required,omitempty"`
+	HardQuotaVersion  int    `json:"hard_quota_version,omitempty"`
+	Version           int    `json:"version"`
+	InboundID         string `json:"inbound_id"`
+	Tag               string `json:"tag"`
+	Revision          int64  `json:"revision"`
+	Digest            string `json:"digest"`
+	HAProxyDigest     string `json:"haproxy_digest,omitempty"`
+	CaddyDigest       string `json:"caddy_digest,omitempty"`
+	ClientCount       int    `json:"client_count"`
+	ClientSetSHA256   string `json:"client_set_sha256"`
+	TrustTunnelPort   int    `json:"trusttunnel_port"`
+	NaivePort         int    `json:"naive_port"`
+	DecoyPort         int    `json:"decoy_port"`
 }
 
 func NewRuntime(root, nodeSecret string) (*Runtime, error) {
@@ -71,6 +73,10 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 	haproxyDigest := sha256.Sum256(files.HAProxy)
 	caddyDigest := sha256.Sum256(files.Caddy)
 	state := State{Version: runtimeStateVersion, InboundID: request.InboundID, Tag: request.Tag, Revision: request.Revision, Digest: hex.EncodeToString(digest[:]), HAProxyDigest: hex.EncodeToString(haproxyDigest[:]), CaddyDigest: hex.EncodeToString(caddyDigest[:]), ClientCount: len(normalizeUUIDs(request.Config.ClientUUIDs)), ClientSetSHA256: request.ClientSetSHA256, TrustTunnelPort: request.Config.TrustTunnelPort, NaivePort: request.Config.NaivePort, DecoyPort: request.Config.DecoyPort}
+	if request.Config.HardQuotaRequired {
+		state.HardQuotaRequired = true
+		state.HardQuotaVersion = 1
+	}
 	stateRaw, err := json.Marshal(state)
 	if err != nil {
 		return State{}, errors.New("transport bundle state could not be encoded")
@@ -147,7 +153,7 @@ func (r *Runtime) waitForRunner(ctx context.Context, expected State) (State, err
 		raw, err := os.ReadFile(filepath.Join(r.root, "runner-state.json"))
 		if err == nil {
 			var observed State
-			if json.Unmarshal(raw, &observed) == nil && observed.InboundID == expected.InboundID && observed.Revision == expected.Revision && observed.Digest == expected.Digest && observed.ClientSetSHA256 == expected.ClientSetSHA256 {
+			if json.Unmarshal(raw, &observed) == nil && observed.InboundID == expected.InboundID && observed.Revision == expected.Revision && observed.Digest == expected.Digest && observed.ClientSetSHA256 == expected.ClientSetSHA256 && observed.HardQuotaRequired == expected.HardQuotaRequired && observed.HardQuotaVersion == expected.HardQuotaVersion {
 				return expected, nil
 			}
 		}

@@ -1,3 +1,5 @@
 
 # Unified diffs contain a leading context space before source indentation.
 ops/patches/forwardproxy-live-credentials.patch -whitespace
+ops/patches/forwardproxy-hard-quota.patch -whitespace
+ops/patches/trusttunnel-hard-quota.patch -whitespace

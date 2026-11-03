@@ -1,0 +1,389 @@
+--- a/forwardproxy.go
++++ b/forwardproxy.go
+@@ -54,6 +54,7 @@
+ //
+ // EXPERIMENTAL: This handler is still experimental and subject to breaking changes.
+ type Handler struct {
++	GuardexHardQuota       bool `json:"guardex_hard_quota,omitempty"`
+ 	GuardexLiveCredentials bool `json:"guardex_live_credentials,omitempty"`
+ 
+ 	logger *zap.Logger
+@@ -278,19 +279,27 @@
+ 		return caddyhttp.Error(http.StatusProxyAuthRequired, authErr)
+ 	}
+ 
++	if h.GuardexHardQuota && r.Method != http.MethodConnect {
++		return caddyhttp.Error(http.StatusMethodNotAllowed, errors.New("mandatory quota requires CONNECT"))
++	}
++
+ 	var liveFlow *credentialFlow
+ 	if h.GuardexLiveCredentials {
+ 		flowCtx, cancel := context.WithCancel(r.Context())
+ 		defer cancel()
+ 		var cleanup func()
+ 		var allowed bool
+-		liveFlow, cleanup, allowed = trackCredentialFlow(r.Header.Get("Proxy-Authorization"), cancel)
++		liveFlow, cleanup, allowed = trackCredentialFlow(r.Header.Get("Proxy-Authorization"), cancel, h.GuardexHardQuota)
+ 		defer cleanup()
+ 		if !allowed {
+ 			return caddyhttp.Error(http.StatusProxyAuthRequired, errors.New("credential revoked"))
+ 		}
+ 		r = r.WithContext(flowCtx)
+ 	}
++	quota, quotaErr := newHardBudget(r.Header.Get("Proxy-Authorization"), h.GuardexHardQuota)
++	if quotaErr != nil {
++		return caddyhttp.Error(http.StatusServiceUnavailable, quotaErr)
++	}
+ 	accountQoS := authenticatedBudget(r, h.AuthCredentials != nil)
+ 
+ 	if r.ProtoMajor != 1 && r.ProtoMajor != 2 && r.ProtoMajor != 3 {
+@@ -361,6 +370,9 @@
+ 			liveFlow.bind(targetConn)
+ 			targetConn = &credentialMeteredConn{Conn: targetConn, stats: liveFlow.stats}
+ 		}
++		if quota != nil {
++			targetConn = &hardQuotaConn{Conn: targetConn, budget: quota}
++		}
+ 		targetConn = wrapAccountConn(targetConn, accountQoS)
+ 		defer targetConn.Close()
+ 
+--- a/caddyfile.go
++++ b/caddyfile.go
+@@ -85,6 +85,11 @@
+ 				h.AllowedPorts[i] = intPort
+ 			}
+ 
++		case "guardex_hard_quota":
++			if d.NextArg() {
++				return d.ArgErr()
++			}
++			h.GuardexHardQuota = true
+ 		case "guardex_live_credentials":
+ 			if d.NextArg() {
+ 				return d.ArgErr()
+--- a/live_credentials.go
++++ b/live_credentials.go
+@@ -27,7 +27,12 @@
+ 			return nil, d.Err("guardex_credentials may appear only once")
+ 		}
+ 		d.Next()
+-		app := &LiveCredentials{Keys: append([]string{}, d.RemainingArgs()...)}
++		args := append([]string{}, d.RemainingArgs()...)
++		required := len(args) > 0 && args[0] == "hard-v1"
++		if required {
++			args = args[1:]
++		}
++		app := &LiveCredentials{Keys: args, HardQuotaRequired: required}
+ 		if err := app.Provision(caddy.Context{}); err != nil {
+ 			return nil, d.Err("invalid Guardex credential inventory")
+ 		}
+@@ -39,10 +44,11 @@
+ // configuration, not during validation/provisioning. Handler generations share
+ // this registry: a graceful HTTP reload must not retain revoked CONNECT flows.
+ type LiveCredentials struct {
+-	Keys     []string `json:"keys"`
+-	allowed  map[string]struct{}
+-	previous *LiveCredentials
+-	stopped  bool
++	HardQuotaRequired bool     `json:"hard_quota_required,omitempty"`
++	Keys              []string `json:"keys"`
++	allowed           map[string]struct{}
++	previous          *LiveCredentials
++	stopped           bool
+ }
+ 
+ func (LiveCredentials) CaddyModule() caddy.ModuleInfo {
+@@ -116,7 +122,7 @@
+ 	var removed []*credentialFlow
+ 	for id, flow := range liveCredentialFlows.flows {
+ 		if app != nil {
+-			if _, ok := app.allowed[flow.key]; ok {
++			if _, ok := app.allowed[flow.key]; ok && (!app.HardQuotaRequired || flow.hard) {
+ 				continue
+ 			}
+ 		}
+@@ -128,6 +134,7 @@
+ 
+ type credentialFlow struct {
+ 	key     string
++	hard    bool
+ 	stats   *credentialCounter
+ 	cancel  context.CancelFunc
+ 	mu      sync.Mutex
+@@ -144,15 +151,15 @@
+ 	return hex.EncodeToString(digest[:])
+ }
+ 
+-func trackCredentialFlow(authorization string, cancel context.CancelFunc) (*credentialFlow, func(), bool) {
+-	flow := &credentialFlow{key: credentialHash(authorization), cancel: cancel}
++func trackCredentialFlow(authorization string, cancel context.CancelFunc, hard bool) (*credentialFlow, func(), bool) {
++	flow := &credentialFlow{key: credentialHash(authorization), cancel: cancel, hard: hard}
+ 	liveCredentialFlows.Lock()
+ 	defer liveCredentialFlows.Unlock()
+ 	app := liveCredentialFlows.current
+ 	if app == nil {
+ 		return flow, func() {}, false
+ 	}
+-	if _, ok := app.allowed[flow.key]; !ok {
++	if _, ok := app.allowed[flow.key]; !ok || (app.HardQuotaRequired && !hard) {
+ 		return flow, func() {}, false
+ 	}
+ 	raw, _ := base64.StdEncoding.DecodeString(strings.Fields(authorization)[1])
+--- a/hard_quota.go
++++ b/hard_quota.go
+@@ -0,0 +1,126 @@
++package forwardproxy
++
++import (
++	"encoding/base64"
++	"encoding/binary"
++	"errors"
++	"io"
++	"net"
++	"os"
++	"path/filepath"
++	"strings"
++	"time"
++)
++
++var errHardQuota = errors.New("traffic_quota_exhausted")
++
++type hardBudget struct{ path, id string }
++
++func newHardBudget(authorization string, required bool) (*hardBudget, error) {
++	if !required {
++		return nil, nil
++	}
++	path := os.Getenv("GUARDEX_HARD_QUOTA_SOCKET")
++	if !filepath.IsAbs(path) {
++		return nil, errors.New("mandatory quota broker unavailable")
++	}
++	fields := strings.Fields(authorization)
++	if len(fields) != 2 || !strings.EqualFold(fields[0], "Basic") {
++		return nil, errHardQuota
++	}
++	raw, e := base64.StdEncoding.DecodeString(fields[1])
++	if e != nil {
++		return nil, errHardQuota
++	}
++	id, _, ok := strings.Cut(string(raw), ":")
++	if !ok || len(id) != 36 {
++		return nil, errHardQuota
++	}
++	return &hardBudget{path, id}, nil
++}
++func (b *hardBudget) grant(n int, direction byte) (int, error) {
++	if n < 1 || n > 65536 {
++		return 0, errHardQuota
++	}
++	c, e := net.DialTimeout("unix", b.path, time.Second)
++	if e != nil {
++		return 0, e
++	}
++	defer c.Close()
++	c.SetDeadline(time.Now().Add(3 * time.Second))
++	var frame [42]byte
++	copy(frame[:36], b.id)
++	frame[36] = direction
++	binary.BigEndian.PutUint32(frame[38:], uint32(n))
++	if _, e = c.Write(frame[:]); e != nil {
++		return 0, e
++	}
++	var reply [5]byte
++	if _, e = io.ReadFull(c, reply[:]); e != nil {
++		return 0, e
++	}
++	granted := int(binary.BigEndian.Uint32(reply[1:]))
++	if reply[0] != 1 || granted < 1 || granted > n {
++		return 0, errHardQuota
++	}
++	return granted, nil
++}
++
++type hardQuotaConn struct {
++	net.Conn
++	budget *hardBudget
++}
++
++func (c *hardQuotaConn) Read(p []byte) (int, error) {
++	if len(p) > 16384 {
++		p = p[:16384]
++	}
++	n, e := c.Conn.Read(p)
++	if n == 0 {
++		return n, e
++	}
++	granted, err := c.budget.grant(n, 1)
++	if err != nil {
++		c.Conn.Close()
++		return 0, err
++	}
++	if granted < n {
++		c.Conn.Close()
++		return granted, errHardQuota
++	}
++	return n, e
++}
++func (c *hardQuotaConn) Write(p []byte) (int, error) {
++	total := 0
++	for len(p) > 0 {
++		n := len(p)
++		if n > 16384 {
++			n = 16384
++		}
++		granted, e := c.budget.grant(n, 0)
++		if e != nil {
++			c.Conn.Close()
++			return total, e
++		}
++		sent, e := c.Conn.Write(p[:granted])
++		total += sent
++		p = p[sent:]
++		if e != nil {
++			return total, e
++		}
++		if sent != granted {
++			return total, io.ErrShortWrite
++		}
++		if granted < n {
++			c.Conn.Close()
++			return total, errHardQuota
++		}
++	}
++	return total, nil
++}
++func (c *hardQuotaConn) CloseWrite() error {
++	if w, ok := c.Conn.(interface{ CloseWrite() error }); ok {
++		return w.CloseWrite()
++	}
++	return nil
++}
+--- a/hard_quota_test.go
++++ b/hard_quota_test.go
+@@ -0,0 +1,126 @@
++package forwardproxy
++
++import (
++	"bytes"
++	"context"
++	"encoding/base64"
++	"encoding/binary"
++	"github.com/caddyserver/caddy/v2"
++	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++func TestHardQuotaBeforeForwardAndPartialBudget(t *testing.T) {
++	dir, e := os.MkdirTemp("/tmp", "gx-hard-")
++	if e != nil {
++		t.Fatal(e)
++	}
++	defer os.RemoveAll(dir)
++	path := filepath.Join(dir, "quota.sock")
++	l, e := net.Listen("unix", path)
++	if e != nil {
++		t.Fatal(e)
++	}
++	defer l.Close()
++	go func() {
++		c, e := l.Accept()
++		if e != nil {
++			return
++		}
++		defer c.Close()
++		var frame [42]byte
++		io.ReadFull(c, frame[:])
++		var reply [5]byte
++		reply[0] = 1
++		binary.BigEndian.PutUint32(reply[1:], 3)
++		c.Write(reply[:])
++	}()
++	a, b := net.Pipe()
++	defer a.Close()
++	defer b.Close()
++	c := &hardQuotaConn{Conn: a, budget: &hardBudget{path, "00000000-0000-4000-8000-000000000001"}}
++	result := make(chan []byte, 1)
++	go func() { payload, _ := io.ReadAll(b); result <- payload }()
++	n, e := c.Write([]byte("123456789"))
++	if n != 3 || e == nil {
++		t.Fatal("quota boundary", n, e)
++	}
++	if payload := <-result; !bytes.Equal(payload, []byte("123")) {
++		t.Fatalf("unreserved bytes forwarded: %q", payload)
++	}
++}
++func TestHardQuotaBrokerLossNeverForwards(t *testing.T) {
++	a, b := net.Pipe()
++	defer a.Close()
++	defer b.Close()
++	c := &hardQuotaConn{Conn: a, budget: &hardBudget{filepath.Join(t.TempDir(), "missing"), "00000000-0000-4000-8000-000000000001"}}
++	if n, e := c.Write([]byte("payload")); n != 0 || e == nil {
++		t.Fatal("broker loss bypassed", n, e)
++	}
++	payload, _ := io.ReadAll(b)
++	if len(payload) != 0 {
++		t.Fatal("payload forwarded before grant")
++	}
++}
++
++func TestHardQuotaActivationRevokesUnmeteredGenerations(t *testing.T) {
++	token := "Basic " + base64.StdEncoding.EncodeToString([]byte("00000000-0000-4000-8000-000000000001:synthetic"))
++	key := credentialHash(token)
++	old := &LiveCredentials{Keys: []string{key}}
++	if e := old.Provision(caddy.Context{}); e != nil {
++		t.Fatal(e)
++	}
++	old.Start()
++	defer old.Stop()
++	legacyCtx, legacyCancel := context.WithCancel(context.Background())
++	defer legacyCancel()
++	_, done, ok := trackCredentialFlow(token, legacyCancel, false)
++	if !ok {
++		t.Fatal("legacy refused before activation")
++	}
++	defer done()
++	hardCtx, hardCancel := context.WithCancel(context.Background())
++	defer hardCancel()
++	_, hardDone, ok := trackCredentialFlow(token, hardCancel, true)
++	if !ok {
++		t.Fatal("metered refused")
++	}
++	defer hardDone()
++	next := &LiveCredentials{Keys: []string{key}, HardQuotaRequired: true}
++	if e := next.Provision(caddy.Context{}); e != nil {
++		t.Fatal(e)
++	}
++	next.Start()
++	defer next.Stop()
++	select {
++	case <-legacyCtx.Done():
++	default:
++		t.Fatal("unmetered stream survived activation")
++	}
++	select {
++	case <-hardCtx.Done():
++		t.Fatal("metered stream interrupted")
++	default:
++	}
++	_, _, ok = trackCredentialFlow(token, func() {}, false)
++	if ok {
++		t.Fatal("old generation accepted new unmetered stream")
++	}
++}
++
++func TestHardQuotaRejectsUnmeteredForwardHTTP(t *testing.T) {
++	h := &Handler{GuardexHardQuota: true}
++	r := httptest.NewRequest(http.MethodGet, "http://external.invalid/payload", nil)
++	r = r.WithContext(context.WithValue(r.Context(), caddy.ReplacerCtxKey, caddy.NewReplacer()))
++	e := h.ServeHTTP(httptest.NewRecorder(), r, nil)
++	status, ok := e.(caddyhttp.HandlerError)
++	if !ok || status.StatusCode != http.StatusMethodNotAllowed {
++		t.Fatal("non-CONNECT proxy bypass", e)
++	}
++}
