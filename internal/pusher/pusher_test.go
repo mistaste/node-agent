@@ -301,3 +301,10 @@ func TestMetricsPayloadSerializesExplicitEmptyTrafficCounters(t *testing.T) {
 		t.Fatalf("user_traffic JSON = %#v, want []", decoded["user_traffic"])
 	}
 }
+
+func TestTrafficPayloadPreservesIndependentNaiveSource(t *testing.T) {
+	got := trafficPayload([]metrics.UserTraffic{{UUID: "same", Uplink: 10}, {UUID: "same", Source: "naive", Downlink: 20}}, map[string]struct{}{"same": {}})
+	if len(got) != 2 || got[0].Source != "" || got[1].Source != "naive" {
+		t.Fatalf("sources merged: %+v", got)
+	}
+}

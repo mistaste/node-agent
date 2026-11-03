@@ -147,6 +147,7 @@ type metricsPayload struct {
 }
 
 type activeUserPayload struct {
+	Source   string `json:"source,omitempty"`
 	UUID     string `json:"uuid"`
 	Uplink   int64  `json:"uplink"`
 	Downlink int64  `json:"downlink"`
@@ -267,6 +268,7 @@ func trafficPayload(users []metrics.UserTraffic, provisioned map[string]struct{}
 			continue
 		}
 		result = append(result, activeUserPayload{
+			Source:   user.Source,
 			UUID:     uuid,
 			Uplink:   user.Uplink,
 			Downlink: user.Downlink,

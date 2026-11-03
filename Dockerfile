@@ -14,11 +14,16 @@ RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /node-age
 FROM golang:1.26.8-alpine3.24@sha256:ce864e7223ac17b1775e6fd0b4c0db580c2eb50e7953a427916379e4b92a1628 AS caddy-naive
 ENV GOPROXY=https://goproxy.cn,direct
 COPY ops/patches/forwardproxy-account-qos.patch /patches/account-qos.patch
+COPY ops/patches/forwardproxy-live-credentials.patch /patches/live-credentials.patch
+COPY ops/test-forwardproxy-live-credentials.sh /test-live-credentials.sh
 RUN apk add --no-cache git \
     && git clone https://github.com/klzgrad/forwardproxy /forwardproxy \
     && cd /forwardproxy \
     && git checkout d62c80d3dd2c706b6b87579844d2397bddd18317 \
     && git apply /patches/account-qos.patch \
+    && git apply /patches/live-credentials.patch \
+    && go mod edit -require=github.com/caddyserver/caddy/v2@v2.11.4 \
+    && sh /test-live-credentials.sh /forwardproxy \
     && go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.6 \
     && /go/bin/xcaddy build v2.11.4 \
        --with github.com/caddyserver/forwardproxy=/forwardproxy \

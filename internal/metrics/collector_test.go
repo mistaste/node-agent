@@ -42,3 +42,13 @@ func TestMarkActiveUsersCountsOnlyRecentTrafficGrowth(t *testing.T) {
 		t.Fatalf("stale idle active users = %d, want 0", len(got))
 	}
 }
+
+func TestActiveUsersCombinesSourcesWithoutDuplicateSessions(t *testing.T) {
+	c := NewCollector(time.Second)
+	now := time.Now()
+	users := []UserTraffic{{UUID: "same", Uplink: 10, Downlink: 20}, {UUID: "same", Source: "naive", Uplink: 30, Downlink: 40}}
+	active := c.markActiveUsers(now, users, map[string]bool{"same": true})
+	if len(active) != 1 || active[0].Uplink != 40 || active[0].Downlink != 60 {
+		t.Fatalf("source aggregation: %+v", active)
+	}
+}

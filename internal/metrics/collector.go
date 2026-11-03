@@ -61,6 +61,7 @@ type ActiveUser struct {
 type Collector struct {
 	nativeEnabled bool
 	trustTunnel   *trusttunnel.MetricsClient
+	naive         *trusttunnel.MetricsClient
 	interval      time.Duration
 
 	mu     sync.RWMutex
@@ -80,6 +81,7 @@ func NewCollector(interval time.Duration, interfaceName ...string) *Collector {
 	return &Collector{
 		nativeEnabled: true,
 		trustTunnel:   trusttunnel.NewMetricsClient("http://127.0.0.1:1987"),
+		naive:         trusttunnel.NewMetricsClient("http://127.0.0.1:2019/guardex"),
 		interval:      interval,
 		prevTraffic:   make(map[string]int64),
 		lastActive:    make(map[string]time.Time),
@@ -182,6 +184,16 @@ func (c *Collector) collect(ctx context.Context) {
 		}
 		for _, user := range byUUID {
 			snap.UserTraffic = append(snap.UserTraffic, user)
+		}
+		if clients, err := c.naive.Clients(ctx); err == nil {
+			for _, client := range clients {
+				snap.UserTraffic = append(snap.UserTraffic, UserTraffic{UUID: client.Username, Source: "naive", Uplink: client.Inbound, Downlink: client.Outbound})
+				if client.Sessions > 0 {
+					connected[client.Username] = true
+				}
+			}
+		} else {
+			log.Printf("[metrics] naive stats error: %v", err)
 		}
 		snap.ActiveUsers = c.markActiveUsers(snap.CollectedAt, snap.UserTraffic, connected)
 	}
@@ -297,16 +309,22 @@ func (c *Collector) markActiveUsers(now time.Time, traffic []UserTraffic, connec
 	seen := make(map[string]struct{}, len(traffic))
 	byUUID := make(map[string]UserTraffic, len(traffic))
 	for _, user := range traffic {
-		user.UUID = strings.ToLower(strings.TrimSpace(user.UUID))
+		id := strings.ToLower(strings.TrimSpace(user.UUID))
+		total := byUUID[id]
+		total.UUID = id
+		total.Uplink += user.Uplink
+		total.Downlink += user.Downlink
+		byUUID[id] = total
+	}
+	for id, user := range byUUID {
 		total := user.Uplink + user.Downlink
-		seen[user.UUID] = struct{}{}
-		byUUID[user.UUID] = user
-		if connected[user.UUID] {
-			c.lastActive[user.UUID] = now
-		} else if prev, ok := c.prevTraffic[user.UUID]; ok && total > prev {
-			c.lastActive[user.UUID] = now
+		seen[id] = struct{}{}
+		if connected[id] {
+			c.lastActive[id] = now
+		} else if prev, ok := c.prevTraffic[id]; ok && total > prev {
+			c.lastActive[id] = now
 		}
-		c.prevTraffic[user.UUID] = total
+		c.prevTraffic[id] = total
 	}
 
 	active := make([]ActiveUser, 0, len(c.lastActive))
@@ -327,6 +345,7 @@ func (c *Collector) markActiveUsers(now time.Time, traffic []UserTraffic, connec
 }
 
 type UserTraffic struct {
+	Source   string
 	UUID     string
 	Uplink   int64
 	Downlink int64

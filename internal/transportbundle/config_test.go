@@ -1,6 +1,9 @@
 package transportbundle
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,6 +17,16 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	files, err := Build(testSecret, Config{PublicPort: 443, TrustTunnelHostname: "node.example.com", TrustTunnelPort: 8443, NaiveHostname: "naive.node.example.com", NaivePort: 9443, DecoyPort: 9080, CertificateFile: "/etc/letsencrypt/fullchain.pem", PrivateKeyFile: "/etc/letsencrypt/privkey.pem", ClientUUIDs: []string{testUUID}})
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	password, err := NaiveCredential(testSecret, testUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := base64.StdEncoding.EncodeToString([]byte(testUUID + ":" + password))
+	digest := sha256.Sum256([]byte(token))
+	if !strings.Contains(string(files.Caddy), fmt.Sprintf("guardex_credentials %x", digest)) || !strings.Contains(string(files.Caddy), "guardex_live_credentials") {
+		t.Fatal("live CONNECT authority missing or mismatched")
 	}
 	haproxy := string(files.HAProxy)
 	inspection := regexp.MustCompile(`(?m)^\s*tcp-request inspect-delay (\S+)$`).FindStringSubmatch(haproxy)
@@ -37,7 +50,6 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 		}
 	}
 	caddy := string(files.Caddy)
-	password, _ := NaiveCredential(testSecret, testUUID)
 	if !strings.Contains(caddy, "basic_auth "+testUUID+" "+password) || !strings.Contains(caddy, "probe_resistance") || !strings.Contains(caddy, "auto_https disable_redirects") {
 		t.Fatal("Caddy authentication or probe resistance missing")
 	}

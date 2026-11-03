@@ -65,16 +65,20 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 		return Files{}, errors.New("at least one Naive client is required")
 	}
 
-	var users strings.Builder
+	var users, credentialKeys strings.Builder
 	for _, id := range clients {
 		password, err := NaiveCredential(nodeSecret, id)
 		if err != nil {
 			return Files{}, err
 		}
 		fmt.Fprintf(&users, "\t\t\tbasic_auth %s %s\n", id, password)
+		token := base64.StdEncoding.EncodeToString([]byte(id + ":" + password))
+		digest := sha256.Sum256([]byte(token))
+		fmt.Fprintf(&credentialKeys, " %x", digest)
 	}
 	caddy := fmt.Sprintf(`{
 	order forward_proxy before file_server
+	guardex_credentials%s
 	auto_https disable_redirects
 }
 
@@ -82,6 +86,7 @@ https://%s:%d, https://:%d {
 	bind 127.0.0.1
 	route {
 		forward_proxy {
+			guardex_live_credentials
 %s
 			hide_ip
 			hide_via
@@ -105,7 +110,7 @@ https://%s:%d, https://:%d {
 	tls %s %s
 	respond "OK" 200
 }
-`, naiveHost, cfg.NaivePort, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
+`, credentialKeys.String(), naiveHost, cfg.NaivePort, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 
 	// Preserve healthy idle tunnels, but reclaim dead physical connections after
 	// network handover. Kernel defaults otherwise retain them for over two hours.
