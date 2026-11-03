@@ -1,5 +1,10 @@
 # Batched quota credit: isolated latency acceptance
 
+Historical migration138 speed-only packet. Operational qualification found
+material unused-credit cost and superseded this with migration139 known-unused
+closes and demand-sized initial credit. Use HARD-QUOTA-OPERATIONAL-RESULTS.md and
+the current rollout runbook; do not activate the138 no-return policy.
+
 The original pre-forward broker (1922ce2) performs one verified TLS controller
 request per 16 KiB. Its opt-in quota-path test measured 64 RPCs/MiB and 1.29 Mbit/s
 for a cold 1 MiB transfer with an added 100 ms controller response delay. This is

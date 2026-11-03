@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,7 +16,7 @@ import (
 
 func TestBrokerFailsClosedAndValidatesBindings(t *testing.T) {
 	id := "00000000-0000-4000-8000-000000000001"
-	for _, mode := range []string{"valid", "wrong_boot", "oversized", "expired", "denied", "atomic_partial"} {
+	for _, mode := range []string{"valid", "wrong_boot", "oversized", "expired", "denied", "atomic_partial", "legacy_protocol"} {
 		t.Run(mode, func(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("X-Service-Token") != "token" || r.Header.Get("X-Node-Secret") != "01234567890123456789012345678901" {
@@ -25,7 +26,10 @@ func TestBrokerFailsClosedAndValidatesBindings(t *testing.T) {
 				json.NewDecoder(r.Body).Decode(&body)
 				body["expires_at"] = time.Now().Add(time.Second)
 				body["valid_for_ms"] = 1000
+				body["settlement_version"] = 1
 				switch mode {
+				case "legacy_protocol":
+					body["settlement_version"] = 0
 				case "wrong_boot":
 					body["boot_id"] = nonce()
 				case "oversized":
@@ -95,7 +99,7 @@ func TestBatchedCreditSharedAcrossTwoNodesAndConcurrentStreams(t *testing.T) {
 		remaining -= grant
 		mu.Unlock()
 		charged.Add(int64(grant))
-		json.NewEncoder(w).Encode(map[string]any{"request_id": q.RequestID, "boot_id": q.BootID, "client_uuid": q.ClientUUID, "bytes": grant, "expires_at": time.Now().Add(5 * time.Second), "valid_for_ms": 5000})
+		json.NewEncoder(w).Encode(map[string]any{"request_id": q.RequestID, "boot_id": q.BootID, "client_uuid": q.ClientUUID, "bytes": grant, "expires_at": time.Now().Add(5 * time.Second), "valid_for_ms": 5000, "settlement_version": 1})
 	}))
 	defer server.Close()
 	nodes := make([]*Broker, 2)
@@ -130,6 +134,13 @@ func TestBatchedCreditExpiryRestartLossAndAtomicBoundary(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var q map[string]any
 		json.NewDecoder(r.Body).Decode(&q)
+		if strings.HasSuffix(r.URL.Path, "/settle") {
+			mu.Lock()
+			remaining += uint32(q["unused_bytes"].(float64))
+			mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]any{"request_id": q["request_id"], "status": "closed"})
+			return
+		}
 		mu.Lock()
 		n := uint32(q["bytes"].(float64))
 		if n > remaining {
@@ -146,6 +157,7 @@ func TestBatchedCreditExpiryRestartLossAndAtomicBoundary(t *testing.T) {
 		q["bytes"] = n
 		q["expires_at"] = time.Now().Add(5 * time.Second)
 		q["valid_for_ms"] = 5000
+		q["settlement_version"] = 1
 		json.NewEncoder(w).Encode(q)
 	}))
 	defer server.Close()
@@ -155,10 +167,13 @@ func TestBatchedCreditExpiryRestartLossAndAtomicBoundary(t *testing.T) {
 		return b
 	}
 	b := makeBroker()
-	if n, e := b.Allocate(context.Background(), id, 1, false); n != 1 || e != nil {
+	if n, e := b.Allocate(context.Background(), id, 2, false); n != 2 || e != nil {
 		t.Fatal(n, e)
 	}
-	if n, e := b.Allocate(context.Background(), id, 1, false); n != 1 || e != nil || calls.Load() != 1 {
+	if n, e := b.Allocate(context.Background(), id, 1, false); n != 1 || e != nil || calls.Load() != 2 {
+		t.Fatal("charged credit not reused", n, e, calls.Load())
+	}
+	if n, e := b.Allocate(context.Background(), id, 1, false); n != 1 || e != nil || calls.Load() != 2 {
 		t.Fatal("charged credit not reused", n, e, calls.Load())
 	}
 	c := b.credits[id]
@@ -166,14 +181,14 @@ func TestBatchedCreditExpiryRestartLossAndAtomicBoundary(t *testing.T) {
 		c.parts[i].deadline = time.Now().Add(-time.Second)
 	}
 	c.deadline = time.Now().Add(-time.Second)
-	if n, e := b.Allocate(context.Background(), id, 1, false); n != 1 || e != nil || calls.Load() != 2 {
+	if n, e := b.Allocate(context.Background(), id, 1, false); n != 1 || e != nil || calls.Load() != 3 {
 		t.Fatal("expired credit reused", n, e, calls.Load())
 	}
 	restarted := makeBroker()
 	if b.boot == restarted.boot {
 		t.Fatal("reused boot")
 	}
-	if n, e := restarted.Allocate(context.Background(), id, 1, false); n != 1 || e != nil || calls.Load() != 3 {
+	if n, e := restarted.Allocate(context.Background(), id, 1, false); n != 1 || e != nil || calls.Load() != 4 {
 		t.Fatal("restart restored credit", n, e, calls.Load())
 	}
 	mu.Lock()
@@ -207,7 +222,7 @@ func TestCreditCannotExtendOriginalLeaseAndWaitIsCancellable(t *testing.T) {
 	b, _ := New("https://controller.invalid", "01234567890123456789012345678901", "token")
 	id := "00000000-0000-4000-8000-000000000001"
 	c := b.creditFor(id)
-	c.parts = []cachedGrant{{10, time.Now().Add(-time.Second)}, {20, time.Now().Add(time.Second)}}
+	c.parts = []cachedGrant{{remaining: 10, deadline: time.Now().Add(-time.Second)}, {remaining: 20, deadline: time.Now().Add(time.Second)}}
 	c.remaining = 30
 	c.deadline = time.Now().Add(time.Second)
 	if n, e := b.Allocate(context.Background(), id, 20, true); n != 20 || e != nil {
@@ -228,11 +243,15 @@ func TestOnlyPreviouslyChargedUnexpiredCreditSurvivesControllerOutage(t *testing
 		json.NewDecoder(r.Body).Decode(&q)
 		q["expires_at"] = time.Now().Add(5 * time.Second)
 		q["valid_for_ms"] = 5000
+		q["settlement_version"] = 1
 		json.NewEncoder(w).Encode(q)
 	}))
 	b, _ := New(server.URL, "01234567890123456789012345678901", "token")
 	b.client = server.Client()
 	id := "00000000-0000-4000-8000-000000000001"
+	if n, e := b.Allocate(context.Background(), id, 16384, false); n != 16384 || e != nil {
+		t.Fatal(n, e)
+	}
 	if n, e := b.Allocate(context.Background(), id, 1, false); n != 1 || e != nil {
 		t.Fatal(n, e)
 	}
@@ -257,6 +276,7 @@ func TestServerLeaseTTLRejectsLegacyAndCannotUseNodeWallClock(t *testing.T) {
 				json.NewDecoder(r.Body).Decode(&q)
 				q["expires_at"] = time.Now().Add(-24 * time.Hour)
 				q["valid_for_ms"] = ttl
+				q["settlement_version"] = 1
 				json.NewEncoder(w).Encode(q)
 			}))
 			defer server.Close()
@@ -268,12 +288,158 @@ func TestServerLeaseTTLRejectsLegacyAndCannotUseNodeWallClock(t *testing.T) {
 				if e != nil || n != 1 {
 					t.Fatal("wall clock skew changed server lease", n, e)
 				}
-				if time.Until(b.credits[id].parts[0].deadline) > 900*time.Millisecond {
+				if time.Until(b.credits[id].deadline) > 900*time.Millisecond {
 					t.Fatal("remaining lease extended beyond RPC-start bound")
 				}
 			} else if e == nil || n != 0 {
 				t.Fatal("missing/invalid remaining lease accepted", n, e)
 			}
 		})
+	}
+}
+
+func TestKnownUnusedCloseAndFailedAcquisitionCannotDoubleSpend(t *testing.T) {
+	type record struct {
+		boot, id         string
+		amount, returned uint32
+		closed           bool
+		reads, closes    int
+	}
+	var mu sync.Mutex
+	remaining := uint32(4096)
+	records := map[string]*record{}
+	first := ""
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var q struct {
+			RequestID  string `json:"request_id"`
+			BootID     string `json:"boot_id"`
+			ClientUUID string `json:"client_uuid"`
+			Bytes      uint32 `json:"bytes"`
+			Unused     uint32 `json:"unused_bytes"`
+		}
+		json.NewDecoder(r.Body).Decode(&q)
+		mu.Lock()
+		defer mu.Unlock()
+		g := records[q.RequestID]
+		if strings.HasSuffix(r.URL.Path, "/settle") {
+			if g == nil || g.boot != q.BootID || g.id != q.ClientUUID || q.Unused > g.amount || (g.closed && q.Unused != g.returned) {
+				http.Error(w, "bad close", 403)
+				return
+			}
+			if !g.closed {
+				g.closed = true
+				g.returned = q.Unused
+				remaining += q.Unused
+			}
+			g.closes++
+			if g.closes == 1 {
+				http.Error(w, "lost acknowledgement after commit", 503)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"request_id": q.RequestID, "status": "closed"})
+			return
+		}
+		if g == nil {
+			amount := q.Bytes
+			if amount > remaining {
+				amount = remaining
+			}
+			remaining -= amount
+			g = &record{boot: q.BootID, id: q.ClientUUID, amount: amount}
+			records[q.RequestID] = g
+			if first == "" {
+				first = q.RequestID
+			}
+		}
+		g.reads++
+		if q.RequestID == first && g.reads <= 2 {
+			http.Error(w, "lost charged grant response", 503)
+			return
+		}
+		amount := g.amount
+		ttl := int64(5000)
+		if g.closed {
+			amount = 0
+			ttl = 0
+		}
+		json.NewEncoder(w).Encode(map[string]any{"request_id": q.RequestID, "boot_id": q.BootID, "client_uuid": q.ClientUUID, "bytes": amount, "expires_at": time.Now().Add(5 * time.Second), "valid_for_ms": ttl, "settlement_version": 1})
+	}))
+	defer server.Close()
+	b, _ := New(server.URL, "01234567890123456789012345678901", "token")
+	b.client = server.Client()
+	id := "00000000-0000-4000-8000-000000000001"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if n, e := b.Allocate(ctx, id, 10, false); n != 0 || e == nil {
+		t.Fatal("lost response produced engine credit", n, e)
+	}
+	b.ReleaseUnused(ctx)
+	mu.Lock()
+	balance := remaining
+	original := first
+	mu.Unlock()
+	if balance != 4096 {
+		t.Fatal("failed acquisition was not cancelled exactly once", balance)
+	}
+	if old, e, _ := b.fetchReservation(ctx, id, 10, original); e != nil || old.Bytes != 0 || old.ValidForMillis != 0 {
+		t.Fatal("closed acquisition replayed", old, e)
+	}
+
+	for {
+		if n, e := b.Allocate(ctx, id, 1, false); e == nil {
+			if n != 1 {
+				t.Fatal(n)
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	var used atomic.Int64
+	used.Store(1)
+	var workers sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for j := 0; j < 100; {
+				if n, e := b.Allocate(ctx, id, 1, false); e == nil {
+					used.Add(int64(n))
+					j++
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Millisecond):
+				}
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for j := 0; j < 10; j++ {
+				b.ReleaseUnused(ctx)
+			}
+		}()
+	}
+	workers.Wait()
+	b.ReleaseUnused(ctx)
+	mu.Lock()
+	balance = remaining
+	mu.Unlock()
+	if used.Load() != 1601 || int64(balance)+used.Load() != 4096 {
+		t.Fatal("close raced with an engine grant or double-refunded", balance, used.Load())
+	}
+	b.pendingMu.Lock()
+	left := len(b.pending) + len(b.abandoned)
+	b.pendingMu.Unlock()
+	if left != 0 {
+		t.Fatal("close acknowledgement retry incomplete", left)
 	}
 }

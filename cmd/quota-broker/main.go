@@ -56,7 +56,11 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-	if err := broker.Serve(ctx, listener); err != nil {
-		log.Fatal(err)
+	err = broker.Serve(ctx, listener)
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	broker.ReleaseUnused(closeCtx)
+	closeCancel()
+	if err != nil {
+		log.Printf("quota broker stopped: %v", err)
 	}
 }

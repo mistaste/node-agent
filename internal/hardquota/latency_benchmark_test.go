@@ -27,6 +27,7 @@ func TestControllerRTTBenchmark(t *testing.T) {
 				json.NewDecoder(r.Body).Decode(&body)
 				body["expires_at"] = time.Now().Add(5 * time.Second)
 				body["valid_for_ms"] = 5000
+				body["settlement_version"] = 1
 				json.NewEncoder(w).Encode(body)
 			}))
 			b, e := New(server.URL, "01234567890123456789012345678901", "token")

@@ -168,6 +168,7 @@ func exchange(f *flow, udp *net.UDPAddr) error {
 }
 
 func run() (map[string]any, error) {
+	netem := os.Getenv("GUARDEX_HARD_QUOTA_NETEM") == "1"
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	root, e := os.MkdirTemp("/tmp", "guardex-quota-fixture-")
@@ -266,14 +267,16 @@ func run() (map[string]any, error) {
 		return nil, e
 	}
 	defer sink.Close()
-	var forwarded atomic.Int64
+	var forwarded, activeSink atomic.Int64
 	go func() {
 		for {
 			c, e := sink.Accept()
 			if e != nil {
 				return
 			}
+			activeSink.Add(1)
 			go func() {
+				defer activeSink.Add(-1)
 				defer c.Close()
 				b := make([]byte, 65536)
 				for {
@@ -313,7 +316,7 @@ func run() (map[string]any, error) {
 	for forwarded.Load() < 103 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if forwarded.Load() != 103 || total.Load() != 103 {
+	if total.Load() != 103 || forwarded.Load() > 103 || (!netem && forwarded.Load() != 103) || forwarded.Load() == 0 {
 		return nil, fmt.Errorf("shared H2/H3 TCP boundary forwarded=%d allocated=%d want103", forwarded.Load(), total.Load())
 	}
 
@@ -355,7 +358,7 @@ func run() (map[string]any, error) {
 	for e := range downloadErrors {
 		return nil, e
 	}
-	if received.Load() != 103 {
+	if received.Load() > 103 || (!netem && received.Load() != 103) || received.Load() == 0 {
 		return nil, fmt.Errorf("shared H2/H3 TCP download boundary=%d want103", received.Load())
 	}
 	udp, e := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -399,23 +402,40 @@ func run() (map[string]any, error) {
 			return nil, fmt.Errorf("denied UDP consumed partial grant %d", r)
 		}
 		mu.Lock()
-		remaining = 8192
+		positiveBudget := int64(8192)
+		attempts := 1
+		if netem {
+			positiveBudget = 32768
+			attempts = 3
+		}
+		remaining = positiveBudget
 		mu.Unlock()
-		f, status, e = open(ctx, proxy, "_udp2", user, "fixture", v)
-		if e != nil || status != 200 {
-			return nil, fmt.Errorf("positive UDP open %s %d %v", v, status, e)
-		}
-		if e := exchange(f, udp.LocalAddr().(*net.UDPAddr)); e != nil {
+		var positiveErr error
+		for attempt := 0; attempt < attempts; attempt++ {
+			f, status, e = open(ctx, proxy, "_udp2", user, "fixture", v)
+			if e != nil || status != 200 {
+				return nil, fmt.Errorf("positive UDP open %s %d %v", v, status, e)
+			}
+			positiveErr = exchange(f, udp.LocalAddr().(*net.UDPAddr))
 			f.close()
-			return nil, fmt.Errorf("positive UDP %s: %v", v, e)
+			if positiveErr == nil {
+				break
+			}
 		}
-		f.close()
+		if positiveErr != nil {
+			return nil, fmt.Errorf("positive UDP %s: %v", v, positiveErr)
+		}
+
 		mu.Lock()
 		r = remaining
 		mu.Unlock()
-		if r != 0 {
+		if (!netem && r != 0) || r < 0 || r > positiveBudget-8192 {
 			return nil, fmt.Errorf("UDP directions not shared: %d", r)
 		}
+	}
+
+	if e := wait(ctx, func() bool { return activeSink.Load() == 0 }); e != nil {
+		return nil, fmt.Errorf("previous TCP flows did not drain: %w", e)
 	}
 	broker.Close()
 	before := forwarded.Load()
@@ -431,7 +451,7 @@ func run() (map[string]any, error) {
 	if forwarded.Load() != before {
 		return nil, fmt.Errorf("broker loss forwarded payload")
 	}
-	return map[string]any{"result": "PASS", "h2_h3_shared_tcp_exact_bytes": 103, "h2_h3_tcp_download_exact_bytes": 103, "h2_h3_udp_atomic_denied": true, "h2_h3_udp_both_directions": true, "broker_loss_failclosed": true}, nil
+	return map[string]any{"result": "PASS", "network_loss_mode": netem, "tcp_authorized_bytes": 103, "tcp_sink_forwarded_bytes": forwarded.Load(), "tcp_download_received_bytes": received.Load(), "tcp_upload_delivery_cost": 103 - forwarded.Load(), "tcp_download_delivery_cost": 103 - received.Load(), "h2_h3_udp_atomic_denied": true, "h2_h3_udp_both_directions": true, "broker_loss_failclosed": true}, nil
 }
 func main() {
 	start := time.Now()

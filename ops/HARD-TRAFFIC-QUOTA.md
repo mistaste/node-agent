@@ -1,56 +1,58 @@
 # Strict traffic quota rollout
 
-Build the updated image containing `quota-broker`, the patched Caddy module and
-TrustTunnel `1.1.0-guardex-hard-quota.1`. The broker uses the existing
-CONTROLLER_URL, AGENT_SECRET and INTERNAL_SERVICE_TOKEN from `.env`; controller
-HTTPS verification is mandatory. The shared Unix socket is root:65532 mode 0660
-inside a private directory, mounted only into the broker and engine runners.
+Production remains OFF until the bounded cohort owner qualifies all routes.
+Deploy the backend API and migrations through **139 on every API worker first**,
+then the updated broker and patched engines. New funding responses must contain
+`settlement_version=1` and server-recomputed `valid_for_ms`; missing/old/mixed
+protocol responses cannot fund engine traffic. Both engine runners still require
+GUARDEX_HARD_QUOTA_REQUIRED=true and a real mandatory-runtime acknowledgement
+before advertising hard_quota_version=1. The backend account gate defaults false.
 
-Deploy the backend migration 137 and reservation API before activating engines.
-Set GUARDEX_HARD_QUOTA_REQUIRED=true on a canary node's node-agent configuration
-and recreate the updated services. Both engines must acknowledge mandatory quota
-before hard_quota_version=1 is advertised. Unsupported binaries cannot satisfy
-the mandatory state. Activation restarts existing unmetered TrustTunnel children;
-the Caddy credential app closes old unmetered CONNECT handler generations.
+The broker uses existing CONTROLLER_URL, AGENT_SECRET and INTERNAL_SERVICE_TOKEN
+with verified HTTPS, plus a root:65532 mode0660 private Unix socket shared only
+with the engine runners. Initial credit is demand-sized; sustained traffic grows
+reservations up to4MiB. All credit is charged centrally before engine grants and
+shared across streams/directions of a credential. Each reservation retains its
+own original <=5-second deadline, anchored before RPC on local monotonic time.
+Refill/retry cannot extend a month/Premium expiry. UDP is all-or-nothing.
 
-The account flag in the backend is a separate handover gate. Until it is enabled,
-mandatory engines deny data for the account. Enable only after every primary,
-fallback and private route has a fresh hard_quota_version=1 report and the final
-legacy counters have been reconciled. Use the backend's checked activation SQL.
-Never downgrade an enabled account onto an unmetered route. Broker/controller
-loss deliberately interrupts forwarding; there is no fail-open fallback.
+## Known-unused closes
 
-The broker reserves byte credit centrally before making it available to engines.
-Credit is shared by all streams and directions of a credential; reservations grow
-from 64 KiB to at most 4 MiB during sustained demand. Each reservation retains its
-own original deadline (at most five seconds, and bounded by entitlement/month
-expiry). A refill never extends an older reservation. Cached credit is memory
-only; lost replies, process restart and expiry never refund or restore it. UDP
-needs the complete datagram budget before any payload is forwarded.
+Only bytes irrevocably detached by the broker before being handed to an engine
+can return. POST /v1/internal/node/traffic/settle is bound to original server,
+request, boot, client, account and period. Its transaction/advisory lock records
+an immutable settlement tombstone and refunds once; repeated identical closes
+acknowledge without another refund, conflicting closes fail, and closed-reserve
+replay returns zero/TTL0. Old-period returns never fund the current period.
 
-Deploy backend migration 138 before the batched broker. During a controller
-outage only previously charged, unexpired credit can still be used; refill is
-fail closed and expiry stops cached credit. Broker disappearance stops the data
-plane immediately. Idle/lost unused credit remains charged: the conservative
-maximum outstanding reservation is 4 MiB plus a residual payload per active
-credential per node. Unused expiry charges can accumulate over repeated bursts; compare charged
-ledger bytes with actual free-traffic counters after drain during canary monitoring.
-This is a conservative quota tradeoff, not a claim of exact payload-only billing.
+The broker sweeps expired known-unused credit and drains it on graceful stop.
+Lost close acknowledgements retain the immutable close for retry. Failed funding
+requests are retried/recovered using the SAME original request identity; results
+never handed to an engine are closed, not made spendable during recovery. There
+is no server-side automatic expiry refund and no persisted/recreated credit.
+Engine-issued bytes with uncertain delivery and cache lost in a crash remain
+charged. The measured crash residual is explicit in the operational results.
 
-The opt-in latency benchmark is in internal/hardquota/latency_benchmark_test.go.
-Run GUARDEX_QUOTA_LATENCY_BENCH=1 go test ./internal/hardquota -run
-TestControllerRTTBenchmark -v. It measures quota-path overhead with injected TLS
-controller delay, not production VPN throughput. Backend acceptance additionally
-measures real engine/broker/TLS/PostgreSQL forwarding at injected 100/250 ms delay.
-Keep fleet enablement off until representative canary capacity is verified.
+During controller outage only previously charged, unexpired credit can be used;
+refill is fail closed. Broker loss stops new engine grants. Repeated denials are
+coalesced for250ms and can only delay retry, never permit forwarding. Pending
+close/recovery state is bounded; it is not spendable credit.
 
-Acceptance evidence must identify actual binaries, source/patch hashes and flags.
-The backend opt-in PostgreSQL acceptance can launch two real Caddy nodes and
-brokers. Rust's hard_quota tests cover missing broker, partial TCP and atomic
-UDP; real H2/H3 TCP/UDP acceptance is additionally required before rollout.
+## Bounded handover
 
-The batched broker requires the updated API's `valid_for_ms`, recomputed from the
-original grant expiry using the database clock on every response/retry. It anchors
-that remaining lifetime before the RPC using local monotonic time and a safety
-margin. Node wall-clock skew cannot extend a month/Premium deadline. Missing or
-out-of-range remaining TTL fails closed; deploy the API before this broker.
+Reconcile final legacy counters; quiesce every primary, fallback and private route
+before ledger handoff. Old engines cannot reconstruct historical unreported
+traffic. Confirm real compatible runtime ACK/capability freshness and all API
+workers' settlement support, then use the backend checked activation SQL for the
+reviewed cohort. Never expose an enabled account on an unmetered route. Any
+rollback must first quiesce the cohort and stop brokers; retain settlement
+tombstones and ledger state. Do not erase/refund unknown credit or reactivate
+legacy routes while the account can still forward traffic.
+
+Evidence must identify exact source, binaries, route/cohort scope and accounting
+cost. The quota-only latency benchmark is opt-in in internal/hardquota. The
+backend opt-in PostgreSQL canary covers real brokers/TLS/DB,32 concurrent accounts
+with deterministic jitter/lost replies, low-volume/pause/expiry/graceful/crash
+cost, plus separate real-engine byte-ceiling tests. ops/run-hard-quota-netem.sh
+runs native H2/H3 TCP/UDP in a disposable --network none namespace with jitter
+and packet loss; it changes no host qdisc/sysctl. See the operational results.
