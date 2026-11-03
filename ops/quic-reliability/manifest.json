@@ -11,7 +11,13 @@
     "version": "0.3.27",
     "crate_sha256": "0beca50380b1fc32983fc1cb4587bfa4bb9e78fc259aad4a0032d2080309222d",
     "upstream_fix": "b1098038b07745576008662dd09fe93ed573f1fc",
-    "upstream_url": "https://github.com/hyperium/h2/pull/832"
+    "upstream_url": "https://github.com/hyperium/h2/pull/832",
+    "pristine_source_sha256": {
+      "src/proto/streams/prioritize.rs": "7a355f0efe8ed60f1b11741078064642ffc3a91f640116639f5d0cb34751f4eb"
+    },
+    "patched_source_sha256": {
+      "src/proto/streams/prioritize.rs": "d665243430b46c07854116e7facbc60779cd40dbdb7b79fd55953be93c146012"
+    }
   },
   "native_commits": [
     "506588f1c8c563c918edff8e8017f4e7687a494b",
@@ -34,7 +40,7 @@
   "h2_patch": "h2-0.3.27-reclaim-capacity.patch",
   "lockfile": "trusttunnel-h2-capacity.lock",
   "scope": "Endpoint-only candidate on the recorded Jakarta baseline; no account-QoS, Caddy, node-agent or controller changes.",
-  "validation_status": "Local absolute Rust1.95 gates and intentional regression controls passed; private Linux artifact and canary pending.",
+  "validation_status": "Seven corrected offline source-assembly checks passed; retained baseline h2 implementation proof and Linux artifact/canary pending.",
   "expected_source_sha256": {
     "lib/src/quic_multiplexer.rs": "37c154454323987d26a0f8255a531905903f414c653b63083a67bfa56ae7e67c",
     "lib/src/http3_codec.rs": "6cac362c48579fab39e36b358eb1364a6fe411fc3737c1af9d095d831defa4c4"
@@ -49,5 +55,6 @@
     "old_behavior_failures": 4,
     "final_green_tests": 2,
     "shutdown_limit": "The absence-of-first-lock observation is scheduling bounded to one second, not an arbitrary-starvation guarantee."
-  }
+  },
+  "baseline_h2_implementation_verified": false
 }

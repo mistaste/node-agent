@@ -50,8 +50,15 @@ def prepare(source, recipe, crate=None):
         vendor = source / "vendor/h2"
         vendor.mkdir(parents=True)
         run("tar", "-xzf", str(archive), "--strip-components=1", "-C", str(vendor))
-        run("git", "apply", "--check", str(inputs / manifest["h2_patch"]), cwd=vendor)
-        run("git", "apply", str(inputs / manifest["h2_patch"]), cwd=vendor)
+        for path, expected in manifest["h2"]["pristine_source_sha256"].items():
+            if sha(vendor / path) != expected:
+                raise ValueError("pristine h2 source checksum mismatch: " + path)
+        run("git", "apply", "--check", "--directory=vendor/h2", str(inputs / manifest["h2_patch"]), cwd=source)
+        run("git", "apply", "--directory=vendor/h2", str(inputs / manifest["h2_patch"]), cwd=source)
+        for path, expected in manifest["h2"]["patched_source_sha256"].items():
+            if sha(vendor / path) != expected:
+                raise ValueError("patched h2 source checksum mismatch: " + path)
+        run("git", "apply", "--reverse", "--check", "--directory=vendor/h2", str(inputs / manifest["h2_patch"]), cwd=source)
     with (source / "Cargo.toml").open("a") as output:
         output.write('\n[patch.crates-io]\nh2 = { path = "vendor/h2" }\n')
     shutil.copyfile(inputs / manifest["lockfile"], source / "Cargo.lock")

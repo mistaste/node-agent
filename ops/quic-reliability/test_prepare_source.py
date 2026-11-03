@@ -3,11 +3,13 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import sys
 sys.dont_write_bytecode = True
 
@@ -40,9 +42,35 @@ class SourceAssembly(unittest.TestCase):
             self.assertEqual(module.sha(self.source / path), expected, path)
         self.assertEqual(result["lock_sha256"], manifest["inputs"][manifest["lockfile"]])
         self.assertIn('h2 = { path = "vendor/h2" }', (self.source / "Cargo.toml").read_text())
-        self.assertTrue((self.source / "vendor/h2/src/proto/streams/send.rs").exists())
+        for path, expected in manifest["h2"]["patched_source_sha256"].items():
+            self.assertEqual(module.sha(self.source / "vendor/h2" / path), expected)
+            self.assertNotEqual(expected, manifest["h2"]["pristine_source_sha256"][path])
+        module.run("git", "apply", "--reverse", "--check", "--directory=vendor/h2", str(recipe / "inputs" / manifest["h2_patch"]), cwd=self.source)
         with self.assertRaisesRegex(ValueError, "clean"):
             module.prepare(self.source, recipe, options.h2_crate)
+
+    def test_old_vendor_cwd_silent_skip_is_rejected(self):
+        original = module.run
+        def old_apply(*args, cwd=None):
+            if args[:2] == ("git", "apply") and "--directory=vendor/h2" in args and "--check" not in args:
+                return original("git", "apply", "--verbose", args[-1], cwd=self.source / "vendor/h2")
+            return original(*args, cwd=cwd)
+        with mock.patch.object(module, "run", side_effect=old_apply):
+            with self.assertRaisesRegex(ValueError, "patched h2 source checksum"):
+                module.prepare(self.source, recipe, options.h2_crate)
+
+    def test_canonical_h2_script_applies_backport_in_git_checkout(self):
+        patches = self.root / "patches"
+        patches.mkdir()
+        shutil.copyfile(recipe / "inputs" / manifest["h2_patch"], patches / "h2-capacity.patch")
+        shutil.copyfile(recipe / "inputs" / manifest["lockfile"], patches / "endpoint.lock")
+        environment = dict(os.environ, GUARDEX_ENDPOINT_SOURCE=str(self.source),
+                           GUARDEX_ENDPOINT_PATCHES=str(patches), GUARDEX_H2_ARCHIVE=str(options.h2_crate))
+        subprocess.run(["sh", str(recipe.parents[1] / "ops/prepare-h2-capacity.sh")], env=environment, check=True)
+        for path, expected in manifest["h2"]["patched_source_sha256"].items():
+            self.assertEqual(module.sha(self.source / "vendor/h2" / path), expected)
+        module.run("git", "apply", "--reverse", "--check", "--directory=vendor/h2", str(patches / "h2-capacity.patch"), cwd=self.source)
+        self.assertEqual(module.sha(self.source / "Cargo.lock"), manifest["inputs"][manifest["lockfile"]])
 
     def test_tampered_patch_rejected_before_mutation(self):
         altered = self.root / "recipe"

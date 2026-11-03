@@ -27,7 +27,14 @@ prefixes. Source formatting is checked on the applied Rust tree.
 
 The tests assemble a clean pinned source tree, compare the two reviewed module
 hashes and locked dependency input, and reject modified input/source before
-mutation. They do not build or deploy an endpoint.
+mutation. They also verify the actual h2 patched source and reverse application.
+A regression control reproduces the old vendor-directory Git application that
+could silently skip the dependency patch. The canonical h2 preparer is corrected
+too. These checks do not build or deploy an endpoint.
+
+The recorded live binary hash does not by itself establish that the intended h2
+backport was effective in that binary. Retained source/build/ELF evidence must
+be checked before claiming a canary differs only in the HTTP/3 changes.
 
 ## Build a private Linux artifact
 
