@@ -21,7 +21,8 @@
   },
   "native_commits": [
     "506588f1c8c563c918edff8e8017f4e7687a494b",
-    "77864967942d88bdaf40137691c7451772fe716e"
+    "77864967942d88bdaf40137691c7451772fe716e",
+    "5faa69a65d1ed0031fe80bc416b483f8742c4b63"
   ],
   "inputs": {
     "h2-0.3.27-reclaim-capacity.patch": "6b2d340e6924878419d852a6adc666e2decbf23a9225b6498be8313a282d0209",
@@ -29,31 +30,33 @@
     "quic-writable-capacity.patch": "919dcd17d4e58876b8763bb7aff0cf698b299c5eff14ab4ba78ad4bb4a8d8796",
     "trusttunnel-h2-capacity.lock": "3da09e64ab67a23a9502ca2cedbe2d3bbe435edb7ae75db6950252322cd8a995",
     "trusttunnel-live-credentials-v1.1.0.patch": "8f41b8bfbcce7a155e714f228a52fc238296836cd4a1928c0fe8e8dd24b797a7",
-    "trusttunnel-udp-rejection-v1.1.0.patch": "67d684bde00bc8ddf9855eb1bdb59a49ae86c293c9987533efa71684c927f75a"
+    "trusttunnel-udp-rejection-v1.1.0.patch": "67d684bde00bc8ddf9855eb1bdb59a49ae86c293c9987533efa71684c927f75a",
+    "quic-header-capacity.patch": "c2aa06c2d25ee4925be105b106367f7545aa81cae694a63d2a8e29c96aac81fd"
   },
   "endpoint_patches": [
     "trusttunnel-udp-rejection-v1.1.0.patch",
     "trusttunnel-live-credentials-v1.1.0.patch",
     "quic-shutdown-lock-order.patch",
-    "quic-writable-capacity.patch"
+    "quic-writable-capacity.patch",
+    "quic-header-capacity.patch"
   ],
   "h2_patch": "h2-0.3.27-reclaim-capacity.patch",
   "lockfile": "trusttunnel-h2-capacity.lock",
   "scope": "Endpoint-only candidate on the recorded Jakarta baseline; no account-QoS, Caddy, node-agent or controller changes.",
-  "validation_status": "Seven corrected offline source-assembly checks passed; retained baseline h2 implementation proof and Linux artifact/canary pending.",
+  "validation_status": "Seven corrected source-assembly checks passed on Linux with all three native fixes; retained baseline h2 implementation proof and Linux artifact/canary pending.",
   "expected_source_sha256": {
-    "lib/src/quic_multiplexer.rs": "37c154454323987d26a0f8255a531905903f414c653b63083a67bfa56ae7e67c",
-    "lib/src/http3_codec.rs": "6cac362c48579fab39e36b358eb1364a6fe411fc3737c1af9d095d831defa4c4"
+    "lib/src/quic_multiplexer.rs": "bd31ac27c42c6cd32ba31e42a7b0d928b65dee318a8e5feae1fd8d8ecbbeeebe",
+    "lib/src/http3_codec.rs": "9d82315840b218292c5048b92efb7b9da4e02bf2c8d7eb7f4e85acccf65bd299"
   },
   "effective_local_toolchain": {
     "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
     "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
     "rustdoc": "rustdoc 1.95.0 (59807616e 2026-04-14)"
   },
-  "local_workspace_tests": 257,
+  "local_workspace_tests": 260,
   "regression_controls": {
-    "old_behavior_failures": 4,
-    "final_green_tests": 2,
+    "old_behavior_failures": 6,
+    "final_green_tests": 5,
     "shutdown_limit": "The absence-of-first-lock observation is scheduling bounded to one second, not an arbitrary-starvation guarantee."
   },
   "baseline_h2_implementation_verified": false

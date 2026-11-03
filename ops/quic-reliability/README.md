@@ -1,8 +1,9 @@
 # Endpoint-only QUIC reliability candidate
 
-This recipe preserves the recorded Jakarta endpoint baseline and adds two
-separately reviewed fixes: HTTP/3-before-QUIC shutdown locking, and propagation
-of the pending frame's minimum writable capacity. Neither is established as
+This recipe preserves the recorded Jakarta endpoint baseline and adds three
+separately reviewed fixes: HTTP/3-before-QUIC shutdown locking, propagation
+of the pending body frame's minimum writable capacity, and waiting for capacity
+growth before retrying blocked response headers. None is established as
 the cause of historical partial transfers, profile HTTP 504, or low throughput.
 
 The current general node image includes account-QoS and other changes. This

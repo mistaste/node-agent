@@ -1,0 +1,27 @@
+name: Endpoint source assembly
+
+on:
+  pull_request:
+    paths: ['ops/quic-reliability/**', 'ops/prepare-h2-capacity.sh', '.github/workflows/quic-source.yml']
+  push:
+    branches: [master]
+    paths: ['ops/quic-reliability/**', 'ops/prepare-h2-capacity.sh', '.github/workflows/quic-source.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  source-assembly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Fetch pinned reference inputs
+        run: |
+          git clone --depth 1 --branch v1.1.0 https://github.com/TrustTunnel/TrustTunnel.git /tmp/guardex-endpoint-reference
+          curl --fail --location --retry 2 --max-time 60 https://static.crates.io/crates/h2/h2-0.3.27.crate --output /tmp/guardex-h2.crate
+      - name: Verify exact source and rejection controls
+        run: |
+          python3 ops/quic-reliability/test_prepare_source.py --reference /tmp/guardex-endpoint-reference --h2-crate /tmp/guardex-h2.crate -v
+          sh -n ops/prepare-h2-capacity.sh ops/quic-reliability/build_endpoint.sh
+          git diff --check
