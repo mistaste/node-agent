@@ -47,6 +47,7 @@ func TestBuildFilesIsStableAndContainsNoNodeSecret(t *testing.T) {
 		t.Fatalf("HTTP/1 listener must stay disabled for Stage 1: %s", files.Settings)
 	}
 	for _, expected := range []string{
+		"[listen_protocols.http2]\ninitial_stream_window_size = 1048576\n\n",
 		"client_listener_timeout_secs = 86400",
 		"connection_establishment_timeout_secs = 30",
 		"tcp_connections_timeout_secs = 86400",
