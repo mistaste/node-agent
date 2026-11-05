@@ -1,0 +1,13 @@
+# The caller verifies this local base tag against the qualified immutable image
+# sha256:aaaeee6ffccdac9a47881253afacd626357518cfae9bd456a42009c098566a75.
+# Both previously qualified native engines and all OS libraries stay unchanged.
+FROM guardex-quota-base-208e:20261105
+LABEL org.opencontainers.image.revision="e938ff7"
+LABEL com.guardex.quota.base="208e255d9053d09a02c3c5b6bcf4027a891c95cf"
+LABEL com.guardex.quota.native-engines="unchanged-qualified-208e"
+COPY node-agent /usr/local/bin/node-agent
+COPY topology-agent /usr/local/bin/topology-agent
+COPY trusttunnel-runner /usr/local/bin/trusttunnel-runner
+COPY transport-bundle-runner /usr/local/bin/transport-bundle-runner
+COPY quota-broker /usr/local/bin/quota-broker
+COPY account-qos /usr/local/sbin/guardex-account-qos
