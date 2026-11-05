@@ -1,0 +1,178 @@
+{
+  "nftables": [
+    {
+      "metainfo": {
+        "version": "1.0.2",
+        "release_name": "Lester Gooch",
+        "json_schema_version": 1
+      }
+    },
+    {
+      "table": {
+        "family": "inet",
+        "name": "gx_qf_ae41b7ca5ebe47e89e9144da568651eb",
+        "handle": 2
+      }
+    },
+    {
+      "chain": {
+        "family": "inet",
+        "table": "gx_qf_ae41b7ca5ebe47e89e9144da568651eb",
+        "name": "ingress",
+        "handle": 1,
+        "type": "filter",
+        "hook": "prerouting",
+        "prio": -310,
+        "policy": "accept"
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "gx_qf_ae41b7ca5ebe47e89e9144da568651eb",
+        "chain": "ingress",
+        "handle": 7,
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "fib": {
+                  "result": "type",
+                  "flags": [
+                    "daddr"
+                  ]
+                }
+              },
+              "right": "local"
+            }
+          },
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "meta": {
+                  "key": "l4proto"
+                }
+              },
+              "right": {
+                "set": [
+                  "tcp",
+                  "udp"
+                ]
+              }
+            }
+          },
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "th",
+                  "field": "dport"
+                }
+              },
+              "right": {
+                "set": [
+                  443,
+                  18443,
+                  19080,
+                  19443
+                ]
+              }
+            }
+          },
+          {
+            "counter": {
+              "packets": 0,
+              "bytes": 0
+            }
+          },
+          {
+            "drop": null
+          }
+        ]
+      }
+    },
+    {
+      "chain": {
+        "family": "inet",
+        "table": "gx_qf_ae41b7ca5ebe47e89e9144da568651eb",
+        "name": "local_ingress",
+        "handle": 2,
+        "type": "filter",
+        "hook": "output",
+        "prio": -310,
+        "policy": "accept"
+      }
+    },
+    {
+      "rule": {
+        "family": "inet",
+        "table": "gx_qf_ae41b7ca5ebe47e89e9144da568651eb",
+        "chain": "local_ingress",
+        "handle": 8,
+        "expr": [
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "fib": {
+                  "result": "type",
+                  "flags": [
+                    "daddr"
+                  ]
+                }
+              },
+              "right": "local"
+            }
+          },
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "meta": {
+                  "key": "l4proto"
+                }
+              },
+              "right": {
+                "set": [
+                  "tcp",
+                  "udp"
+                ]
+              }
+            }
+          },
+          {
+            "match": {
+              "op": "==",
+              "left": {
+                "payload": {
+                  "protocol": "th",
+                  "field": "dport"
+                }
+              },
+              "right": {
+                "set": [
+                  443,
+                  18443,
+                  19080,
+                  19443
+                ]
+              }
+            }
+          },
+          {
+            "counter": {
+              "packets": 0,
+              "bytes": 0
+            }
+          },
+          {
+            "drop": null
+          }
+        ]
+      }
+    }
+  ]
+}
