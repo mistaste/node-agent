@@ -57,6 +57,15 @@ ledger-preserving rollback rehearsal, and client quota-control acceptance.
 Do not install these guards or activate global enforcement based only on the
 tests below.
 
+Mandatory entry nodes reject the generic per-node update API with HTTP 409.
+Its arbitrary checkout and default Compose commands cannot qualify retained
+overrides, controller-written mandatory state, native engines and the shared
+accounting boundary together. This includes agent-only and binary downgrades:
+an older controller can rewrite mandatory native state as legacy. Metrics-only
+relays and legacy non-mandatory nodes keep their existing update behavior.
+Deploy mandatory nodes through the coordinated guarded path after qualification;
+do not clear the mandatory setting to make a generic update succeed.
+
 Validation:
 
 ```sh

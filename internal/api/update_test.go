@@ -12,7 +12,36 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/guardex/node-agent/internal/config"
 )
+
+func TestMandatoryQuotaRejectsUncoordinatedUpdatesBeforeLaunchingHelper(t *testing.T) {
+	h := &handlers{cfg: &config.Config{HardQuotaRequired: true, UpdateRef: "master", RepoDir: t.TempDir()}}
+	for _, body := range []string{
+		`{}`,
+		`{"mode":"git","ref":"master"}`,
+		`{"mode":"git-runners","ref":"qualified-release"}`,
+		`{"mode":"git-full","ref":"master"}`,
+		`{"mode":"binary","url":"https://downloads.example/agent","sha256":"` + strings.Repeat("a", 64) + `"}`,
+	} {
+		response := httptest.NewRecorder()
+		h.updateAgent(response, httptest.NewRequest(http.MethodPost, "/v1/system/update-agent", strings.NewReader(body)))
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "coordinated fleet deployment") {
+			t.Fatalf("mandatory quota update %s: status=%d body=%s", body, response.Code, response.Body.String())
+		}
+	}
+	// Legacy entry nodes and metrics-only relays retain their existing API
+	// validation behavior; neither is silently made part of the quota rollout.
+	for _, cfg := range []*config.Config{{}, {HardQuotaRequired: true, MetricsOnly: true}} {
+		h.cfg = cfg
+		response := httptest.NewRecorder()
+		h.updateAgent(response, httptest.NewRequest(http.MethodPost, "/v1/system/update-agent", strings.NewReader(`{"mode":"unsupported"}`)))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("non-mandatory update validation changed: %d", response.Code)
+		}
+	}
+}
 
 func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	agentOnly, err := agentUpdateParts("git", "feature/controller-pull")
