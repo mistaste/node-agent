@@ -21,6 +21,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	}
 	if command := strings.Join(agentOnly, " "); strings.Contains(command, "pull xray") ||
 		strings.Contains(command, " topology-agent") ||
+		strings.Contains(command, " quota-broker") ||
 		!strings.Contains(command, "--no-deps --build node-agent") {
 		t.Fatalf("agent-only command = %q", command)
 	}
@@ -30,7 +31,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	}
 	runnersCommand := strings.Join(runnersOnly, " ")
 	if strings.Contains(runnersCommand, "pull xray") || strings.Contains(runnersCommand, " node-agent") || strings.Contains(runnersCommand, " topology-agent") ||
-		!strings.Contains(runnersCommand, "--no-deps --build trusttunnel-runner transport-bundle-runner") {
+		!strings.Contains(runnersCommand, "--no-deps --build trusttunnel-runner transport-bundle-runner quota-broker") {
 		t.Fatalf("runner-only command = %q", runnersCommand)
 	}
 	full, err := agentUpdateParts("git-full", "master")
@@ -38,7 +39,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := strings.Join(full, " ")
-	if strings.Contains(command, "compose pull") || !strings.Contains(command, "--build node-agent topology-agent trusttunnel-runner transport-bundle-runner") {
+	if strings.Contains(command, "compose pull") || !strings.Contains(command, "--build node-agent topology-agent trusttunnel-runner transport-bundle-runner quota-broker") {
 		t.Fatalf("full command = %q", command)
 	}
 

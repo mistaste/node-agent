@@ -179,12 +179,13 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 	if mode == "git-full" {
 		parts = append(parts,
 
-			"docker", "compose", "up", "-d", "--build", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner",
+			"docker", "compose", "up", "-d", "--build", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner", "quota-broker",
 		)
 	} else if mode == "git-runners" {
-		// Runner-only rollout updates the session-preserving supervisors without
-		// recreating node-agent or topology-agent.
-		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "trusttunnel-runner", "transport-bundle-runner")
+		// The native engines and their credit broker are one rollout unit.
+		// --no-deps deliberately preserves node-agent and topology-agent, so the
+		// broker must be selected explicitly even on a host without one yet.
+		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "trusttunnel-runner", "transport-bundle-runner", "quota-broker")
 	} else {
 		// Agent-only rollout must never recreate the topology controller or any
 		// data-plane process. Restarting topology-agent can turn a harmless API
