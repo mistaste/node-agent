@@ -43,6 +43,39 @@ func TestMandatoryQuotaRejectsUncoordinatedUpdatesBeforeLaunchingHelper(t *testi
 	}
 }
 
+func TestFleetManagedOptionalModeKeepsCoordinatedUpdateBoundary(t *testing.T) {
+	t.Setenv("GUARDEX_QUOTA_FLEET_MANAGED", "true")
+	h := &handlers{cfg: &config.Config{HardQuotaRequired: false, UpdateRef: "master", RepoDir: t.TempDir()}}
+	// These requests cannot launch an updater even if the fence regresses.
+	// The fleet fence must precede their ordinary per-mode validation.
+	for _, body := range []string{
+		`{"mode":"unsupported"}`,
+		`{"mode":"git","ref":"bad ref"}`,
+		`{"mode":"git-runners","ref":"bad ref"}`,
+		`{"mode":"git-full","ref":"bad ref"}`,
+		`{"mode":"binary","url":"http://invalid.example","sha256":"invalid"}`,
+	} {
+		response := httptest.NewRecorder()
+		h.updateAgent(response, httptest.NewRequest(http.MethodPost, "/v1/system/update-agent", strings.NewReader(body)))
+		if response.Code != http.StatusConflict {
+			t.Fatalf("fleet-managed optional mode lost its update fence: status=%d", response.Code)
+		}
+	}
+	h.cfg.MetricsOnly = true
+	response := httptest.NewRecorder()
+	h.updateAgent(response, httptest.NewRequest(http.MethodPost, "/v1/system/update-agent", strings.NewReader(`{"mode":"unsupported"}`)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("metrics-only relay behavior changed: status=%d", response.Code)
+	}
+	t.Setenv("GUARDEX_QUOTA_FLEET_MANAGED", "false")
+	h.cfg.MetricsOnly = false
+	response = httptest.NewRecorder()
+	h.updateAgent(response, httptest.NewRequest(http.MethodPost, "/v1/system/update-agent", strings.NewReader(`{"mode":"unsupported"}`)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unmanaged legacy behavior changed: status=%d", response.Code)
+	}
+}
+
 func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	agentOnly, err := agentUpdateParts("git", "feature/controller-pull")
 	if err != nil {

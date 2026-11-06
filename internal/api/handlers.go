@@ -91,9 +91,11 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 	// A per-node checkout cannot qualify the whole-fleet accounting boundary,
 	// mandatory native ABI, retained per-service Compose overrides or rollback.
 	// Even an agent-only downgrade can rewrite required native state as legacy.
-	// Keep mandatory nodes on the separately guarded coordinated deployment path.
-	if h.cfg.HardQuotaRequired && !h.cfg.MetricsOnly {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "mandatory quota requires a coordinated fleet deployment"})
+	// A metered rollback may temporarily disable enforcement while its native
+	// counters remain authoritative. It must retain the same update boundary.
+	fleetManaged := strings.EqualFold(os.Getenv("GUARDEX_QUOTA_FLEET_MANAGED"), "true")
+	if (h.cfg.HardQuotaRequired || fleetManaged) && !h.cfg.MetricsOnly {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "fleet-managed quota requires a coordinated fleet deployment"})
 		return
 	}
 
