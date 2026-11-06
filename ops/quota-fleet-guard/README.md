@@ -82,10 +82,20 @@ are never overwritten. An expired receipt is not live consensus, even if its
 HTTP request is retried successfully. The API has no open, flag-change or
 rollback-authorize route: both authority fields always remain false. Production
 configuration binds only an owned primary high port, uses a private existing
-TLS key on that host, and preserves the fixed operation window. No host reporter,
-fleet activation/rollback coordinator or production installer is supplied by
-this collection layer yet. Do not substitute its consensus for those remaining
-accounting and routing prerequisites.
+TLS key on that host, and preserves the fixed operation window.
+
+`reporter.py` collects only sanitized runtime identities and the actual owned
+nft table. Observations are dated before the reads; missing commands and
+timeouts report unknown state. A newer unfinished expiry attempt cannot reuse
+an older counter file. Private sequence numbers survive restarts without
+refreshing an earlier receipt. The sender binds the exact inventoried source
+IP, connects directly to the primary, and verifies `api.guardex-vpn.com` with
+normal OS certificate roots. It has no redirect, proxy, firewall, container or
+account mutation operation. Settings and bearer credentials remain private.
+
+The fleet activation/rollback coordinator and production installer are still
+required. Do not substitute collection consensus for the remaining accounting
+and routing prerequisites.
 
 Validation:
 

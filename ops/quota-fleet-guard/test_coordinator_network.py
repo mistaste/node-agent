@@ -19,6 +19,7 @@ from closure_gate import ClosureGate, HOSTS
 from coordinator import Server, MAX_BODY
 from receipt_store import ReceiptStore
 from test_closure_gate import fixture, report
+import reporter
 
 
 def command(*args):
@@ -31,11 +32,11 @@ def main(root):
     assert Path('/proc/self/ns/net').stat().st_ino != Path('/proc/1/ns/net').stat().st_ino
     assert [x['ifname'] for x in json.loads(command('ip', '-j', 'link', 'show'))] == ['lo']
     command('ip', 'link', 'set', 'lo', 'up')
-    for address in [*HOSTS, '198.18.0.7']:
+    for address in [*HOSTS, '198.18.0.7', reporter.PRIMARY]:
         command('ip', 'addr', 'add', address + '/32', 'dev', 'lo')
     cert, key = root / 'fixture-cert.pem', root / 'fixture-key-private.pem'
     command('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-            '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost',
+            '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,DNS:api.guardex-vpn.com',
             '-keyout', str(key), '-out', str(cert))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -46,7 +47,7 @@ def main(root):
     now = int(time.time()); config.update(created_epoch=now - 100, deadline_epoch=now + 600)
     for record in config['hosts'].values(): record['manifest']['deadline_epoch'] = now + 600
     gate = ClosureGate(config, ReceiptStore(root))
-    server = Server(('127.0.0.1', 0), context, gate)
+    server = Server(('0.0.0.0', 44390), context, gate)
     worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
     worker.start(); port = server.server_address[1]; checks = []
     first, other = sorted(HOSTS)[:2]
@@ -116,6 +117,24 @@ def main(root):
             assert request(first, 'POST', '/v1/receipt', body(first, sequence=2))[0] == 503
         assert not request(other, 'GET', '/v1/status')[1]['all_inventoried_hosts_closed']
         checks.append('wire_disk_failure_revokes_positive_consensus')
+        settings = dict(host=first, bearer=tokens[first],
+                        coordinator_url='https://api.guardex-vpn.com:44390')
+        try:
+            reporter.send(settings, body(first, sequence=2))
+            raise AssertionError('host reporter trusted a fixture CA by default')
+        except ssl.SSLCertVerificationError:
+            pass
+        checks.append('host_reporter_default_roots_reject_fixture_CA')
+        # Test-only CA injection; the production sender always creates the OS
+        # default context and still enforces hostname + CERT_REQUIRED.
+        with patch.object(reporter.ssl, 'create_default_context', return_value=trusted):
+            for host in HOSTS:
+                settings.update(host=host, bearer=tokens[host])
+                assert reporter.send(settings, body(host, sequence=2))['accepted']
+        result = request(first, 'GET', '/v1/status')[1]
+        assert result['all_inventoried_hosts_closed'] and not result['rollback_authorized']
+        assert not result['ingress_open_authorized']
+        checks.append('all_six_host_reporters_use_pinned_primary_verified_hostname_and_source_bind')
         result = dict(status='ISOLATED_TLS_CLOSURE_COLLECTOR_PASS', checks=checks,
                       host_network_namespace_untouched=True, actual_production_receipts=False,
                       account_flags_changed=False, ingress_opened=False,
