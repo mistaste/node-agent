@@ -105,6 +105,18 @@ value cannot hide a native reset. A missing endpoint is never an empty array.
 Matching raw counters alone do not prove quiescence, user attribution, daily
 free/Premium accounting or credit settlement, and grant no mutation authority.
 
+`compose_plan.py` renders an inert private plan from each service's own effective
+Compose and actual Docker metadata. It preserves live commands, environment,
+data paths and service-specific overrides, checks bind/capability ownership,
+pins the qualified image and frozen source, and adds the shared owned broker
+socket. Bounded candidates use `restart: no`; no build or dependency expansion
+is permitted by the plan. Already-resolved dollar values are escaped for the
+Compose interpolation pass. Use `command_environment()` for every Compose
+invocation so bare unset live variables cannot import values from the CLI host.
+Plans and normalized outputs contain credentials and must stay private on the
+same host. Rendering/normalization is not installation, actual candidate runtime
+equivalence, guard qualification or permission to activate accounting.
+
 Validation:
 
 ```sh
