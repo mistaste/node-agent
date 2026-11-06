@@ -97,6 +97,14 @@ The fleet activation/rollback coordinator and production installer are still
 required. Do not substitute collection consensus for the remaining accounting
 and routing prerequisites.
 
+`counter_join.py` validates both native counter schemas and compares their
+source-separated identities with database observations. It follows the normal
+collector's TrustTunnel aggregation and rejects ambiguous Naive duplicates,
+negative/overflow values, missing sources and nonexact counters. A greater DB
+value cannot hide a native reset. A missing endpoint is never an empty array.
+Matching raw counters alone do not prove quiescence, user attribution, daily
+free/Premium accounting or credit settlement, and grant no mutation authority.
+
 Validation:
 
 ```sh
