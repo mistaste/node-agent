@@ -1,0 +1,34 @@
+name: Quota closure evidence checks
+
+on:
+  pull_request:
+    paths:
+      - 'ops/quota-fleet-guard/**'
+      - '.github/workflows/quota-closure.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'ops/quota-fleet-guard/**'
+      - '.github/workflows/quota-closure.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check expiry, replay, consensus and durable evidence failures
+        run: python3 -m unittest discover -s ops/quota-fleet-guard -p 'test_*.py' -v
+      - name: Install disposable namespace test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends nftables iproute2 openssl
+      - name: Exercise the actual barrier in disposable namespaces
+        run: sudo timeout --kill-after=2s 45s unshare --net -- python3 ops/quota-fleet-guard/test_network.py --isolated
+      - name: Exercise TLS collection with synthetic closure reports
+        run: |
+          QUOTA_CLOSURE_EVIDENCE=$(sudo mktemp -d)
+          sudo timeout --kill-after=2s 30s unshare --net -- python3 ops/quota-fleet-guard/test_coordinator_network.py "$QUOTA_CLOSURE_EVIDENCE"

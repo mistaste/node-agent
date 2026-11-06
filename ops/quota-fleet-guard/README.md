@@ -66,12 +66,35 @@ relays and legacy non-mandatory nodes keep their existing update behavior.
 Deploy mandatory nodes through the coordinated guarded path after qualification;
 do not clear the mandatory setting to make a generic update succeed.
 
+`closure_gate.py`, `receipt_store.py` and `coordinator.py` implement only the
+fresh closure-evidence collection layer. The TLS endpoint accepts the exact six
+inventoried host IPs and distinct per-host bearer credentials, ignores forwarded
+source headers, bounds connections/bodies, and validates actual nft structure
+and exact stopped container identities. Receipt sequences cannot be replayed to
+refresh liveness; newer running/unknown state revokes a previous positive. Disk
+failure also removes that host from the in-memory consensus. Counter files must
+match the same operation, deadline, stopped IDs, dwell time and retained digest.
+They still need independent schema validation and normal-pusher database joins.
+
+Accepted receipts are private, append-only, fsynced records. Native snapshots
+are content-addressed and deduplicated without removing history. Altered files
+are never overwritten. An expired receipt is not live consensus, even if its
+HTTP request is retried successfully. The API has no open, flag-change or
+rollback-authorize route: both authority fields always remain false. Production
+configuration binds only an owned primary high port, uses a private existing
+TLS key on that host, and preserves the fixed operation window. No host reporter,
+fleet activation/rollback coordinator or production installer is supplied by
+this collection layer yet. Do not substitute its consensus for those remaining
+accounting and routing prerequisites.
+
 Validation:
 
 ```sh
 python3 -m unittest discover -s ops/quota-fleet-guard -p test_guard.py -v
+python3 -m unittest discover -s ops/quota-fleet-guard -p 'test_*.py' -v
 timeout 45s unshare --net -- python3 ops/quota-fleet-guard/test_network.py --isolated
 timeout 80s unshare --net -- python3 ops/quota-fleet-guard/test_expiry_runtime.py /private/new/evidence
+timeout 30s unshare --net -- python3 ops/quota-fleet-guard/test_coordinator_network.py /private/new/evidence
 ```
 
 The Linux tests require root and explicit disposable network namespaces.
