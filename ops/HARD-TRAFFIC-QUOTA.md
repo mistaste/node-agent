@@ -40,6 +40,17 @@ close/recovery state is bounded; it is not spendable credit.
 
 ## Bounded handover
 
+Run `python3 ops/audit-udp443-redirect.py` on each ingress host before physical
+acceptance or activation. It compares native nft predicates with the ordered
+iptables projection and fails on a catch-all UDP redirect or unknown semantics.
+An iptables-save projection can omit the native `udp dport 443` expression;
+deleting every apparently broad text line can therefore remove a correct rule.
+Repair only a proven native catch-all handle under a bounded rollback guard,
+retain the actual UDP443 rule, and verify both a non443 H3 transfer and public443
+strict QUIC/TLS. Preserve process IDs, counters and unrelated rules. Also inspect
+the persisted rules file: its owned redirect must explicitly match UDP443 and
+pass `iptables-restore --test` without reloading the live firewall.
+
 Reconcile final legacy counters; quiesce every primary, fallback and private route
 before ledger handoff. Old engines cannot reconstruct historical unreported
 traffic. Confirm real compatible runtime ACK/capability freshness and all API

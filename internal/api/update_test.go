@@ -12,7 +12,36 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/guardex/node-agent/internal/config"
 )
+
+func TestMandatoryQuotaRejectsUncoordinatedUpdatesBeforeLaunchingHelper(t *testing.T) {
+	h := &handlers{cfg: &config.Config{HardQuotaRequired: true, UpdateRef: "master", RepoDir: t.TempDir()}}
+	for _, body := range []string{
+		`{}`,
+		`{"mode":"git","ref":"master"}`,
+		`{"mode":"git-runners","ref":"qualified-release"}`,
+		`{"mode":"git-full","ref":"master"}`,
+		`{"mode":"binary","url":"https://downloads.example/agent","sha256":"` + strings.Repeat("a", 64) + `"}`,
+	} {
+		response := httptest.NewRecorder()
+		h.updateAgent(response, httptest.NewRequest(http.MethodPost, "/v1/system/update-agent", strings.NewReader(body)))
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "coordinated fleet deployment") {
+			t.Fatalf("mandatory quota update %s: status=%d body=%s", body, response.Code, response.Body.String())
+		}
+	}
+	// Legacy entry nodes and metrics-only relays retain their existing API
+	// validation behavior; neither is silently made part of the quota rollout.
+	for _, cfg := range []*config.Config{{}, {HardQuotaRequired: true, MetricsOnly: true}} {
+		h.cfg = cfg
+		response := httptest.NewRecorder()
+		h.updateAgent(response, httptest.NewRequest(http.MethodPost, "/v1/system/update-agent", strings.NewReader(`{"mode":"unsupported"}`)))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("non-mandatory update validation changed: %d", response.Code)
+		}
+	}
+}
 
 func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	agentOnly, err := agentUpdateParts("git", "feature/controller-pull")
@@ -21,6 +50,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	}
 	if command := strings.Join(agentOnly, " "); strings.Contains(command, "pull xray") ||
 		strings.Contains(command, " topology-agent") ||
+		strings.Contains(command, " quota-broker") ||
 		!strings.Contains(command, "--no-deps --build node-agent") {
 		t.Fatalf("agent-only command = %q", command)
 	}
@@ -30,7 +60,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 	}
 	runnersCommand := strings.Join(runnersOnly, " ")
 	if strings.Contains(runnersCommand, "pull xray") || strings.Contains(runnersCommand, " node-agent") || strings.Contains(runnersCommand, " topology-agent") ||
-		!strings.Contains(runnersCommand, "--no-deps --build trusttunnel-runner transport-bundle-runner") {
+		!strings.Contains(runnersCommand, "--no-deps --build trusttunnel-runner transport-bundle-runner quota-broker") {
 		t.Fatalf("runner-only command = %q", runnersCommand)
 	}
 	full, err := agentUpdateParts("git-full", "master")
@@ -38,7 +68,7 @@ func TestAgentUpdatePartsValidatesRefAndSeparatesFullRollout(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := strings.Join(full, " ")
-	if strings.Contains(command, "compose pull") || !strings.Contains(command, "--build node-agent topology-agent trusttunnel-runner transport-bundle-runner") {
+	if strings.Contains(command, "compose pull") || !strings.Contains(command, "--build node-agent topology-agent trusttunnel-runner transport-bundle-runner quota-broker") {
 		t.Fatalf("full command = %q", command)
 	}
 

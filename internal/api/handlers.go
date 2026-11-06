@@ -88,6 +88,14 @@ func (h *handlers) updateAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 		return
 	}
+	// A per-node checkout cannot qualify the whole-fleet accounting boundary,
+	// mandatory native ABI, retained per-service Compose overrides or rollback.
+	// Even an agent-only downgrade can rewrite required native state as legacy.
+	// Keep mandatory nodes on the separately guarded coordinated deployment path.
+	if h.cfg.HardQuotaRequired && !h.cfg.MetricsOnly {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "mandatory quota requires a coordinated fleet deployment"})
+		return
+	}
 
 	mode := req.Mode
 	if mode == "" {
@@ -179,12 +187,13 @@ func agentUpdateParts(mode, ref string) ([]string, error) {
 	if mode == "git-full" {
 		parts = append(parts,
 
-			"docker", "compose", "up", "-d", "--build", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner",
+			"docker", "compose", "up", "-d", "--build", "node-agent", "topology-agent", "trusttunnel-runner", "transport-bundle-runner", "quota-broker",
 		)
 	} else if mode == "git-runners" {
-		// Runner-only rollout updates the session-preserving supervisors without
-		// recreating node-agent or topology-agent.
-		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "trusttunnel-runner", "transport-bundle-runner")
+		// The native engines and their credit broker are one rollout unit.
+		// --no-deps deliberately preserves node-agent and topology-agent, so the
+		// broker must be selected explicitly even on a host without one yet.
+		parts = append(parts, "docker", "compose", "up", "-d", "--no-deps", "--build", "trusttunnel-runner", "transport-bundle-runner", "quota-broker")
 	} else {
 		// Agent-only rollout must never recreate the topology controller or any
 		// data-plane process. Restarting topology-agent can turn a harmless API

@@ -108,7 +108,9 @@ func BuildFiles(root, nodeSecret string, endpoint Endpoint) (Files, error) {
 	// Keep the codec configured so server-side per-user accounting is usable.
 	protocols.WriteString("[listen_protocols.http1]\n\n")
 	if endpoint.EnableHTTP2 {
-		protocols.WriteString("[listen_protocols.http2]\n\n")
+		// Keep receive credit available across WAN feedback delays. Credit is
+		// still returned only after the bounded downstream sink accepts bytes.
+		protocols.WriteString("[listen_protocols.http2]\ninitial_stream_window_size = 1048576\n\n")
 	}
 	if endpoint.EnableHTTP3 {
 		protocols.WriteString("[listen_protocols.quic]\n\n")
