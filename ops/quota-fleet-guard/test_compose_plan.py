@@ -61,6 +61,7 @@ class ComposePlanTests(unittest.TestCase):
         self.assertEqual(BASE+'/source', next(v['source'] for v in agent['volumes'] if v['target']=='/opt/guardex-node'))
         self.assertEqual('a'*40, agent['environment']['AGENT_VERSION'])
         self.assertEqual('true', agent['environment']['GUARDEX_HARD_QUOTA_REQUIRED'])
+        self.assertEqual('true', agent['environment']['GUARDEX_QUOTA_FLEET_MANAGED'])
         for name in ('trusttunnel-runner', 'transport-bundle-runner', 'quota-broker'):
             volume = next(v for v in result[name]['volumes'] if v['target']=='/run/guardex-quota')
             self.assertEqual(BASE+'/quota', volume['source'])
@@ -100,6 +101,12 @@ class ComposePlanTests(unittest.TestCase):
         result = self.render(effective, actual)
         self.assertIsNone(result['services']['node-agent']['environment']['UNSET_LIVE_VARIABLE'])
         self.assertEqual({'PATH': '/fixture'}, plan.command_environment(result, {'PATH': '/fixture', 'UNSET_LIVE_VARIABLE': 'foreign'}))
+
+    def test_optional_metering_mode_retains_fleet_update_boundary(self):
+        result=self.render(mandatory=False)['services']
+        self.assertEqual('false',result['node-agent']['environment']['GUARDEX_HARD_QUOTA_REQUIRED'])
+        self.assertEqual('false',result['trusttunnel-runner']['environment']['GUARDEX_HARD_QUOTA_REQUIRED'])
+        self.assertEqual('true',result['node-agent']['environment']['GUARDEX_QUOTA_FLEET_MANAGED'])
 
 
 if __name__ == '__main__': unittest.main()

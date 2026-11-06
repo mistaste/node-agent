@@ -66,6 +66,14 @@ relays and legacy non-mandatory nodes keep their existing update behavior.
 Deploy mandatory nodes through the coordinated guarded path after qualification;
 do not clear the mandatory setting to make a generic update succeed.
 
+Fleet-managed entry candidates also set `GUARDEX_QUOTA_FLEET_MANAGED=true`.
+This keeps the generic update fence active in an optional-enforcement rollback
+mode. Rollback must retain the qualified metering-capable native image: the old
+Naive runtime lacks its server counter endpoint, while the audited rollback
+authority deliberately ignores late client totals. An uncoordinated downgrade
+could otherwise remove the only source of subsequent Naive usage. This flag
+does not change quota eligibility, byte accounting or native enforcement mode.
+
 `closure_gate.py`, `receipt_store.py` and `coordinator.py` implement only the
 fresh closure-evidence collection layer. The TLS endpoint accepts the exact six
 inventoried host IPs and distinct per-host bearer credentials, ignores forwarded

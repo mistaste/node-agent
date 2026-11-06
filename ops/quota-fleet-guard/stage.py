@@ -82,6 +82,8 @@ def validate_plan(plan, value):
                 raise ValueError('candidate version disagrees with frozen image')
             if item['environment'].get('GUARDEX_HARD_QUOTA_REQUIRED') not in ('true', 'false'):
                 raise ValueError('explicit candidate quota mode required')
+            if item['environment'].get('GUARDEX_QUOTA_FLEET_MANAGED') != 'true':
+                raise ValueError('metered fleet update boundary must survive optional mode')
         else:
             if volumes.get('/run/guardex-quota', {}).get('source') != quota:
                 raise ValueError('one exact owned broker directory required')

@@ -106,7 +106,8 @@ def render(scope, image, source_revision, source_dir, quota_dir, effective, actu
                 raise ValueError('one read-only legacy source mount required')
             checkout[0]['source'] = source_dir
             item['environment'].update(AGENT_REPO_DIR='/opt/guardex-node', AGENT_VERSION=source_revision,
-                                       GUARDEX_HARD_QUOTA_REQUIRED=str(mandatory).lower())
+                                       GUARDEX_HARD_QUOTA_REQUIRED=str(mandatory).lower(),
+                                       GUARDEX_QUOTA_FLEET_MANAGED='true')
         else:
             volumes.append(dict(type='bind', source=quota_dir, target='/run/guardex-quota',
                                 bind={'create_host_path': False}))
