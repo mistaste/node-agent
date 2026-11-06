@@ -123,6 +123,24 @@ special files, duplicate paths, conflicting parent files, Git metadata and
 unbounded archives. Files and directories are durably synced; an existing tree
 is never replaced. It does not create containers or install/arm a guard.
 
+`stage.py --input <private JSON>` prepares only four stopped candidates from a
+qualified plan and a fixed source/image/deadline. It requires the actual Linux
+host namespace and local Docker socket, verifies the original live service
+identities/configuration, and never builds, pulls, starts, arms or replaces a
+public service. Mount list order and decimal memory representation are normalized
+without relaxing path, permission or byte-limit equality. Actual candidate
+environment, command, mounts, capabilities, resource policy, image and PID-zero
+state must match before a sealed manifest and private rendered units are saved.
+
+If creation completed but validation failed, retain that failure. The separate
+`--finalize-stopped <scope> --expected-input-sha256 <original hash>` phase can
+revalidate those exact existing resources and the byte-exact source tree, using
+the original unchanged deadline. It creates no container and cannot overwrite
+an existing or partial seal. Its new receipt does not rewrite the failed
+attempt. Neither phase installs a timer, applies a barrier or authorizes opening
+ingress/activating flags. The qualified arming/start/accounting state machine
+is still required.
+
 Validation:
 
 ```sh

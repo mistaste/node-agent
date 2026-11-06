@@ -64,5 +64,14 @@ class SourceArchiveTests(unittest.TestCase):
         link = self.root/'link'; link.symlink_to(target, target_is_directory=True)
         with self.assertRaises(ValueError): self.extract(fixture(), link)
 
+    def test_frozen_tree_recheck_rejects_changed_bytes_and_extra_files(self):
+        data=fixture(); digest=hashlib.sha256(data).hexdigest()
+        self.extract(data)
+        self.assertTrue(archive.verify_tree(self.root/'source.tar',self.root/'source',digest,REVISION))
+        path=self.root/'source/tool/run.sh'; original=path.read_bytes(); path.write_bytes(b'changed')
+        with self.assertRaises(ValueError): archive.verify_tree(self.root/'source.tar',self.root/'source',digest,REVISION)
+        path.write_bytes(original); (self.root/'source/extra').write_text('foreign')
+        with self.assertRaises(ValueError): archive.verify_tree(self.root/'source.tar',self.root/'source',digest,REVISION)
+
 
 if __name__ == '__main__': unittest.main()

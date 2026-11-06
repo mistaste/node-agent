@@ -77,3 +77,39 @@ def extract(archive_path, root, sha256, revision):
                     git_metadata_present=False, runtime_started=False)
     finally:
         archive.close()
+
+
+def verify_tree(archive_path, root, sha256, revision):
+    root = Path(root)
+    if root.resolve() != root:
+        raise ValueError('canonical frozen source tree required')
+    private(root, True)
+    with Path(archive_path).open('rb') as source:
+        data = source.read((8 << 20) + 1)
+    archive, members = verified(data, sha256, revision)
+    try:
+        paths = list(root.rglob('*'))
+        actual = {str(path.relative_to(root)) for path in paths}
+        expected_paths = {member.name.rstrip('/') for member in members}
+        expected_paths.update(str(parent) for name in list(expected_paths) for parent in PurePosixPath(name).parents if str(parent) != '.')
+        if actual != expected_paths:
+            raise ValueError('frozen source tree inventory changed')
+        if any(path.is_symlink() or path.stat().st_uid != os.geteuid()
+               or (path.is_dir() and path.stat().st_mode & 0o022) for path in paths):
+            raise ValueError('frozen source tree ownership or directory policy changed')
+        for member in members:
+            path = root / member.name.rstrip('/')
+            if path.is_symlink() or path.stat().st_uid != os.geteuid():
+                raise ValueError('frozen source ownership or path changed')
+            if member.isdir():
+                if not path.is_dir() or path.stat().st_mode & 0o022:
+                    raise ValueError('frozen source directory policy changed')
+                continue
+            if not path.is_file() or path.stat().st_mode & 0o7777 != (0o755 if member.mode & 0o111 else 0o644):
+                raise ValueError('frozen source file policy changed')
+            with archive.extractfile(member) as expected, path.open('rb') as current:
+                if current.read(member.size+1) != expected.read(member.size+1):
+                    raise ValueError('frozen source bytes changed')
+        return True
+    finally:
+        archive.close()
