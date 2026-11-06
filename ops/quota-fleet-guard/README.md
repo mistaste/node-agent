@@ -117,6 +117,12 @@ Plans and normalized outputs contain credentials and must stay private on the
 same host. Rendering/normalization is not installation, actual candidate runtime
 equivalence, guard qualification or permission to activate accounting.
 
+`source_archive.py` verifies the archive digest and Git commit comment before
+extracting into a new canonical private directory. It rejects traversal, links,
+special files, duplicate paths, conflicting parent files, Git metadata and
+unbounded archives. Files and directories are durably synced; an existing tree
+is never replaced. It does not create containers or install/arm a guard.
+
 Validation:
 
 ```sh
