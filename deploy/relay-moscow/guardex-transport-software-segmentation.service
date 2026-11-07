@@ -1,0 +1,15 @@
+[Unit]
+Description=Guardex Moscow relay software TCP segmentation
+Wants=network-online.target
+After=network-online.target
+Before=docker.service
+ConditionPathExists=/sys/class/net/ens3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ethtool -K ens3 tso off gso off
+ExecStop=/usr/sbin/ethtool -K ens3 tso on gso on
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
