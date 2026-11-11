@@ -17,11 +17,23 @@ as a connection error. The codec now retires that request's read half and
 discards pending request data without closing sibling streams. Genuine socket
 and parser failures still propagate.
 
+When the peer finishes its request with a bare FIN, a reader already waiting for
+data must also be woken. The codec now notifies that reader before retiring the
+read half; a response can still be written after the request EOF.
+
 The baseline directory contains exact, digest-verified build inputs read from
 the deployed Finland node. They preserve live credential reload, UDP rejection,
 account quotas and the vendored HTTP/2 capacity correction. No credential or
 runtime configuration is included. The source commit and compiler image are
 pinned in `manifest.json` and the build recipe.
+
+The deployed binaries differ from those source inputs: five original nodes did
+not contain the account-QoS capability, while Poland did. This replacement
+contains it on every node, but it is inactive unless the endpoint receives
+`GUARDEX_ACCOUNT_QOS_SOCKET`. Actual process environments have that setting only
+in Poland; deriving each overlay from its own current image preserves the
+activation policy. Source files and shared image tags alone do not prove the
+contents of a running binary.
 
 ## Build and deploy
 
@@ -36,8 +48,11 @@ docker buildx build --platform linux/amd64 \
 
 The existing production build helper tests the Linux endpoint library and live
 credential reload, builds the binary and rejects a dynamic ELF interpreter.
-The baseline runtime version string is retained; identify this correction by
-the binary SHA-256 and overlay image digest.
+The pinned build helper uses `1.1.0-guardex-account-qos.1`; identify this
+correction by the binary SHA-256 and overlay image digest rather than the
+version string.
+BuildKit caches compiler outputs without changing the pinned source, compiler,
+test commands or static-binary checks. An empty cache supports the same build.
 
 For each node, derive an overlay from that node's exact deployed image digest
 using `Dockerfile.overlay` and a context containing only the verified binary.
@@ -55,6 +70,10 @@ and a blocked-header response receive only a stream reset; another stream keeps
 transferring. A committed response still delivers its queued body and clean EOF.
 The pending-DATA cancellation regression also fails before the fix, and covers
 both a closed reader and a fully retired stream without repeated readable events.
-The complete Rust workspace passed 258 tests, with formatting, clippy and
-Markdown checks clean. Linux production-build and physical rollout receipts
-must be retained before declaring deployment or mobile release acceptance.
+The bare-FIN regression fails before the reader notification and passes after
+it, including writing a complete response after request EOF.
+The complete Rust workspace passed 259 tests, with formatting, clippy and
+Markdown checks clean. The production Linux build passed 106 library tests,
+two live-credential tests and one endpoint live-reload test, then verified the
+static binary. Physical rollout receipts must be retained before declaring
+deployment or mobile release acceptance.
