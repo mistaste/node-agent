@@ -48,8 +48,9 @@ docker buildx build --platform linux/amd64 \
 
 The existing production build helper tests the Linux endpoint library and live
 credential reload, builds the binary and rejects a dynamic ELF interpreter.
-The baseline runtime version string is retained; identify this correction by
-the binary SHA-256 and overlay image digest.
+The pinned build helper uses `1.1.0-guardex-account-qos.1`; identify this
+correction by the binary SHA-256 and overlay image digest rather than the
+version string.
 BuildKit caches compiler outputs without changing the pinned source, compiler,
 test commands or static-binary checks. An empty cache supports the same build.
 
@@ -72,5 +73,7 @@ both a closed reader and a fully retired stream without repeated readable events
 The bare-FIN regression fails before the reader notification and passes after
 it, including writing a complete response after request EOF.
 The complete Rust workspace passed 259 tests, with formatting, clippy and
-Markdown checks clean. Linux production-build and physical rollout receipts
-must be retained before declaring deployment or mobile release acceptance.
+Markdown checks clean. The production Linux build passed 106 library tests,
+two live-credential tests and one endpoint live-reload test, then verified the
+static binary. Physical rollout receipts must be retained before declaring
+deployment or mobile release acceptance.

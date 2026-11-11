@@ -22,7 +22,7 @@
     "http3-response-finalization.patch": "03165c56f1a0f918f834f600ff9864a4a04a8c04662f6ffd98848197b34fb65b",
     "verify_inputs.py": "9ab35df3d0fc88cff45c9230a679c836744f56cfad8026ba7e4069c499730800",
     "Dockerfile.endpoint": "765927a5e9cbf2fa0b591f6a90778c7ff93cb1d8508c5ced028c32568ef86eb2",
-    "README.md": "72ec63fd6c60113f50b2934754d36b2f945f436e0c64f0ca2718bfd8b9ab2607",
+    "README.md": "be671f96b48977e9f85733d7d87916bac462dfa40a7266b08a8926d520c3b782",
     "Dockerfile.overlay": "a6e9f6540d6f9afecce9f9b15fe05e20f41f35f1e199dda93e8e0b76a0bcf511",
     "baseline/trusttunnel-h2-capacity.lock": "3da09e64ab67a23a9502ca2cedbe2d3bbe435edb7ae75db6950252322cd8a995",
     "baseline/h2-0.3.27-reclaim-capacity.patch": "6b2d340e6924878419d852a6adc666e2decbf23a9225b6498be8313a282d0209",
