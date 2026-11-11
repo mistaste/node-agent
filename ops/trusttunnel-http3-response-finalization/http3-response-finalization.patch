@@ -1,5 +1,5 @@
 diff --git a/lib/src/http3_codec.rs b/lib/src/http3_codec.rs
-index 3c802f0..7dcdf49 100644
+index 3c802f0..53482c9 100644
 --- a/lib/src/http3_codec.rs
 +++ b/lib/src/http3_codec.rs
 @@ -1,5 +1,5 @@
@@ -80,7 +80,15 @@ index 3c802f0..7dcdf49 100644
              stream.write_shutdown = true;
          }
  
-@@ -159,6 +171,7 @@ impl Http3Codec {
+@@ -146,6 +158,7 @@ impl Http3Codec {
+             }
+             QuicSocketEvent::Close(stream_id) => {
+                 // Client finished sending request body; keep write side open for response.
++                let _ = self.on_stream_readable(stream_id);
+                 let _ = self.on_stream_shutdown(stream_id, Some(quiche::Shutdown::Read));
+                 Ok(None)
+             }
+@@ -159,6 +172,7 @@ impl Http3Codec {
      ) -> io::Result<Box<dyn http_codec::Stream>> {
          let (readable_tx, readable_rx) = mpsc::channel(1);
          let (writable_tx, writable_rx) = mpsc::channel(1);
@@ -88,7 +96,7 @@ index 3c802f0..7dcdf49 100644
  
          let id = self.parent_id_chain.extended(log_utils::IdItem::new(
              log_utils::CONNECTION_ID_FMT,
-@@ -172,6 +185,8 @@ impl Http3Codec {
+@@ -172,6 +186,8 @@ impl Http3Codec {
                  writable_event_tx: writable_tx,
                  read_shutdown: false,
                  write_shutdown: false,
@@ -97,7 +105,7 @@ index 3c802f0..7dcdf49 100644
              },
          );
  
-@@ -192,24 +207,28 @@ impl Http3Codec {
+@@ -192,24 +208,28 @@ impl Http3Codec {
                  data_frame_overhead: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
                  id,
                  pending_response: None,
@@ -134,7 +142,7 @@ index 3c802f0..7dcdf49 100644
          }
      }
  
-@@ -222,8 +241,11 @@ impl Http3Codec {
+@@ -222,8 +242,11 @@ impl Http3Codec {
                  .and_then(|s| Ok((self.socket.stream_capacity(stream_id)?, s)))
              {
                  // Guard against capacity race between listen() and notification delivery.
@@ -148,7 +156,7 @@ index 3c802f0..7dcdf49 100644
                      Ok(())
                  }
                  Ok((_, stream)) => {
-@@ -316,7 +338,7 @@ impl HttpCodec for Http3Codec {
+@@ -316,7 +339,7 @@ impl HttpCodec for Http3Codec {
  impl StreamMessage {
      fn stream_id(&self) -> u64 {
          match self {
@@ -157,7 +165,7 @@ index 3c802f0..7dcdf49 100644
              StreamMessage::Shutdown(stream_id, _) => *stream_id,
          }
      }
-@@ -405,7 +427,8 @@ impl StreamSink {
+@@ -405,7 +428,8 @@ impl StreamSink {
      fn try_send_pending_response(&mut self) -> io::Result<()> {
          if let Some((ref response, eof)) = self.pending_response {
              match self.socket.send_response(self.stream_id, response, false) {
@@ -167,7 +175,7 @@ index 3c802f0..7dcdf49 100644
                      self.pending_response = None;
                      if eof {
                          self.codec_tx
-@@ -415,7 +438,8 @@ impl StreamSink {
+@@ -415,7 +439,8 @@ impl StreamSink {
                              })?;
                      }
                  }
@@ -177,7 +185,7 @@ index 3c802f0..7dcdf49 100644
                      log_id!(
                          debug,
                          self.id,
-@@ -434,7 +458,10 @@ impl StreamSink {
+@@ -434,7 +459,10 @@ impl StreamSink {
                  Ok(n) if n > self.data_frame_overhead => return Ok(()),
                  Ok(_) => {
                      self.codec_tx
@@ -189,7 +197,7 @@ index 3c802f0..7dcdf49 100644
                          .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
                      match self.writable_event_rx.recv().await {
                          None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
-@@ -516,8 +543,10 @@ impl pipe::Sink for StreamSink {
+@@ -516,8 +544,10 @@ impl pipe::Sink for StreamSink {
      }
  
      fn eof(&mut self) -> io::Result<()> {
@@ -202,7 +210,7 @@ index 3c802f0..7dcdf49 100644
          Ok(())
      }
  
-@@ -528,7 +557,10 @@ impl pipe::Sink for StreamSink {
+@@ -528,7 +558,10 @@ impl pipe::Sink for StreamSink {
      async fn flush(&mut self) -> io::Result<()> {
          while self.pending_response.is_some() {
              self.codec_tx
@@ -214,7 +222,7 @@ index 3c802f0..7dcdf49 100644
                  .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
              match self.writable_event_rx.recv().await {
                  None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
-@@ -567,3 +599,334 @@ impl Drop for StreamSink {
+@@ -567,3 +600,390 @@ impl Drop for StreamSink {
          }
      }
  }
@@ -222,6 +230,62 @@ index 3c802f0..7dcdf49 100644
 +#[cfg(test)]
 +pub(crate) mod tests {
 +    use super::*;
++
++    #[tokio::test]
++    async fn request_eof_wakes_pending_reader_and_keeps_response_open() {
++        use crate::quic_multiplexer::tests::request_body_fixture;
++        let (socket, mut peer) = request_body_fixture().await;
++        let parent = log_utils::IdChain::from(log_utils::IdItem::new("fixture={}", 6));
++        let mut codec = Http3Codec::new(socket, parent);
++        let request = http::Request::builder()
++            .uri("https://localhost/")
++            .body(())
++            .unwrap()
++            .into_parts()
++            .0;
++        let (source, pending) = codec.on_request(4, request).unwrap().split();
++        let mut source = source.finalize();
++        let mut reader = tokio::spawn(async move { source.read().await });
++        tokio::task::yield_now().await;
++        assert!(!reader.is_finished());
++        peer.finish_request(4);
++        peer.exchange(&codec.socket).await;
++        let event = tokio::time::timeout(std::time::Duration::from_secs(1), codec.socket.listen())
++            .await
++            .unwrap()
++            .unwrap();
++        assert!(matches!(event, QuicSocketEvent::Close(4)));
++        assert!(codec.on_socket_event(event).unwrap().is_none());
++        let data = tokio::time::timeout(std::time::Duration::from_secs(1), &mut reader)
++            .await
++            .expect("request EOF must wake a reader already waiting for data")
++            .unwrap()
++            .unwrap();
++        assert!(matches!(data, pipe::Data::Eof));
++        assert!(codec.streams[&4].read_shutdown);
++        assert!(!codec.streams[&4].write_shutdown);
++        let response = http::Response::builder()
++            .status(200)
++            .body(())
++            .unwrap()
++            .into_parts()
++            .0;
++        let mut sink = pending
++            .send_response(response, false)
++            .unwrap()
++            .into_pipe_sink();
++        assert!(sink
++            .write(Bytes::from_static(b"response after request EOF"))
++            .unwrap()
++            .is_empty());
++        sink.eof().unwrap();
++        peer.exchange(&codec.socket).await;
++        let (headers, finished, resets, body) = peer.observe_response(4);
++        assert_eq!(headers, 1);
++        assert_eq!(finished, 1);
++        assert!(resets.is_empty());
++        assert_eq!(body, b"response after request EOF");
++    }
 +
 +    #[tokio::test]
 +    async fn cancelled_request_readable_does_not_close_siblings() {
@@ -550,7 +614,7 @@ index 3c802f0..7dcdf49 100644
 +    }
 +}
 diff --git a/lib/src/quic_multiplexer.rs b/lib/src/quic_multiplexer.rs
-index 5181900..b532758 100644
+index 5181900..f3981d2 100644
 --- a/lib/src/quic_multiplexer.rs
 +++ b/lib/src/quic_multiplexer.rs
 @@ -9,7 +9,7 @@ use http::header::InvalidHeaderName;
@@ -790,7 +854,7 @@ index 5181900..b532758 100644
  
                          if !writable_streams.is_empty() {
                              break Some(QuicSocketEvent::Writable(writable_streams));
-@@ -1280,3 +1307,505 @@ fn validate_token<'a>(
+@@ -1280,3 +1307,512 @@ fn validate_token<'a>(
          .and_then(|token| token.strip_prefix(socket_addr_to_vec(peer).as_slice()))
          .map(quiche::ConnectionId::from_ref)
  }
@@ -1045,6 +1109,13 @@ index 5181900..b532758 100644
 +    }
 +
 +    impl TestPeer {
++        pub(crate) fn finish_request(&mut self, stream_id: u64) {
++            assert_eq!(
++                self.connection.stream_send(stream_id, &[], true).unwrap(),
++                0
++            );
++        }
++
 +        pub(crate) fn send_request_body(&mut self, stream_id: u64, body: &[u8]) {
 +            assert_eq!(
 +                self.http3

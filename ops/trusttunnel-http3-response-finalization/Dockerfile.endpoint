@@ -14,8 +14,12 @@ RUN python3 /guardex-http3/verify_inputs.py \
     && git apply /patches/udp-rejection.patch /patches/live-credentials.patch /patches/account-qos.patch \
     && sh /guardex-http3/baseline/prepare-h2-capacity.sh \
     && git apply --check /guardex-http3/http3-response-finalization.patch \
-    && git apply /guardex-http3/http3-response-finalization.patch \
-    && sh /guardex-http3/baseline/build-trusttunnel-live-credentials.sh "$TARGETARCH"
+    && git apply /guardex-http3/http3-response-finalization.patch
+
+RUN --mount=type=cache,id=guardex-h3-registry-rust195,target=/opt/cargo/registry,sharing=locked \
+    --mount=type=cache,id=guardex-h3-git-rust195,target=/opt/cargo/git,sharing=locked \
+    --mount=type=cache,id=guardex-h3-target-amd64-rust195,target=/trusttunnel-source/target,sharing=locked \
+    sh /guardex-http3/baseline/build-trusttunnel-live-credentials.sh "$TARGETARCH"
 
 FROM scratch AS artifact
 COPY --from=build /trusttunnel_endpoint /trusttunnel_endpoint

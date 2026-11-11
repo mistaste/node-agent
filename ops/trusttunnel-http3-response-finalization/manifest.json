@@ -15,13 +15,14 @@
     "pending frame capacity notification",
     "blocked response header capacity growth",
     "reset unstarted response without headerless FIN",
-    "retire cancelled request readers without closing sibling streams"
+    "retire cancelled request readers without closing sibling streams",
+    "wake pending request readers on peer EOF while preserving response half"
   ],
   "files_sha256": {
-    "http3-response-finalization.patch": "c8c08a55f4198e0b69ffa67a9f9cc834d3369a8ab9bf4a8455bc866c9049d5bd",
+    "http3-response-finalization.patch": "03165c56f1a0f918f834f600ff9864a4a04a8c04662f6ffd98848197b34fb65b",
     "verify_inputs.py": "9ab35df3d0fc88cff45c9230a679c836744f56cfad8026ba7e4069c499730800",
-    "Dockerfile.endpoint": "96eeed28ecd9d08e71ebdd3f8907b8a5ebfba902e039ad609be5c48b0297c047",
-    "README.md": "6f46f6160ce7f6871bbaa25f00031f8cd786c4a87c18b36893912cd49450cb31",
+    "Dockerfile.endpoint": "765927a5e9cbf2fa0b591f6a90778c7ff93cb1d8508c5ced028c32568ef86eb2",
+    "README.md": "72ec63fd6c60113f50b2934754d36b2f945f436e0c64f0ca2718bfd8b9ab2607",
     "Dockerfile.overlay": "a6e9f6540d6f9afecce9f9b15fe05e20f41f35f1e199dda93e8e0b76a0bcf511",
     "baseline/trusttunnel-h2-capacity.lock": "3da09e64ab67a23a9502ca2cedbe2d3bbe435edb7ae75db6950252322cd8a995",
     "baseline/h2-0.3.27-reclaim-capacity.patch": "6b2d340e6924878419d852a6adc666e2decbf23a9225b6498be8313a282d0209",
@@ -32,5 +33,5 @@
     "baseline/manifest.json": "d57ded199399bdca8a9805a9f09254a6dad695341c37e2bcd56f8428063f9a0b",
     "baseline/trusttunnel-account-qos-v1.1.0.patch": "abbd68ab6c916dc95c6a27d6088acf017928d240d29bd9e33519146627b23d4e"
   },
-  "endpoint_patch_source_commit": "011a9bd0f437f198b0395519ae4eccf85e0ff6e9"
+  "endpoint_patch_source_commit": "b31cffc8973df3e323514895263df99b1a1e1c86"
 }
