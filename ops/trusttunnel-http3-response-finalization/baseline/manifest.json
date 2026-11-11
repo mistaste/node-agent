@@ -1,0 +1,37 @@
+[
+  {
+    "path": "ops/patches/trusttunnel-udp-rejection-v1.1.0.patch",
+    "sha256": "67d684bde00bc8ddf9855eb1bdb59a49ae86c293c9987533efa71684c927f75a",
+    "bytes": 983
+  },
+  {
+    "path": "ops/patches/trusttunnel-live-credentials-v1.1.0.patch",
+    "sha256": "8f41b8bfbcce7a155e714f228a52fc238296836cd4a1928c0fe8e8dd24b797a7",
+    "bytes": 27157
+  },
+  {
+    "path": "ops/patches/trusttunnel-account-qos-v1.1.0.patch",
+    "sha256": "abbd68ab6c916dc95c6a27d6088acf017928d240d29bd9e33519146627b23d4e",
+    "bytes": 14035
+  },
+  {
+    "path": "ops/patches/h2-0.3.27-reclaim-capacity.patch",
+    "sha256": "6b2d340e6924878419d852a6adc666e2decbf23a9225b6498be8313a282d0209",
+    "bytes": 1512
+  },
+  {
+    "path": "ops/patches/trusttunnel-h2-capacity.lock",
+    "sha256": "3da09e64ab67a23a9502ca2cedbe2d3bbe435edb7ae75db6950252322cd8a995",
+    "bytes": 102630
+  },
+  {
+    "path": "ops/build-trusttunnel-live-credentials.sh",
+    "sha256": "4a88e77257b0e8b34c3613af24500601318027eb0b823b48ea1bd9f06222ebd6",
+    "bytes": 1556
+  },
+  {
+    "path": "ops/prepare-h2-capacity.sh",
+    "sha256": "58b8a2c0f8c7ccf5bc0ca0217f6529d0bf9fd7c1c408bf97039424d2c27ac081",
+    "bytes": 599
+  }
+]

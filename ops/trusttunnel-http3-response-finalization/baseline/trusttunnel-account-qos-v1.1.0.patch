@@ -1,0 +1,393 @@
+--- a/lib/src/lib.rs
++++ b/lib/src/lib.rs
+@@ -3,6 +3,7 @@
+ #[cfg(feature = "rt_doc")]
+ extern crate macros;
+ 
++mod account_qos;
+ pub mod authentication;
+ pub mod cert_verification;
+ pub mod client_config;
+--- a/lib/src/tunnel.rs
++++ b/lib/src/tunnel.rs
+@@ -413,6 +413,8 @@
+             }
+         };
+ 
++        let upload_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 0);
++        let download_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 1);
+         let meta = forwarder::TcpConnectionMeta {
+             client_address: match request.client_address() {
+                 Ok(x) => x,
+@@ -469,8 +471,16 @@
+         };
+ 
+         let mut pipe = DuplexPipe::new(
+-            (pipe::SimplexDirection::Outgoing, dstr_rx, fwd_tx),
+-            (pipe::SimplexDirection::Incoming, fwd_rx, dstr_tx),
++            (
++                pipe::SimplexDirection::Outgoing,
++                crate::account_qos::bytes(dstr_rx, upload_budget),
++                fwd_tx,
++            ),
++            (
++                pipe::SimplexDirection::Incoming,
++                crate::account_qos::bytes(fwd_rx, download_budget),
++                dstr_tx,
++            ),
+             update_metrics,
+         );
+ 
+@@ -533,6 +543,8 @@
+             }
+         }
+ 
++        let upload_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 0);
++        let download_budget = crate::account_qos::Budget::from_auth(&forwarder_auth, 1);
+         let mut pipe: Box<dyn datagram_pipe::DuplexPipe> = match request.promote_to_next_state() {
+             Ok(downstream::DatagramPipeHalves::Udp(dstr_source, dstr_sink)) => {
+                 let meta = forwarder::UdpMultiplexerMeta {
+@@ -557,8 +569,20 @@
+                 };
+ 
+                 Box::new(udp_pipe::DuplexPipe::new(
+-                    (dstr_source, dstr_sink),
+-                    (fwd_shared, fwd_source, fwd_sink),
++                    (
++                        crate::account_qos::datagrams(dstr_source, upload_budget, |d| {
++                            d.payload.len()
++                        }),
++                        dstr_sink,
++                    ),
++                    (
++                        fwd_shared,
++                        crate::account_qos::datagrams(fwd_source, download_budget, |d| match d {
++                            forwarder::UdpDatagramReadStatus::Read(x) => x.payload.len(),
++                            _ => 0,
++                        }),
++                        fwd_sink,
++                    ),
+                     update_metrics,
+                     context.settings.udp_connections_timeout,
+                 ))
+@@ -587,8 +611,24 @@
+                 };
+ 
+                 Box::new(datagram_pipe::GenericDuplexPipe::new(
+-                    (pipe::SimplexDirection::Outgoing, dstr_source, fwd_sink),
+-                    (pipe::SimplexDirection::Incoming, fwd_source, dstr_sink),
++                    (
++                        pipe::SimplexDirection::Outgoing,
++                        crate::account_qos::datagrams(
++                            dstr_source,
++                            upload_budget,
++                            datagram_pipe::Datagram::len,
++                        ),
++                        fwd_sink,
++                    ),
++                    (
++                        pipe::SimplexDirection::Incoming,
++                        crate::account_qos::datagrams(
++                            fwd_source,
++                            download_budget,
++                            datagram_pipe::Datagram::len,
++                        ),
++                        dstr_sink,
++                    ),
+                     update_metrics,
+                 ))
+             }
+--- /dev/null
++++ b/lib/src/account_qos.rs
+@@ -0,0 +1,280 @@
++use crate::{authentication, datagram_pipe, log_utils, pipe};
++use async_trait::async_trait;
++use bytes::Bytes;
++use std::{
++    future::Future,
++    io,
++    pin::Pin,
++    sync::atomic::{AtomicBool, Ordering},
++    time::Duration,
++};
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++
++#[derive(Clone)]
++pub(crate) struct Budget {
++    path: String,
++    username: String,
++    direction: u8,
++}
++static DEGRADED: AtomicBool = AtomicBool::new(false);
++type Grant = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
++
++impl Budget {
++    pub fn from_auth(
++        auth: &Option<authentication::Source<'static>>,
++        direction: u8,
++    ) -> Option<Self> {
++        let path = std::env::var("GUARDEX_ACCOUNT_QOS_SOCKET")
++            .ok()
++            .filter(|x| !x.is_empty())?;
++        let encoded = match auth.as_ref()? {
++            authentication::Source::ProxyBasic(x) | authentication::Source::Sni(x) => x.as_ref(),
++        };
++        let decoded =
++            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).ok()?;
++        let credentials = std::str::from_utf8(&decoded).ok()?;
++        let username = credentials.split_once(':')?.0;
++        if username.len() != 36 {
++            return None;
++        }
++        Some(Self {
++            path,
++            username: username.to_owned(),
++            direction,
++        })
++    }
++    fn grant(&self, n: usize) -> Grant {
++        let budget = self.clone();
++        Box::pin(async move {
++            for part in (0..n).step_by(65536) {
++                let count = (n - part).min(65536);
++                let mut socket = match tokio::net::UnixStream::connect(&budget.path).await {
++                    Ok(x) => x,
++                    Err(e)
++                        if matches!(
++                            e.kind(),
++                            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
++                        ) =>
++                    {
++                        if !DEGRADED.swap(true, Ordering::Relaxed) {
++                            log::error!("ACCOUNT_QOS_UNAVAILABLE: bandwidth control bypassed; tunnel remains active");
++                        }
++                        return Ok(());
++                    }
++                    Err(e) => return Err(e),
++                };
++                let mut frame = [0u8; 41];
++                frame[..36].copy_from_slice(budget.username.as_bytes());
++                frame[36] = budget.direction;
++                frame[37..].copy_from_slice(&(count as u32).to_be_bytes());
++                let result = tokio::time::timeout(Duration::from_secs(62), async {
++                    socket.write_all(&frame).await?;
++                    if socket.read_u8().await? != 1 {
++                        return Err(io::Error::other("ACCOUNT_QOS_REJECTED"));
++                    }
++                    Ok::<(), io::Error>(())
++                })
++                .await
++                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "ACCOUNT_QOS_TIMEOUT"))?;
++                if let Err(error) = result {
++                    tokio::time::sleep(Duration::from_millis(10)).await;
++                    if !std::path::Path::new(&budget.path).exists() {
++                        if !DEGRADED.swap(true, Ordering::Relaxed) {
++                            log::error!("ACCOUNT_QOS_UNAVAILABLE: bandwidth control bypassed; tunnel remains active");
++                        }
++                        return Ok(());
++                    }
++                    return Err(io::Error::new(
++                        error.kind(),
++                        format!("ACCOUNT_QOS_IO: {error}"),
++                    ));
++                }
++                if DEGRADED.swap(false, Ordering::Relaxed) {
++                    log::info!("ACCOUNT_QOS_RECOVERED");
++                }
++            }
++            Ok(())
++        })
++    }
++}
++
++struct ByteSource {
++    source: Box<dyn pipe::Source>,
++    budget: Budget,
++    pending: Option<Bytes>,
++    grant: Option<Grant>,
++    size: usize,
++}
++pub(crate) fn bytes(
++    source: Box<dyn pipe::Source>,
++    budget: Option<Budget>,
++) -> Box<dyn pipe::Source> {
++    match budget {
++        Some(budget) => Box::new(ByteSource {
++            source,
++            budget,
++            pending: None,
++            grant: None,
++            size: 0,
++        }),
++        None => source,
++    }
++}
++#[async_trait]
++impl pipe::Source for ByteSource {
++    fn id(&self) -> log_utils::IdChain<u64> {
++        self.source.id()
++    }
++    async fn read(&mut self) -> io::Result<pipe::Data> {
++        if self.pending.is_none() {
++            match self.source.read().await? {
++                pipe::Data::Eof => return Ok(pipe::Data::Eof),
++                pipe::Data::Chunk(x) => self.pending = Some(x),
++            }
++        }
++        if self.grant.is_none() {
++            self.size = self.pending.as_ref().unwrap().len().min(16384);
++            self.grant = Some(self.budget.grant(self.size));
++        }
++        self.grant.as_mut().unwrap().await?;
++        self.grant = None;
++        let data = self.pending.as_mut().unwrap().split_to(self.size);
++        if self.pending.as_ref().unwrap().is_empty() {
++            self.pending = None;
++        }
++        Ok(pipe::Data::Chunk(data))
++    }
++    fn consume(&mut self, size: usize) -> io::Result<()> {
++        self.source.consume(size)
++    }
++}
++
++struct DatagramSource<T> {
++    source: Box<dyn datagram_pipe::Source<Output = T>>,
++    budget: Budget,
++    pending: Option<T>,
++    grant: Option<Grant>,
++    size: fn(&T) -> usize,
++}
++pub(crate) fn datagrams<T: Send + 'static>(
++    source: Box<dyn datagram_pipe::Source<Output = T>>,
++    budget: Option<Budget>,
++    size: fn(&T) -> usize,
++) -> Box<dyn datagram_pipe::Source<Output = T>> {
++    match budget {
++        Some(budget) => Box::new(DatagramSource {
++            source,
++            budget,
++            pending: None,
++            grant: None,
++            size,
++        }),
++        None => source,
++    }
++}
++#[async_trait]
++impl<T: Send> datagram_pipe::Source for DatagramSource<T> {
++    type Output = T;
++    fn id(&self) -> log_utils::IdChain<u64> {
++        self.source.id()
++    }
++    async fn read(&mut self) -> io::Result<T> {
++        if self.pending.is_none() {
++            self.pending = Some(self.source.read().await?);
++        }
++        if self.grant.is_none() {
++            self.grant = Some(
++                self.budget
++                    .grant((self.size)(self.pending.as_ref().unwrap())),
++            );
++        }
++        self.grant.as_mut().unwrap().await?;
++        self.grant = None;
++        Ok(self.pending.take().unwrap())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[tokio::test]
++    async fn private_broker_frame_and_grant() {
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("broker.sock");
++        let listener = tokio::net::UnixListener::bind(&path).unwrap();
++        let budget = Budget {
++            path: path.to_str().unwrap().into(),
++            username: "11111111-1111-1111-1111-111111111111".into(),
++            direction: 1,
++        };
++        let server = tokio::spawn(async move {
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut frame = [0u8; 41];
++            socket.read_exact(&mut frame).await.unwrap();
++            assert_eq!(&frame[..36], b"11111111-1111-1111-1111-111111111111");
++            assert_eq!(frame[36], 1);
++            assert_eq!(u32::from_be_bytes(frame[37..].try_into().unwrap()), 1234);
++            socket.write_u8(1).await.unwrap();
++        });
++        budget.grant(1234).await.unwrap();
++        server.await.unwrap();
++    }
++    #[tokio::test]
++    async fn broker_disappearance_preserves_connectivity() {
++        let budget = Budget {
++            path: "/nonexistent/guardex-qos-test.sock".into(),
++            username: "11111111-1111-1111-1111-111111111111".into(),
++            direction: 0,
++        };
++        budget.grant(16384).await.unwrap();
++    }
++    struct OneChunk {
++        reads: usize,
++    }
++    #[async_trait]
++    impl pipe::Source for OneChunk {
++        fn id(&self) -> log_utils::IdChain<u64> {
++            log_utils::IdChain::empty()
++        }
++        async fn read(&mut self) -> io::Result<pipe::Data> {
++            self.reads += 1;
++            if self.reads > 1 {
++                return Ok(pipe::Data::Eof);
++            }
++            Ok(pipe::Data::Chunk(Bytes::from_static(b"payload")))
++        }
++        fn consume(&mut self, _: usize) -> io::Result<()> {
++            Ok(())
++        }
++    }
++    #[tokio::test]
++    async fn cancelling_read_keeps_pending_payload_and_grant() {
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("broker.sock");
++        let listener = tokio::net::UnixListener::bind(&path).unwrap();
++        let budget = Budget {
++            path: path.to_str().unwrap().into(),
++            username: "11111111-1111-1111-1111-111111111111".into(),
++            direction: 1,
++        };
++        let server = tokio::spawn(async move {
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut frame = [0u8; 41];
++            socket.read_exact(&mut frame).await.unwrap();
++            tokio::time::sleep(Duration::from_millis(40)).await;
++            socket.write_u8(1).await.unwrap();
++        });
++        let mut source = bytes(Box::new(OneChunk { reads: 0 }), Some(budget));
++        assert!(
++            tokio::time::timeout(Duration::from_millis(10), source.read())
++                .await
++                .is_err()
++        );
++        match source.read().await.unwrap() {
++            pipe::Data::Chunk(x) => assert_eq!(&x[..], b"payload"),
++            _ => panic!("payload lost"),
++        }
++        assert!(matches!(source.read().await.unwrap(), pipe::Data::Eof));
++        server.await.unwrap();
++    }
++}
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,8 @@
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+ 
+ ## [Unreleased]
++
++- [Feature] Add opt-in account bandwidth scheduling via `GUARDEX_ACCOUNT_QOS_SOCKET`.
+ 
+ ### Added
+ 

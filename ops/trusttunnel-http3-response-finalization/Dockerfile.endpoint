@@ -1,0 +1,21 @@
+FROM adguard/core-libs@sha256:79273e6cfee10546af7edbb0122660b9e53e3380742181f5afbe068b212810c4 AS build
+ARG TARGETARCH
+COPY ops/trusttunnel-http3-response-finalization /guardex-http3
+RUN python3 /guardex-http3/verify_inputs.py \
+    && mkdir /patches \
+    && cp /guardex-http3/baseline/trusttunnel-udp-rejection-v1.1.0.patch /patches/udp-rejection.patch \
+    && cp /guardex-http3/baseline/trusttunnel-live-credentials-v1.1.0.patch /patches/live-credentials.patch \
+    && cp /guardex-http3/baseline/trusttunnel-account-qos-v1.1.0.patch /patches/account-qos.patch \
+    && cp /guardex-http3/baseline/h2-0.3.27-reclaim-capacity.patch /patches/h2-capacity.patch \
+    && cp /guardex-http3/baseline/trusttunnel-h2-capacity.lock /patches/endpoint.lock \
+    && git clone --depth 1 --branch v1.1.0 https://github.com/TrustTunnel/TrustTunnel.git /trusttunnel-source \
+    && cd /trusttunnel-source \
+    && test "$(git rev-parse HEAD)" = fab5b8353a19332f935fa30869307d37d4a898d1 \
+    && git apply /patches/udp-rejection.patch /patches/live-credentials.patch /patches/account-qos.patch \
+    && sh /guardex-http3/baseline/prepare-h2-capacity.sh \
+    && git apply --check /guardex-http3/http3-response-finalization.patch \
+    && git apply /guardex-http3/http3-response-finalization.patch \
+    && sh /guardex-http3/baseline/build-trusttunnel-live-credentials.sh "$TARGETARCH"
+
+FROM scratch AS artifact
+COPY --from=build /trusttunnel_endpoint /trusttunnel_endpoint
