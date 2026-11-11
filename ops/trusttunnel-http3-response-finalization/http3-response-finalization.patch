@@ -1,0 +1,1298 @@
+diff --git a/lib/src/http3_codec.rs b/lib/src/http3_codec.rs
+index 3c802f0..7dcdf49 100644
+--- a/lib/src/http3_codec.rs
++++ b/lib/src/http3_codec.rs
+@@ -1,5 +1,5 @@
+ use crate::http_codec::{HttpCodec, RequestHeaders, ResponseHeaders};
+-use crate::quic_multiplexer::{QuicSocket, QuicSocketEvent};
++use crate::quic_multiplexer::{QuicSocket, QuicSocketEvent, ResponseStatus};
+ use crate::tls_demultiplexer::Protocol;
+ use crate::{datagram_pipe, http_codec, log_id, log_utils, net_utils, pipe};
+ use async_trait::async_trait;
+@@ -8,6 +8,7 @@ use std::collections::HashMap;
+ use std::io;
+ use std::io::ErrorKind;
+ use std::net::IpAddr;
++use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::Arc;
+ use tokio::sync::mpsc;
+ 
+@@ -22,7 +23,7 @@ pub(crate) struct Http3Codec {
+ }
+ 
+ enum StreamMessage {
+-    WaitingWritable(/* stream ID */ u64),
++    WaitingWritable(/* stream ID */ u64, /* minimum capacity */ usize),
+     /// stream ID, shutdown direction (`None` means both directions)
+     Shutdown(u64, Option<quiche::Shutdown>),
+ }
+@@ -34,6 +35,8 @@ struct Stream {
+     writable_event_tx: mpsc::Sender<()>,
+     read_shutdown: bool,
+     write_shutdown: bool,
++    minimum_writable_capacity: usize,
++    response_headers_sent: Arc<AtomicBool>,
+ }
+ 
+ struct DetachedStream {
+@@ -68,6 +71,8 @@ struct StreamSink {
+     /// `StreamBlocked`. Consumed on the first `wait_writable()` cycle.
+     /// The second boolean parameter represents EOF.
+     pending_response: Option<(ResponseHeaders, bool)>,
++    header_minimum_capacity: usize,
++    response_headers_sent: Arc<AtomicBool>,
+ }
+ 
+ impl Http3Codec {
+@@ -85,8 +90,14 @@ impl Http3Codec {
+ 
+     fn on_stream_message(&mut self, message: StreamMessage) -> io::Result<()> {
+         match message {
+-            StreamMessage::WaitingWritable(stream_id) => {
+-                self.socket.notify_stream_waiting_writable(stream_id);
++            StreamMessage::WaitingWritable(stream_id, minimum_capacity) => {
++                let stream = self
++                    .streams
++                    .get_mut(&stream_id)
++                    .ok_or_else(|| io::Error::from(ErrorKind::NotFound))?;
++                stream.minimum_writable_capacity = minimum_capacity;
++                self.socket
++                    .notify_stream_waiting_writable(stream_id, minimum_capacity);
+                 Ok(())
+             }
+             StreamMessage::Shutdown(stream_id, direction) => {
+@@ -112,13 +123,14 @@ impl Http3Codec {
+         };
+ 
+         if close_read && !stream.read_shutdown {
+-            self.socket
+-                .shutdown_stream(stream_id, quiche::Shutdown::Read);
++            self.socket.shutdown_read(stream_id);
+             stream.read_shutdown = true;
+         }
+         if close_write && !stream.write_shutdown {
+-            self.socket
+-                .shutdown_stream(stream_id, quiche::Shutdown::Write);
++            self.socket.finish_response(
++                stream_id,
++                stream.response_headers_sent.load(Ordering::Acquire),
++            );
+             stream.write_shutdown = true;
+         }
+ 
+@@ -159,6 +171,7 @@ impl Http3Codec {
+     ) -> io::Result<Box<dyn http_codec::Stream>> {
+         let (readable_tx, readable_rx) = mpsc::channel(1);
+         let (writable_tx, writable_rx) = mpsc::channel(1);
++        let response_headers_sent = Arc::new(AtomicBool::new(false));
+ 
+         let id = self.parent_id_chain.extended(log_utils::IdItem::new(
+             log_utils::CONNECTION_ID_FMT,
+@@ -172,6 +185,8 @@ impl Http3Codec {
+                 writable_event_tx: writable_tx,
+                 read_shutdown: false,
+                 write_shutdown: false,
++                minimum_writable_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++                response_headers_sent: response_headers_sent.clone(),
+             },
+         );
+ 
+@@ -192,24 +207,28 @@ impl Http3Codec {
+                 data_frame_overhead: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
+                 id,
+                 pending_response: None,
++                header_minimum_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++                response_headers_sent,
+             },
+         }))
+     }
+ 
+     fn on_stream_readable(&mut self, stream_id: u64) -> io::Result<()> {
+-        let stream = self
+-            .streams
+-            .get_mut(&stream_id)
+-            .ok_or_else(|| io::Error::from(ErrorKind::NotFound))?;
++        let Some(stream) = self.streams.get_mut(&stream_id) else {
++            self.socket.shutdown_read(stream_id);
++            return Ok(());
++        };
++        if stream.read_shutdown {
++            return Ok(());
++        }
+ 
+         match stream.readable_event_tx.try_send(()) {
+             // `Full` is not considered as an error in this case, as the stream does not need
+             // multiple `readable` messages in the queue
+             Ok(_) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+-            Err(e) => Err(io::Error::other(format!(
+-                "Failed to send stream readable event: {}",
+-                e
+-            ))),
++            Err(mpsc::error::TrySendError::Closed(_)) => {
++                self.on_stream_shutdown(stream_id, Some(quiche::Shutdown::Read))
++            }
+         }
+     }
+ 
+@@ -222,8 +241,11 @@ impl Http3Codec {
+                 .and_then(|s| Ok((self.socket.stream_capacity(stream_id)?, s)))
+             {
+                 // Guard against capacity race between listen() and notification delivery.
+-                Ok((cap, _)) if cap < net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY => {
+-                    self.socket.notify_stream_waiting_writable(stream_id);
++                Ok((cap, stream)) if cap < stream.minimum_writable_capacity => {
++                    self.socket.notify_stream_waiting_writable(
++                        stream_id,
++                        stream.minimum_writable_capacity,
++                    );
+                     Ok(())
+                 }
+                 Ok((_, stream)) => {
+@@ -316,7 +338,7 @@ impl HttpCodec for Http3Codec {
+ impl StreamMessage {
+     fn stream_id(&self) -> u64 {
+         match self {
+-            StreamMessage::WaitingWritable(stream_id) => *stream_id,
++            StreamMessage::WaitingWritable(stream_id, _) => *stream_id,
+             StreamMessage::Shutdown(stream_id, _) => *stream_id,
+         }
+     }
+@@ -405,7 +427,8 @@ impl StreamSink {
+     fn try_send_pending_response(&mut self) -> io::Result<()> {
+         if let Some((ref response, eof)) = self.pending_response {
+             match self.socket.send_response(self.stream_id, response, false) {
+-                Ok(()) => {
++                Ok(ResponseStatus::Sent) => {
++                    self.response_headers_sent.store(true, Ordering::Release);
+                     self.pending_response = None;
+                     if eof {
+                         self.codec_tx
+@@ -415,7 +438,8 @@ impl StreamSink {
+                             })?;
+                     }
+                 }
+-                Err(e) if e.kind() == ErrorKind::WouldBlock => {
++                Ok(ResponseStatus::Blocked { minimum_capacity }) => {
++                    self.header_minimum_capacity = minimum_capacity;
+                     log_id!(
+                         debug,
+                         self.id,
+@@ -434,7 +458,10 @@ impl StreamSink {
+                 Ok(n) if n > self.data_frame_overhead => return Ok(()),
+                 Ok(_) => {
+                     self.codec_tx
+-                        .send(StreamMessage::WaitingWritable(self.stream_id))
++                        .send(StreamMessage::WaitingWritable(
++                            self.stream_id,
++                            self.data_frame_overhead + 1,
++                        ))
+                         .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
+                     match self.writable_event_rx.recv().await {
+                         None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
+@@ -516,8 +543,10 @@ impl pipe::Sink for StreamSink {
+     }
+ 
+     fn eof(&mut self) -> io::Result<()> {
+-        self.socket
+-            .shutdown_stream(self.stream_id, quiche::Shutdown::Write);
++        self.socket.finish_response(
++            self.stream_id,
++            self.response_headers_sent.load(Ordering::Acquire),
++        );
+         Ok(())
+     }
+ 
+@@ -528,7 +557,10 @@ impl pipe::Sink for StreamSink {
+     async fn flush(&mut self) -> io::Result<()> {
+         while self.pending_response.is_some() {
+             self.codec_tx
+-                .send(StreamMessage::WaitingWritable(self.stream_id))
++                .send(StreamMessage::WaitingWritable(
++                    self.stream_id,
++                    self.header_minimum_capacity,
++                ))
+                 .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
+             match self.writable_event_rx.recv().await {
+                 None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
+@@ -567,3 +599,334 @@ impl Drop for StreamSink {
+         }
+     }
+ }
++
++#[cfg(test)]
++pub(crate) mod tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn cancelled_request_readable_does_not_close_siblings() {
++        use crate::quic_multiplexer::tests::request_body_fixture;
++        for retired in [false, true] {
++            let (socket, mut peer) = request_body_fixture().await;
++            let parent = log_utils::IdChain::from(log_utils::IdItem::new("fixture={}", 5));
++            let mut codec = Http3Codec::new(socket, parent);
++            let request = http::Request::builder()
++                .uri("https://localhost/")
++                .body(())
++                .unwrap()
++                .into_parts()
++                .0;
++            let stream = codec.on_request(4, request).unwrap();
++            let (source, pending) = stream.split();
++            drop(source);
++            peer.send_request_body(4, b"cancelled request body");
++            peer.exchange(&codec.socket).await;
++            let event =
++                tokio::time::timeout(std::time::Duration::from_secs(1), codec.socket.listen())
++                    .await
++                    .unwrap()
++                    .unwrap();
++            assert!(matches!(event, QuicSocketEvent::Readable(4)));
++            if retired {
++                drop(pending);
++                for _ in 0..2 {
++                    let message = codec.stream_rx.recv().await.unwrap();
++                    codec.on_stream_message(message).unwrap();
++                }
++                assert!(!codec.streams.contains_key(&4));
++            }
++            assert!(codec.on_socket_event(event).unwrap().is_none());
++            if !retired {
++                assert!(codec.streams[&4].read_shutdown);
++                assert!(!codec.streams[&4].write_shutdown);
++            }
++            assert!(codec
++                .on_socket_event(QuicSocketEvent::Readable(4))
++                .unwrap()
++                .is_none());
++            assert!(
++                tokio::time::timeout(std::time::Duration::from_millis(20), codec.listen(),)
++                    .await
++                    .is_err()
++            );
++            assert!(codec
++                .socket
++                .write(0, Bytes::from_static(b"sibling survives"))
++                .unwrap()
++                .is_empty());
++            peer.exchange(&codec.socket).await;
++            let (_, _, resets, body) = peer.observe_response(0);
++            assert!(resets.is_empty());
++            assert!(body.ends_with(b"sibling survives"));
++        }
++    }
++
++    #[tokio::test]
++    async fn dropping_uncommitted_response_resets_only_its_stream() {
++        use crate::quic_multiplexer::tests::{header_fixture, limit_fixture_capacity};
++        for blocked in [false, true] {
++            let (socket, mut peer) = header_fixture().await;
++            if blocked {
++                limit_fixture_capacity(&socket, 4);
++            }
++            let parent = log_utils::IdChain::from(log_utils::IdItem::new("fixture={}", 3));
++            let mut codec = Http3Codec::new(socket, parent);
++            let request = http::Request::builder()
++                .uri("https://localhost/")
++                .body(())
++                .unwrap()
++                .into_parts()
++                .0;
++            let stream = codec.on_request(4, request).unwrap();
++            let (source, pending) = stream.split();
++            if blocked {
++                let response = http::Response::builder()
++                    .status(200)
++                    .header("x-fixture", "x".repeat(128))
++                    .body(())
++                    .unwrap()
++                    .into_parts()
++                    .0;
++                let sink = pending.send_response(response, false).unwrap();
++                drop(sink);
++            } else {
++                drop(pending);
++            }
++            let message = codec.stream_rx.recv().await.unwrap();
++            codec.on_stream_message(message).unwrap();
++            peer.exchange(&codec.socket).await;
++            let (headers, finished, resets, body) = peer.observe_response(4);
++            assert_eq!(headers, 0);
++            assert_eq!(
++                finished, 0,
++                "unstarted response must not send a headerless FIN; blocked={blocked}"
++            );
++            assert_eq!(
++                resets,
++                [0x10c],
++                "unstarted response needs H3_REQUEST_CANCELLED; blocked={blocked}"
++            );
++            assert!(body.is_empty());
++            let mut remaining = Bytes::from_static(b"still healthy");
++            let mut received = Vec::new();
++            for _ in 0..32 {
++                peer.exchange(&codec.socket).await;
++                let (_, _, resets, body) = peer.observe_response(0);
++                assert!(resets.is_empty());
++                received.extend(body);
++                if remaining.is_empty() && received.ends_with(b"still healthy") {
++                    break;
++                }
++                remaining = codec.socket.write(0, remaining).unwrap();
++            }
++            assert!(remaining.is_empty());
++            assert!(received.ends_with(b"still healthy"));
++            drop(source);
++        }
++    }
++
++    #[tokio::test]
++    async fn committed_response_eof_preserves_queued_body() {
++        use crate::quic_multiplexer::tests::header_fixture;
++        let (socket, mut peer) = header_fixture().await;
++        let parent = log_utils::IdChain::from(log_utils::IdItem::new("fixture={}", 4));
++        let mut codec = Http3Codec::new(socket, parent);
++        let request = http::Request::builder()
++            .uri("https://localhost/")
++            .body(())
++            .unwrap()
++            .into_parts()
++            .0;
++        let stream = codec.on_request(4, request).unwrap();
++        let (source, pending) = stream.split();
++        let response = http::Response::builder()
++            .status(200)
++            .body(())
++            .unwrap()
++            .into_parts()
++            .0;
++        let mut sink = pending
++            .send_response(response, false)
++            .unwrap()
++            .into_pipe_sink();
++        let payload = Bytes::from_static(b"queued body survives EOF");
++        assert!(sink.write(payload.clone()).unwrap().is_empty());
++        sink.eof().unwrap();
++        drop(sink);
++        let message = codec.stream_rx.recv().await.unwrap();
++        codec.on_stream_message(message).unwrap();
++        peer.exchange(&codec.socket).await;
++        let (headers, finished, resets, body) = peer.observe_response(4);
++        assert_eq!(headers, 1);
++        assert_eq!(finished, 1);
++        assert!(resets.is_empty());
++        assert_eq!(body, payload);
++        drop(source);
++    }
++
++    pub(crate) async fn assert_body_wait_capacity(socket: Arc<QuicSocket>) -> Arc<QuicSocket> {
++        let socket = Arc::try_unwrap(socket).unwrap_or_else(|_| panic!("fixture socket is shared"));
++        let parent = log_utils::IdChain::from(log_utils::IdItem::new("fixture={}", 1));
++        let mut codec = Http3Codec::new(socket, parent.clone());
++        let (read_tx, _read_rx) = mpsc::channel(1);
++        let (write_tx, write_rx) = mpsc::channel(1);
++        let response_headers_sent = Arc::new(AtomicBool::new(true));
++        codec.streams.insert(
++            0,
++            Stream {
++                readable_event_tx: read_tx,
++                writable_event_tx: write_tx,
++                read_shutdown: false,
++                write_shutdown: false,
++                minimum_writable_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++                response_headers_sent: response_headers_sent.clone(),
++            },
++        );
++        let mut sink = StreamSink {
++            stream_id: 0,
++            socket: codec.socket.clone(),
++            writable_event_rx: write_rx,
++            codec_tx: codec.codec_tx.clone(),
++            data_frame_overhead: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++            id: parent,
++            pending_response: None,
++            header_minimum_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++            response_headers_sent,
++        };
++        let remaining = pipe::Sink::write(&mut sink, Bytes::from(vec![0; 65536])).unwrap();
++        assert_eq!(remaining.len(), 65536);
++        let message = {
++            let waiting = sink.wait_body_capacity();
++            tokio::pin!(waiting);
++            tokio::select! {
++                result = &mut waiting => panic!("body wait completed without capacity: {result:?}"),
++                message = codec.stream_rx.recv() => message.unwrap(),
++            }
++        };
++        assert!(matches!(message, StreamMessage::WaitingWritable(0, 6)));
++        codec.on_stream_message(message).unwrap();
++        assert_eq!(codec.streams[&0].minimum_writable_capacity, 6);
++        codec.notify_writable_streams(vec![0]);
++        assert!(matches!(
++            sink.writable_event_rx.try_recv(),
++            Err(mpsc::error::TryRecvError::Empty)
++        ));
++        assert!(tokio::time::timeout(
++            std::time::Duration::from_millis(10),
++            sink.wait_body_capacity(),
++        )
++        .await
++        .is_err());
++        codec.socket.clone()
++    }
++    fn pending_header_sink(socket: QuicSocket) -> (Http3Codec, StreamSink) {
++        let parent = log_utils::IdChain::from(log_utils::IdItem::new("fixture={}", 2));
++        let mut codec = Http3Codec::new(socket, parent.clone());
++        let (read_tx, _read_rx) = mpsc::channel(1);
++        let (write_tx, write_rx) = mpsc::channel(1);
++        let response_headers_sent = Arc::new(AtomicBool::new(false));
++        codec.streams.insert(
++            4,
++            Stream {
++                readable_event_tx: read_tx,
++                writable_event_tx: write_tx,
++                read_shutdown: false,
++                write_shutdown: false,
++                minimum_writable_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++                response_headers_sent: response_headers_sent.clone(),
++            },
++        );
++        let response = http::Response::builder()
++            .status(200)
++            .header("x-fixture", "x".repeat(128))
++            .body(())
++            .unwrap()
++            .into_parts()
++            .0;
++        let sink = StreamSink {
++            stream_id: 4,
++            socket: codec.socket.clone(),
++            writable_event_rx: write_rx,
++            codec_tx: codec.codec_tx.clone(),
++            data_frame_overhead: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++            id: parent,
++            pending_response: Some((response, false)),
++            header_minimum_capacity: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
++            response_headers_sent,
++        };
++        (codec, sink)
++    }
++
++    #[tokio::test]
++    async fn pending_headers_wait_for_growth_then_reach_real_peer() {
++        use crate::quic_multiplexer::tests::{
++            fixture_writable, header_fixture, limit_fixture_capacity,
++        };
++        let (socket, mut peer) = header_fixture().await;
++        limit_fixture_capacity(&socket, 4);
++        let (mut codec, mut sink) = pending_header_sink(socket);
++        sink.try_send_pending_response().unwrap();
++        assert!(sink.pending_response.is_some());
++        assert_eq!(sink.header_minimum_capacity, 5);
++        {
++            let flushing = pipe::Sink::flush(&mut sink);
++            tokio::pin!(flushing);
++            let message = tokio::select! {
++                result = &mut flushing => panic!("headers completed without credit: {result:?}"),
++                message = codec.stream_rx.recv() => message.unwrap(),
++            };
++            assert!(matches!(message, StreamMessage::WaitingWritable(4, 5)));
++            codec.on_stream_message(message).unwrap();
++            assert!(fixture_writable(&codec.socket).is_empty());
++            codec.notify_writable_streams(vec![4]);
++            assert!(fixture_writable(&codec.socket).is_empty());
++            peer.exchange(&codec.socket).await;
++            assert!(codec.socket.stream_capacity(4).unwrap() > 4);
++            assert_eq!(fixture_writable(&codec.socket), vec![4]);
++            codec.notify_writable_streams(vec![4]);
++            tokio::time::timeout(std::time::Duration::from_secs(1), &mut flushing)
++                .await
++                .unwrap()
++                .unwrap();
++        }
++        assert!(sink.pending_response.is_none());
++        peer.exchange(&codec.socket).await;
++        assert_eq!(peer.received_fixture_headers(4), 1);
++    }
++
++    #[tokio::test]
++    async fn pending_header_wait_is_cancelled_when_stream_is_retired() {
++        use crate::quic_multiplexer::tests::{header_fixture, limit_fixture_capacity};
++        let (socket, _peer) = header_fixture().await;
++        limit_fixture_capacity(&socket, 4);
++        let (mut codec, mut sink) = pending_header_sink(socket);
++        sink.try_send_pending_response().unwrap();
++        let flushing = pipe::Sink::flush(&mut sink);
++        tokio::pin!(flushing);
++        let message = tokio::select! {
++            result = &mut flushing => panic!("headers completed without credit: {result:?}"),
++            message = codec.stream_rx.recv() => message.unwrap(),
++        };
++        codec.on_stream_message(message).unwrap();
++        codec.on_stream_shutdown(4, None).unwrap();
++        let error = tokio::time::timeout(std::time::Duration::from_secs(1), &mut flushing)
++            .await
++            .unwrap()
++            .unwrap_err();
++        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
++    }
++
++    #[tokio::test]
++    async fn peer_stopped_response_is_an_error_not_a_credit_wait() {
++        use crate::quic_multiplexer::tests::{header_fixture, limit_fixture_capacity};
++        let (socket, mut peer) = header_fixture().await;
++        limit_fixture_capacity(&socket, 4);
++        let (codec, mut sink) = pending_header_sink(socket);
++        sink.try_send_pending_response().unwrap();
++        assert!(sink.pending_response.is_some());
++        peer.stop_response(4);
++        peer.exchange(&codec.socket).await;
++        assert!(sink.try_send_pending_response().is_err());
++    }
++}
+diff --git a/lib/src/quic_multiplexer.rs b/lib/src/quic_multiplexer.rs
+index 5181900..b532758 100644
+--- a/lib/src/quic_multiplexer.rs
++++ b/lib/src/quic_multiplexer.rs
+@@ -9,7 +9,7 @@ use http::header::InvalidHeaderName;
+ use lazy_static::lazy_static;
+ use quiche::h3;
+ use quiche::h3::NameValue;
+-use std::collections::{BTreeSet, HashMap, HashSet};
++use std::collections::{BTreeSet, HashMap};
+ use std::io;
+ use std::io::ErrorKind;
+ use std::net::SocketAddr;
+@@ -53,11 +53,19 @@ pub(crate) struct QuicSocket {
+     udp_socket: Arc<UdpSocket>,
+     quic_conn: Arc<std::sync::Mutex<QuicConnection>>,
+     h3_conn: Arc<std::sync::Mutex<h3::Connection>>,
+-    waiting_writable_streams: std::sync::Mutex<HashSet<u64>>,
++    waiting_writable_streams: std::sync::Mutex<HashMap<u64, usize>>,
+     id: log_utils::IdChain<u64>,
+     tls_connection_meta: tls_demultiplexer::ConnectionMeta,
+     /// TLS client_random extracted from QUIC handshake
+     client_random: Vec<u8>,
++    #[cfg(test)]
++    lock_probe: Option<Arc<tests::LockProbe>>,
++}
++
++#[derive(Debug)]
++pub(crate) enum ResponseStatus {
++    Sent,
++    Blocked { minimum_capacity: usize },
+ }
+ 
+ pub(crate) enum QuicSocketEvent {
+@@ -561,6 +569,8 @@ impl QuicMultiplexer {
+             )),
+             tls_connection_meta: conn.tls_connection_meta,
+             client_random: extracted_client_random,
++            #[cfg(test)]
++            lock_probe: None,
+         })
+     }
+ 
+@@ -774,7 +784,7 @@ impl QuicSocket {
+         stream_id: u64,
+         response: &ResponseHeaders,
+         fin: bool,
+-    ) -> io::Result<()> {
++    ) -> io::Result<ResponseStatus> {
+         let response: Vec<_> = std::iter::once(h3::HeaderRef::new(
+             b":status",
+             response.status.as_str().as_bytes(),
+@@ -787,25 +797,24 @@ impl QuicSocket {
+         )
+         .collect();
+ 
+-        self.h3_conn
+-            .lock()
+-            .unwrap()
+-            .send_response(
+-                &mut self.quic_conn.lock().unwrap(),
+-                stream_id,
+-                response.as_slice(),
+-                fin,
+-            )
+-            .map_err(|e| {
+-                let kind = if matches!(e, h3::Error::StreamBlocked) {
+-                    ErrorKind::WouldBlock
+-                } else {
+-                    ErrorKind::Other
+-                };
+-                io::Error::new(kind, e.to_string())
+-            })?;
+-
+-        self.flush_pending_data()
++        {
++            let mut h3_conn = self.h3_conn.lock().unwrap();
++            let mut quic_conn = self.quic_conn.lock().unwrap();
++            match h3_conn.send_response(&mut quic_conn, stream_id, response.as_slice(), fin) {
++                Ok(()) => (),
++                Err(h3::Error::StreamBlocked) => {
++                    // Quiche reports this only when atomic header credit is insufficient.
++                    let minimum_capacity = quic_conn
++                        .stream_capacity(stream_id)
++                        .map_err(|error| io::Error::other(error.to_string()))?
++                        .checked_add(1)
++                        .ok_or_else(|| io::Error::other("header capacity overflow"))?;
++                    return Ok(ResponseStatus::Blocked { minimum_capacity });
++                }
++                Err(error) => return Err(io::Error::other(error.to_string())),
++            }
++        }
++        self.flush_pending_data().map(|()| ResponseStatus::Sent)
+     }
+ 
+     pub fn read(&self, stream_id: u64) -> io::Result<Option<Bytes>> {
+@@ -842,15 +851,22 @@ impl QuicSocket {
+     }
+ 
+     pub fn write(&self, stream_id: u64, mut data: Bytes) -> io::Result<Bytes> {
+-        match self.h3_conn.lock().unwrap().send_body(
+-            &mut self.quic_conn.lock().unwrap(),
+-            stream_id,
+-            data.as_ref(),
+-            false,
+-        ) {
+-            Ok(n) => data.advance(n),
+-            Err(h3::Error::Done | h3::Error::StreamBlocked) => (),
+-            Err(e) => return Err(io::Error::other(e.to_string())),
++        {
++            let mut h3_conn = self.h3_conn.lock().unwrap();
++            #[cfg(test)]
++            if self.lock_probe.as_ref().is_some_and(|p| p.write_locked()) {
++                return Err(io::Error::new(ErrorKind::Interrupted, "fixture abort"));
++            }
++            match h3_conn.send_body(
++                &mut self.quic_conn.lock().unwrap(),
++                stream_id,
++                data.as_ref(),
++                false,
++            ) {
++                Ok(n) => data.advance(n),
++                Err(h3::Error::Done | h3::Error::StreamBlocked) => (),
++                Err(e) => return Err(io::Error::other(e.to_string())),
++            }
+         }
+ 
+         self.flush_pending_data().map(|_| data)
+@@ -868,38 +884,48 @@ impl QuicSocket {
+         self.quic_conn.lock().unwrap().stream_finished(stream_id)
+     }
+ 
+-    pub fn notify_stream_waiting_writable(&self, stream_id: u64) {
++    pub fn notify_stream_waiting_writable(&self, stream_id: u64, minimum_capacity: usize) {
+         self.waiting_writable_streams
+             .lock()
+             .unwrap()
+-            .insert(stream_id);
++            .insert(stream_id, minimum_capacity);
+     }
+ 
+-    pub fn shutdown_stream(&self, stream_id: u64, direction: quiche::Shutdown) {
+-        match direction {
+-            quiche::Shutdown::Write => {
+-                // `stream_shutdown(Write)` is dropping still unsent data
+-                let _ = self
+-                    .quic_conn
+-                    .lock()
+-                    .unwrap()
+-                    .stream_send(stream_id, &[], true);
+-            }
+-            quiche::Shutdown::Read => {
+-                let _ = self
+-                    .quic_conn
+-                    .lock()
+-                    .unwrap()
+-                    .stream_shutdown(stream_id, direction, 0);
++    pub fn shutdown_read(&self, stream_id: u64) {
++        let _ =
++            self.quic_conn
++                .lock()
++                .unwrap()
++                .stream_shutdown(stream_id, quiche::Shutdown::Read, 0);
++        let _ = self.flush_pending_data();
++    }
++
++    pub fn finish_response(&self, stream_id: u64, headers_sent: bool) {
++        {
++            let mut quic = self.quic_conn.lock().unwrap();
++            if headers_sent {
++                // A FIN preserves queued response data; write shutdown discards it.
++                let _ = quic.stream_send(stream_id, &[], true);
++            } else {
++                // A headerless FIN is invalid HTTP/3 and can close the whole session.
++                let _ = quic.stream_shutdown(stream_id, quiche::Shutdown::Write, 0x10c);
+             }
+         }
+         let _ = self.flush_pending_data();
+     }
+ 
+     pub fn graceful_shutdown(&self) -> io::Result<()> {
++        #[cfg(test)]
++        if let Some(probe) = &self.lock_probe {
++            probe.shutdown_entered();
++        }
+         {
+-            let mut quic_conn = self.quic_conn.lock().unwrap();
+             let mut h3_conn = self.h3_conn.lock().unwrap();
++            #[cfg(test)]
++            if let Some(probe) = &self.lock_probe {
++                probe.shutdown_first_lock();
++            }
++            let mut quic_conn = self.quic_conn.lock().unwrap();
+             for stream_id in quic_conn.writable() {
+                 let _ = h3_conn.send_body(&mut quic_conn, stream_id, &[], true);
+             }
+@@ -914,27 +940,28 @@ impl QuicSocket {
+         self.flush_pending_data()
+     }
+ 
++    fn take_writable_streams(&self) -> Vec<u64> {
++        let mut quic_conn = self.quic_conn.lock().unwrap();
++        let mut waiting_streams = self.waiting_writable_streams.lock().unwrap();
++        let mut writable = Vec::new();
++        waiting_streams.retain(|&stream_id, minimum_capacity| {
++            let ready = quic_conn
++                .stream_capacity(stream_id)
++                .map_or(true, |capacity| capacity >= *minimum_capacity);
++            if ready {
++                writable.push(stream_id);
++            }
++            !ready
++        });
++        writable
++    }
++
+     pub async fn listen(&self) -> io::Result<QuicSocketEvent> {
+         loop {
+             let event = loop {
+                 match self.process_pending_h3_events()? {
+                     None => {
+-                        let writable_streams: Vec<_> = {
+-                            let mut quic_conn = self.quic_conn.lock().unwrap();
+-                            let mut waiting_streams = self.waiting_writable_streams.lock().unwrap();
+-                            // Avoid emitting Writable events for streams with negligible capacity.
+-                            let writable_streams: Vec<_> = waiting_streams
+-                                .iter()
+-                                .filter(|id| {
+-                                    quic_conn.stream_capacity(**id).map_or(true, |x| {
+-                                        x >= net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY
+-                                    })
+-                                })
+-                                .copied()
+-                                .collect();
+-                            waiting_streams.retain(|id| !writable_streams.contains(id));
+-                            writable_streams
+-                        };
++                        let writable_streams = self.take_writable_streams();
+ 
+                         if !writable_streams.is_empty() {
+                             break Some(QuicSocketEvent::Writable(writable_streams));
+@@ -1280,3 +1307,505 @@ fn validate_token<'a>(
+         .and_then(|token| token.strip_prefix(socket_addr_to_vec(peer).as_slice()))
+         .map(quiche::ConnectionId::from_ref)
+ }
++
++#[cfg(test)]
++pub(crate) mod tests {
++    use super::*;
++    use boring::asn1::Asn1Time;
++    use boring::bn::BigNum;
++    use boring::hash::MessageDigest;
++    use boring::pkey::PKey;
++    use boring::rsa::Rsa;
++    use boring::ssl::{SslContextBuilder, SslMethod};
++    use boring::x509::{X509NameBuilder, X509};
++
++    fn limits(config: &mut quiche::Config) {
++        config
++            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
++            .unwrap();
++        config.set_initial_max_data(1_000_000);
++        config.set_initial_max_stream_data_uni(1_000_000);
++        config.set_initial_max_streams_uni(100);
++        config.set_initial_max_streams_bidi(100);
++        config.set_initial_max_stream_data_bidi_local(1_000_000);
++        config.set_initial_max_stream_data_bidi_remote(1_000_000);
++    }
++
++    fn transfer(from: &mut quiche::Connection, to: &mut quiche::Connection) {
++        let mut packet = [0; 65535];
++        loop {
++            match from.send(&mut packet) {
++                Ok((n, info)) => {
++                    to.recv(
++                        &mut packet[..n],
++                        quiche::RecvInfo {
++                            from: info.from,
++                            to: info.to,
++                        },
++                    )
++                    .unwrap();
++                }
++                Err(quiche::Error::Done) => return,
++                Err(error) => panic!("fixture packet send: {error:?}"),
++            }
++        }
++    }
++
++    async fn connected_fixture(
++        probe: Option<Arc<LockProbe>>,
++        stream_count: u64,
++        respond_to_all: bool,
++        request_eof: bool,
++    ) -> (QuicSocket, TestPeer) {
++        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
++        let mut name = X509NameBuilder::new().unwrap();
++        name.append_entry_by_text("CN", "localhost").unwrap();
++        let name = name.build();
++        let mut certificate = X509::builder().unwrap();
++        certificate.set_version(2).unwrap();
++        certificate
++            .set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
++            .unwrap();
++        certificate.set_subject_name(&name).unwrap();
++        certificate.set_issuer_name(&name).unwrap();
++        certificate.set_pubkey(&key).unwrap();
++        certificate
++            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
++            .unwrap();
++        certificate
++            .set_not_after(&Asn1Time::days_from_now(1).unwrap())
++            .unwrap();
++        certificate.sign(&key, MessageDigest::sha256()).unwrap();
++        let certificate = certificate.build();
++        let mut ssl = SslContextBuilder::new(SslMethod::tls()).unwrap();
++        ssl.set_certificate(&certificate).unwrap();
++        ssl.set_private_key(&key).unwrap();
++        let mut server_config =
++            quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, ssl).unwrap();
++        limits(&mut server_config);
++        let mut client_config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
++        limits(&mut client_config);
++        client_config.verify_peer(false);
++        let client_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        let server_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
++        server_udp.writable().await.unwrap();
++        let client_address = client_udp.local_addr().unwrap();
++        let server_address = server_udp.local_addr().unwrap();
++        let scid = quiche::ConnectionId::from_ref(&[1; 16]);
++        let mut client = quiche::connect(
++            Some("localhost"),
++            &scid,
++            client_address,
++            server_address,
++            &mut client_config,
++        )
++        .unwrap();
++        let mut first = [0; 65535];
++        let (n, _) = client.send(&mut first).unwrap();
++        let header = quiche::Header::from_slice(&mut first[..n], quiche::MAX_CONN_ID_LEN).unwrap();
++        let mut server = quiche::accept(
++            &header.dcid,
++            None,
++            server_address,
++            client_address,
++            &mut server_config,
++        )
++        .unwrap();
++        server
++            .recv(
++                &mut first[..n],
++                quiche::RecvInfo {
++                    from: client_address,
++                    to: server_address,
++                },
++            )
++            .unwrap();
++        for _ in 0..100 {
++            transfer(&mut server, &mut client);
++            transfer(&mut client, &mut server);
++            if client.is_established() && server.is_established() {
++                break;
++            }
++        }
++        assert!(client.is_established() && server.is_established());
++        let mut client_h3 = quiche::h3::Connection::with_transport(
++            &mut client,
++            &quiche::h3::Config::new().unwrap(),
++        )
++        .unwrap();
++        let mut server_h3 = quiche::h3::Connection::with_transport(
++            &mut server,
++            &quiche::h3::Config::new().unwrap(),
++        )
++        .unwrap();
++        for index in 0..stream_count {
++            let stream = client_h3
++                .send_request(
++                    &mut client,
++                    &[
++                        quiche::h3::Header::new(b":method", b"GET"),
++                        quiche::h3::Header::new(b":scheme", b"https"),
++                        quiche::h3::Header::new(b":authority", b"localhost"),
++                        quiche::h3::Header::new(b":path", b"/"),
++                    ],
++                    request_eof,
++                )
++                .unwrap();
++            transfer(&mut client, &mut server);
++            let mut headers = false;
++            while let Ok((id, event)) = server_h3.poll(&mut server) {
++                if id == stream && matches!(event, quiche::h3::Event::Headers { .. }) {
++                    headers = true;
++                }
++            }
++            assert!(headers);
++            if respond_to_all || index == 0 {
++                server_h3
++                    .send_response(
++                        &mut server,
++                        stream,
++                        &[quiche::h3::Header::new(b":status", b"200")],
++                        false,
++                    )
++                    .unwrap();
++                assert_eq!(
++                    server_h3
++                        .send_body(&mut server, stream, b"fixture", false)
++                        .unwrap(),
++                    7
++                );
++            }
++            assert_eq!(stream, index * 4);
++        }
++        let (conn_tx, conn_rx) = mpsc::channel(1);
++        let (mux_tx, _mux_rx) = mpsc::channel(1);
++        let socket = QuicSocket {
++            conn_rx: tokio::sync::Mutex::new(conn_rx),
++            mux_tx: Arc::new(std::sync::Mutex::new(mux_tx)),
++            peer: client_address,
++            udp_socket: Arc::new(server_udp),
++            quic_conn: Arc::new(std::sync::Mutex::new(server)),
++            h3_conn: Arc::new(std::sync::Mutex::new(server_h3)),
++            waiting_writable_streams: Default::default(),
++            id: log_utils::IdChain::from(log_utils::IdItem::new(SOCKET_ID_FMT, 1)),
++            tls_connection_meta: tls_demultiplexer::ConnectionMeta {
++                sni: "localhost".into(),
++                protocol: tls_demultiplexer::Protocol::Http3,
++                channel: net_utils::Channel::Tunnel,
++                cert_chain: vec![],
++                key: rustls_pki_types::PrivateKeyDer::Pkcs8(
++                    rustls_pki_types::PrivatePkcs8KeyDer::from(vec![]),
++                ),
++                cert_chain_path: String::new(),
++                key_path: String::new(),
++                sni_auth_creds: None,
++                boring: tls_demultiplexer::BoringIdentity {
++                    chain: Arc::new(vec![certificate]),
++                    key: Arc::new(key),
++                },
++            },
++            client_random: vec![],
++            lock_probe: probe,
++        };
++        (
++            socket,
++            TestPeer {
++                connection: client,
++                http3: client_h3,
++                udp: client_udp,
++                _conn_tx: conn_tx,
++            },
++        )
++    }
++
++    async fn connected_socket(
++        probe: Arc<LockProbe>,
++        stream_count: u64,
++    ) -> (Arc<QuicSocket>, UdpSocket) {
++        let (socket, peer) = connected_fixture(Some(probe), stream_count, true, true).await;
++        (Arc::new(socket), peer.udp)
++    }
++
++    pub(crate) async fn header_fixture() -> (QuicSocket, TestPeer) {
++        connected_fixture(None, 2, false, true).await
++    }
++
++    pub(crate) async fn request_body_fixture() -> (QuicSocket, TestPeer) {
++        connected_fixture(None, 2, false, false).await
++    }
++
++    pub(crate) fn limit_fixture_capacity(socket: &QuicSocket, wanted: usize) {
++        let mut h3 = socket.h3_conn.lock().unwrap();
++        let mut quic = socket.quic_conn.lock().unwrap();
++        let capacity = quic.stream_capacity(0).unwrap();
++        let length = capacity - wanted - net_utils::http3_data_frame_overhead(capacity);
++        assert_eq!(
++            h3.send_body(&mut quic, 0, &vec![0; length], false).unwrap(),
++            length
++        );
++        assert_eq!(quic.stream_capacity(4).unwrap(), wanted);
++    }
++
++    pub(crate) fn fixture_writable(socket: &QuicSocket) -> Vec<u64> {
++        socket.take_writable_streams()
++    }
++
++    pub(crate) struct TestPeer {
++        connection: QuicConnection,
++        http3: h3::Connection,
++        udp: UdpSocket,
++        _conn_tx: mpsc::Sender<MultiplexerMessage>,
++    }
++
++    impl TestPeer {
++        pub(crate) fn send_request_body(&mut self, stream_id: u64, body: &[u8]) {
++            assert_eq!(
++                self.http3
++                    .send_body(&mut self.connection, stream_id, body, false)
++                    .unwrap(),
++                body.len()
++            );
++        }
++
++        pub(crate) fn observe_response(
++            &mut self,
++            stream_id: u64,
++        ) -> (usize, usize, Vec<u64>, Vec<u8>) {
++            let mut headers = 0;
++            let mut finished = 0;
++            let mut resets = Vec::new();
++            let mut body = Vec::new();
++            for _ in 0..100 {
++                match self.http3.poll(&mut self.connection) {
++                    Ok((id, h3::Event::Headers { .. })) if id == stream_id => headers += 1,
++                    Ok((id, h3::Event::Finished)) if id == stream_id => finished += 1,
++                    Ok((id, h3::Event::Reset(code))) if id == stream_id => resets.push(code),
++                    Ok((id, h3::Event::Data)) => {
++                        let mut buffer = [0; 4096];
++                        while let Ok(length) =
++                            self.http3.recv_body(&mut self.connection, id, &mut buffer)
++                        {
++                            if id == stream_id {
++                                body.extend_from_slice(&buffer[..length]);
++                            }
++                        }
++                    }
++                    Ok(_) => (),
++                    Err(h3::Error::Done) => return (headers, finished, resets, body),
++                    Err(error) => panic!("fixture H3 poll: {error:?}"),
++                }
++            }
++            panic!("fixture H3 event limit exceeded");
++        }
++
++        pub(crate) async fn exchange(&mut self, socket: &QuicSocket) {
++            let mut buffer = [0; 65535];
++            for _ in 0..4 {
++                {
++                    let mut server = socket.quic_conn.lock().unwrap();
++                    transfer(&mut server, &mut self.connection);
++                    transfer(&mut self.connection, &mut server);
++                }
++                loop {
++                    match tokio::time::timeout(
++                        Duration::from_millis(2),
++                        self.udp.recv_from(&mut buffer),
++                    )
++                    .await
++                    {
++                        Ok(Ok((length, from))) => {
++                            self.connection
++                                .recv(
++                                    &mut buffer[..length],
++                                    quiche::RecvInfo {
++                                        from,
++                                        to: self.udp.local_addr().unwrap(),
++                                    },
++                                )
++                                .unwrap();
++                        }
++                        Err(_) => break,
++                        other => panic!("fixture UDP receive: {other:?}"),
++                    }
++                }
++            }
++        }
++
++        pub(crate) fn stop_response(&mut self, stream_id: u64) {
++            self.connection
++                .stream_shutdown(stream_id, quiche::Shutdown::Read, 0x42)
++                .unwrap();
++        }
++
++        pub(crate) fn received_fixture_headers(&mut self, stream_id: u64) -> usize {
++            let mut count = 0;
++            for _ in 0..100 {
++                match self.http3.poll(&mut self.connection) {
++                    Ok((id, h3::Event::Headers { list, .. })) if id == stream_id => {
++                        assert!(list
++                            .iter()
++                            .any(|h| h.name() == b":status" && h.value() == b"200"));
++                        assert!(list
++                            .iter()
++                            .any(|h| h.name() == b"x-fixture" && h.value() == vec![b'x'; 128]));
++                        count += 1;
++                    }
++                    Ok((id, h3::Event::Data)) => {
++                        let mut data = [0; 4096];
++                        while self
++                            .http3
++                            .recv_body(&mut self.connection, id, &mut data)
++                            .is_ok()
++                        {}
++                    }
++                    Ok(_) => (),
++                    Err(h3::Error::Done) => return count,
++                    Err(error) => panic!("fixture H3 poll: {error:?}"),
++                }
++            }
++            panic!("fixture H3 event limit exceeded");
++        }
++    }
++
++    pub(super) struct LockProbe {
++        write_ready: std::sync::mpsc::SyncSender<()>,
++        write_action: std::sync::Mutex<std::sync::mpsc::Receiver<bool>>,
++        shutdown_entered: std::sync::mpsc::SyncSender<()>,
++        shutdown_first: std::sync::mpsc::SyncSender<()>,
++    }
++
++    impl LockProbe {
++        pub(super) fn write_locked(&self) -> bool {
++            let _ = self.write_ready.send(());
++            self.write_action.lock().unwrap().recv().unwrap_or(true)
++        }
++        pub(super) fn shutdown_entered(&self) {
++            let _ = self.shutdown_entered.send(());
++        }
++        pub(super) fn shutdown_first_lock(&self) {
++            let _ = self.shutdown_first.send(());
++        }
++    }
++
++    #[test]
++    fn graceful_shutdown_does_not_hold_quic_while_waiting_for_h3() {
++        let (write_ready_tx, write_ready_rx) = std::sync::mpsc::sync_channel(1);
++        let (write_action_tx, write_action_rx) = std::sync::mpsc::sync_channel(1);
++        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
++        let (first_tx, first_rx) = std::sync::mpsc::sync_channel(1);
++        let probe = Arc::new(LockProbe {
++            write_ready: write_ready_tx,
++            write_action: std::sync::Mutex::new(write_action_rx),
++            shutdown_entered: entered_tx,
++            shutdown_first: first_tx,
++        });
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        let (socket, _client_socket) = runtime.block_on(connected_socket(probe, 1));
++        let (done_tx, done_rx) = std::sync::mpsc::channel();
++        let writer = {
++            let socket = socket.clone();
++            let done = done_tx.clone();
++            std::thread::spawn(move || {
++                let result = socket.write(0, Bytes::from_static(b"payload"));
++                let _ = done.send(("writer", result.is_ok_and(|left| left.is_empty())));
++            })
++        };
++        write_ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
++        let shutdown = {
++            let socket = socket.clone();
++            let done = done_tx;
++            std::thread::spawn(move || {
++                let result = socket.graceful_shutdown();
++                let _ = done.send(("shutdown", result.is_ok()));
++            })
++        };
++        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
++        let inverted = first_rx.recv_timeout(Duration::from_secs(1)).is_ok();
++        // Abort the paused writer on inversion so the regression cannot hang.
++        write_action_tx.send(inverted).unwrap();
++        let results = [
++            done_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
++            done_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
++        ];
++        writer.join().unwrap();
++        shutdown.join().unwrap();
++        assert!(!inverted, "shutdown held QUIC while a writer held HTTP3");
++        assert!(
++            results.iter().all(|(_, success)| *success),
++            "real methods failed: {results:?}"
++        );
++    }
++    #[test]
++    fn writable_notifications_respect_pending_frame_capacity() {
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        for wanted_capacity in 3..=6 {
++            runtime.block_on(async {
++                let (write_ready, _) = std::sync::mpsc::sync_channel(1);
++                let (_, write_action) = std::sync::mpsc::sync_channel(1);
++                let (shutdown_entered, _) = std::sync::mpsc::sync_channel(1);
++                let (shutdown_first, _) = std::sync::mpsc::sync_channel(1);
++                let probe = Arc::new(LockProbe {
++                    write_ready,
++                    write_action: std::sync::Mutex::new(write_action),
++                    shutdown_entered,
++                    shutdown_first,
++                });
++                let (mut socket, _client_socket) = connected_socket(probe, 2).await;
++                Arc::get_mut(&mut socket).unwrap().lock_probe = None;
++                {
++                    let mut h3 = socket.h3_conn.lock().unwrap();
++                    let mut quic = socket.quic_conn.lock().unwrap();
++                    let capacity = quic.stream_capacity(0).unwrap();
++                    let length =
++                        capacity - wanted_capacity - net_utils::http3_data_frame_overhead(capacity);
++                    assert_eq!(
++                        h3.send_body(&mut quic, 0, &vec![0; length], false).unwrap(),
++                        length
++                    );
++                    assert_eq!(quic.stream_capacity(0).unwrap(), wanted_capacity);
++                }
++                socket.notify_stream_waiting_writable(0, 6);
++                socket.notify_stream_waiting_writable(4, 3);
++                let mut ready = socket.take_writable_streams();
++                ready.sort_unstable();
++                assert_eq!(
++                    ready,
++                    if wanted_capacity < 6 {
++                        vec![4]
++                    } else {
++                        vec![0, 4]
++                    }
++                );
++                socket.notify_stream_waiting_writable(8, 6);
++                assert_eq!(socket.take_writable_streams(), vec![8]);
++                assert!(socket.take_writable_streams().is_empty());
++                if wanted_capacity < 6 {
++                    assert_eq!(
++                        socket.waiting_writable_streams.lock().unwrap().get(&0),
++                        Some(&6)
++                    );
++                    socket.notify_stream_waiting_writable(0, wanted_capacity);
++                    assert_eq!(socket.take_writable_streams(), vec![0]);
++                }
++                assert!(socket.waiting_writable_streams.lock().unwrap().is_empty());
++                if wanted_capacity == 4 {
++                    let socket = crate::http3_codec::tests::assert_body_wait_capacity(socket).await;
++                    assert_eq!(
++                        socket.waiting_writable_streams.lock().unwrap().get(&0),
++                        Some(&6)
++                    );
++                    assert!(socket.take_writable_streams().is_empty());
++                } else if wanted_capacity == 6 {
++                    let data = Bytes::from(vec![0; 65536]);
++                    assert!(socket.write(0, data).unwrap().len() < 65536);
++                }
++            });
++        }
++    }
++}

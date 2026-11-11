@@ -1,0 +1,36 @@
+{
+  "upstream_repository": "https://github.com/TrustTunnel/TrustTunnel.git",
+  "upstream_ref": "v1.1.0",
+  "upstream_commit": "fab5b8353a19332f935fa30869307d37d4a898d1",
+  "build_image": "adguard/core-libs@sha256:79273e6cfee10546af7edbb0122660b9e53e3380742181f5afbe068b212810c4",
+  "baseline_origin": "exact files read from Finland deployed node /opt/guardex-node on 2026-11-11",
+  "preserved_contracts": [
+    "live_credentials",
+    "account_qos",
+    "udp_rejection",
+    "h2_capacity_reclaim"
+  ],
+  "patch_scope": [
+    "HTTP3 shutdown lock order",
+    "pending frame capacity notification",
+    "blocked response header capacity growth",
+    "reset unstarted response without headerless FIN",
+    "retire cancelled request readers without closing sibling streams"
+  ],
+  "files_sha256": {
+    "http3-response-finalization.patch": "c8c08a55f4198e0b69ffa67a9f9cc834d3369a8ab9bf4a8455bc866c9049d5bd",
+    "verify_inputs.py": "9ab35df3d0fc88cff45c9230a679c836744f56cfad8026ba7e4069c499730800",
+    "Dockerfile.endpoint": "96eeed28ecd9d08e71ebdd3f8907b8a5ebfba902e039ad609be5c48b0297c047",
+    "README.md": "6f46f6160ce7f6871bbaa25f00031f8cd786c4a87c18b36893912cd49450cb31",
+    "Dockerfile.overlay": "a6e9f6540d6f9afecce9f9b15fe05e20f41f35f1e199dda93e8e0b76a0bcf511",
+    "baseline/trusttunnel-h2-capacity.lock": "3da09e64ab67a23a9502ca2cedbe2d3bbe435edb7ae75db6950252322cd8a995",
+    "baseline/h2-0.3.27-reclaim-capacity.patch": "6b2d340e6924878419d852a6adc666e2decbf23a9225b6498be8313a282d0209",
+    "baseline/trusttunnel-live-credentials-v1.1.0.patch": "8f41b8bfbcce7a155e714f228a52fc238296836cd4a1928c0fe8e8dd24b797a7",
+    "baseline/trusttunnel-udp-rejection-v1.1.0.patch": "67d684bde00bc8ddf9855eb1bdb59a49ae86c293c9987533efa71684c927f75a",
+    "baseline/build-trusttunnel-live-credentials.sh": "4a88e77257b0e8b34c3613af24500601318027eb0b823b48ea1bd9f06222ebd6",
+    "baseline/prepare-h2-capacity.sh": "58b8a2c0f8c7ccf5bc0ca0217f6529d0bf9fd7c1c408bf97039424d2c27ac081",
+    "baseline/manifest.json": "d57ded199399bdca8a9805a9f09254a6dad695341c37e2bcd56f8428063f9a0b",
+    "baseline/trusttunnel-account-qos-v1.1.0.patch": "abbd68ab6c916dc95c6a27d6088acf017928d240d29bd9e33519146627b23d4e"
+  },
+  "endpoint_patch_source_commit": "011a9bd0f437f198b0395519ae4eccf85e0ff6e9"
+}
