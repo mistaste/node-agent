@@ -62,6 +62,71 @@ HTTP/2/HTTP/3 traffic, then proceed to the next node. Other node services and
 quota limits are outside this change. Roll back by restoring the prior image
 and recreating the same service.
 
+### Guarded rolling operations
+
+`guarded_rollout.py` performs one node operation at a time. Supply a private,
+reviewed inventory containing each node's actual image ID, endpoint digest,
+original Compose file digests and the seven baseline source-file digests. Keep
+the successful Linux build receipt alongside the binary. A shared image tag or
+source tree does not replace an actual running-image or `/proc/.../exe` check.
+
+```sh
+python3 ops/trusttunnel-http3-response-finalization/guarded_rollout.py \
+  --pins /absolute/private/rollout-pins.json --node NODE-CODE \
+  --binary /absolute/private/endpoint-output/trusttunnel_endpoint \
+  --receipt /absolute/private/linux-build-receipt.json \
+  --operation unique-reviewed-operation --mode preflight
+```
+
+The default `plan` and `preflight` modes do not recreate containers. Reuse the
+same arguments with `--mode apply` only after reviewing the preflight. The helper
+builds an overlay from that node's exact original image, appends one uniquely
+owned Compose file and recreates only `trusttunnel-runner`, without dependencies,
+builds or pulls. Physical route, digest, throughput and cleanup checks remain
+operator gates between nodes; a successful deploy receipt is not mobile release
+acceptance.
+
+Before any recreation, the helper retains the complete original Docker inspect
+on the node under a root-owned `0700` operation directory, with `0600` files. That
+inspect contains credentials: never copy it into the Docker build context,
+download it into a report or print its raw environment. Original Compose files
+and journals remain immutable. Only the binary and overlay Dockerfile enter the
+image build context.
+
+Runtime checks preserve the complete Config, HostConfig and mount records.
+Only the owned image, generated hostname and exact owned Compose metadata
+transition are exempted. Unique environment keys are compared as a lossless map;
+duplicates, malformed entries and changed values are rejected. DNS empty lists
+remain distinct from `null` in the fingerprint. When the original Docker runtime
+has exact empty `DnsOptions` or `DnsSearch`, the owned override explicitly supplies
+`dns_opt: []` or `dns_search: []` so current Compose preserves that representation.
+
+The original integer `NanoCpus` is converted with `Decimal`, without a floating
+point round trip, and retained in both new-image and rollback overrides. An
+existing Compose deploy CPU limit is set to that same exact value. The resolved
+Compose CPU model is checked before any recreation. This prevents a manual
+runtime constraint from reverting to a stale Compose default: the Poland rollout
+found an original `0.75` CPU limit while its source default was `0.35`. The full
+fingerprint remains strict; no CPU, DNS or other HostConfig drift is normalized
+away. Account-QoS environment activation and its socket owner/mode must also stay
+unchanged.
+
+If an assertion fails after recreation, the helper retains the actual inspect
+before attempting rollback, then requires the original image, file and running
+process digests, zero restarts and exact original runtime fingerprint. Stop on any
+failed verification, including failed rollback verification. Retain old images,
+journals and full original inspect for recovery; do not proceed to the next node
+or recreate Caddy, HAProxy or WireGuard to compensate. `--mode rollback` reuses the
+same operation ID and its retained journal.
+
+Artifact transfers have a separate bounded 600-second operational deadline;
+application and API request budgets are unchanged. A transfer failure happens
+before runtime recreation. If resuming an owned partial upload, first require
+its exact byte length and SHA-256 to match the same local prefix, then verify the
+complete binary and Dockerfile digests. `--reuse-uploaded` skips copying only;
+the remote full-file digest checks and fresh runtime preflight still precede
+every apply. Never overwrite a mismatching prefix or remove an unrelated file.
+
 ## Validation
 
 The real QUIC peer regression fails before the fix because an uncommitted

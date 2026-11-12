@@ -2,10 +2,10 @@ name: Endpoint source assembly
 
 on:
   pull_request:
-    paths: ['ops/quic-reliability/**', 'ops/prepare-h2-capacity.sh', '.github/workflows/quic-source.yml']
+    paths: ['ops/quic-reliability/**', 'ops/trusttunnel-http3-response-finalization/**', 'ops/prepare-h2-capacity.sh', '.github/workflows/quic-source.yml']
   push:
     branches: [master]
-    paths: ['ops/quic-reliability/**', 'ops/prepare-h2-capacity.sh', '.github/workflows/quic-source.yml']
+    paths: ['ops/quic-reliability/**', 'ops/trusttunnel-http3-response-finalization/**', 'ops/prepare-h2-capacity.sh', '.github/workflows/quic-source.yml']
 
 permissions:
   contents: read
@@ -16,6 +16,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify guarded rollout contracts
+        run: |
+          python3 -m unittest discover -s ops/trusttunnel-http3-response-finalization -p test_guarded_rollout.py
+          python3 ops/trusttunnel-http3-response-finalization/verify_inputs.py
       - name: Fetch pinned reference inputs
         run: |
           git clone --depth 1 --branch v1.1.0 https://github.com/TrustTunnel/TrustTunnel.git /tmp/guardex-endpoint-reference
