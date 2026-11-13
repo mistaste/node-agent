@@ -31,7 +31,12 @@ Its root-owned `/etc/guardex-relay-backhaul/config.json` contains only:
 ```
 
 The watchdog checks private reachability every five seconds. Two successful
-checks select a peer, two failures restore the original TCP path. Updates to
+checks select a peer by default, two failures restore the original TCP path.
+For an intermittently lossy peer, set its optional `recovery_successes` to an
+integer from 2 to 60 to require that many consecutive successful probes before
+selection. One failed probe resets the recovery count; failover remains two
+failures. This avoids repeatedly returning traffic to an unstable backhaul.
+Updates to
 the destination map are atomic. The map rewrites only outgoing TCP/443 for the
 listed public ingress IPs and source-NATs them to the relay's private address;
 the original public source would otherwise fail the WireGuard peer's /32 guard.

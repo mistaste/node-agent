@@ -28,6 +28,9 @@ def load_config(path):
             raise ValueError('invalid backhaul peer address')
         if str(outer) in public or str(inner) in private:
             raise ValueError('duplicate backhaul peer')
+        recovery = peer.get('recovery_successes', 2)
+        if type(recovery) is not int or not 2 <= recovery <= 60:
+            raise ValueError('invalid recovery_successes')
         public.add(str(outer))
         private.add(str(inner))
     return peers
@@ -59,16 +62,17 @@ def nft_update(peers, healthy):
 
 
 class Health:
-    def __init__(self):
+    def __init__(self, peers=()):
         self.healthy = set()
         self.successes = {}
         self.failures = {}
+        self.recovery_thresholds = {p['public_ip']: p.get('recovery_successes', 2) for p in peers}
 
     def observe(self, public_ip, success):
         if success:
             self.failures[public_ip] = 0
             self.successes[public_ip] = self.successes.get(public_ip, 0) + 1
-            if self.successes[public_ip] >= 2:
+            if self.successes[public_ip] >= self.recovery_thresholds.get(public_ip, 2):
                 self.healthy.add(public_ip)
         else:
             self.successes[public_ip] = 0
@@ -100,7 +104,7 @@ def main():
         print('backhaul configuration valid')
         return
     nft(nft_initial())
-    health = Health()
+    health = Health(peers)
     installed = set()
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(peers)) as pool:
         while True:

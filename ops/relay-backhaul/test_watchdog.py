@@ -32,6 +32,30 @@ class WatchdogTest(unittest.TestCase):
             state.observe(PEER['public_ip'], success)
         self.assertFalse(state.healthy)
 
+    def test_configured_recovery_requires_consecutive_successes(self):
+        slow = dict(PEER, recovery_successes=12)
+        state = watchdog.Health([slow])
+        for _ in range(11):
+            state.observe(PEER['public_ip'], True)
+        self.assertNotIn(PEER['public_ip'], state.healthy)
+        state.observe(PEER['public_ip'], False)
+        for _ in range(11):
+            state.observe(PEER['public_ip'], True)
+        self.assertNotIn(PEER['public_ip'], state.healthy)
+        state.observe(PEER['public_ip'], True)
+        self.assertIn(PEER['public_ip'], state.healthy)
+        state.observe(PEER['public_ip'], False)
+        state.observe(PEER['public_ip'], False)
+        self.assertNotIn(PEER['public_ip'], state.healthy)
+
+    def test_invalid_recovery_threshold_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'config.json'
+            for value in [True, 1, 61, '12', None]:
+                path.write_text(json.dumps({'interface': 'gxrelay0', 'peers': [dict(PEER, recovery_successes=value)]}))
+                with self.assertRaises(ValueError):
+                    watchdog.load_config(path)
+
     def test_map_update_is_atomic_and_scoped_to_healthy_peers(self):
         self.assertEqual(watchdog.nft_update([PEER], set()), 'flush map ip guardex_relay_backhaul healthy_peers\n')
         script = watchdog.nft_update([PEER], {PEER['public_ip']})
