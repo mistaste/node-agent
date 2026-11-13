@@ -31,6 +31,8 @@ def load_config(path):
         recovery = peer.get('recovery_successes', 2)
         if type(recovery) is not int or not 2 <= recovery <= 60:
             raise ValueError('invalid recovery_successes')
+        if type(peer.get('enabled', True)) is not bool:
+            raise ValueError('invalid backhaul enabled flag')
         public.add(str(outer))
         private.add(str(inner))
     return peers
@@ -55,7 +57,8 @@ def nft_initial():
 
 def nft_update(peers, healthy):
     rows = [f'flush map ip {TABLE} healthy_peers']
-    entries = [f"{p['public_ip']} : {p['private_ip']}" for p in peers if p['public_ip'] in healthy]
+    entries = [f"{p['public_ip']} : {p['private_ip']}" for p in peers
+               if p.get('enabled', True) and p['public_ip'] in healthy]
     if entries:
         rows.append(f"add element ip {TABLE} healthy_peers {{ {', '.join(entries)} }}")
     return '\n'.join(rows) + '\n'
@@ -67,8 +70,12 @@ class Health:
         self.successes = {}
         self.failures = {}
         self.recovery_thresholds = {p['public_ip']: p.get('recovery_successes', 2) for p in peers}
+        self.disabled = {p['public_ip'] for p in peers if not p.get('enabled', True)}
 
     def observe(self, public_ip, success):
+        if public_ip in self.disabled:
+            self.healthy.discard(public_ip)
+            return
         if success:
             self.failures[public_ip] = 0
             self.successes[public_ip] = self.successes.get(public_ip, 0) + 1
@@ -82,6 +89,8 @@ class Health:
 
 
 def probe(peer):
+    if not peer.get('enabled', True):
+        return peer['public_ip'], False
     try:
         result = subprocess.run(['/usr/bin/ping', '-n', '-c', '1', '-W', '1', '-I', INTERFACE, peer['private_ip']],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)

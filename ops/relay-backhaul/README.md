@@ -31,6 +31,15 @@ Its root-owned `/etc/guardex-relay-backhaul/config.json` contains only:
 ```
 
 The watchdog checks private reachability every five seconds. Two successful
+checks alone do not establish healthy bulk transfer: ICMP may work while the
+TCP data path stalls. After comparing authenticated transfers over both paths,
+an operator can set a peer's `enabled` to `false` to retain its original public
+TCP/SSH route. This disables only selection of that peer's backhaul; its VPN
+endpoint, TLS verification, access controls and exit remain unchanged. Restart
+the watchdog after editing its root-owned configuration. Set `enabled` back to
+`true` only after qualifying the private data path again.
+
+Two successful
 checks select a peer by default, two failures restore the original TCP path.
 For an intermittently lossy peer, set its optional `recovery_successes` to an
 integer from 2 to 60 to require that many consecutive successful probes before
