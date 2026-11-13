@@ -11,6 +11,23 @@ PEER = {'public_ip': '5.255.124.73', 'private_ip': '10.79.240.2'}
 
 
 class WatchdogTest(unittest.TestCase):
+    def test_disabled_backhaul_keeps_public_path_despite_successful_ping(self):
+        disabled = dict(PEER, enabled=False)
+        state = watchdog.Health([disabled])
+        for _ in range(20):
+            state.observe(PEER['public_ip'], True)
+        self.assertNotIn(PEER['public_ip'], state.healthy)
+        self.assertEqual(watchdog.probe(disabled), (PEER['public_ip'], False))
+        self.assertNotIn(PEER['public_ip'], watchdog.nft_update([disabled], {PEER['public_ip']}))
+
+    def test_invalid_enable_flag_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'config.json'
+            for value in [0, 1, 'false', None]:
+                path.write_text(json.dumps({'interface': 'gxrelay0', 'peers': [dict(PEER, enabled=value)]}))
+                with self.assertRaises(ValueError):
+                    watchdog.load_config(path)
+
     def test_hysteresis_recovers_and_falls_back_independently(self):
         state = watchdog.Health()
         for ip in ['5.255.124.73', '207.241.172.230']:
