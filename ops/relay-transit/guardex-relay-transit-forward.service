@@ -5,8 +5,8 @@ After=wg-quick@gxrelay0.service
 PartOf=wg-quick@gxrelay0.service
 
 [Service]
-User=nobody
-Group=nogroup
+DynamicUser=yes
+User=guardex-transit
 ExecStartPre=+/usr/bin/python3 /usr/local/lib/guardex-relay-transit/transit.py allow
 ExecStart=/usr/bin/python3 /usr/local/lib/guardex-relay-transit/transit.py run
 ExecStopPost=+/usr/bin/python3 /usr/local/lib/guardex-relay-transit/transit.py remove

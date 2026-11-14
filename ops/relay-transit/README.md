@@ -22,7 +22,7 @@ Use `role: select` on Moscow. Install `transit.py` under
 `/usr/local/lib/guardex-relay-transit/`, configuration at
 `/etc/guardex-relay-transit.json`, and the role-specific unit. Both require the
 existing `wg-quick@gxrelay0` and its firewall guard. The forward unit runs as
-`nobody`; only its root pre/post helpers add/remove the exact peer/port allowance.
+an isolated dynamic `guardex-transit` user; only its root pre/post helpers add/remove the exact peer/port allowance.
 It enforces a connection cap, bounded buffers, keepalives and write deadlines;
 it does not impose a five-minute lifetime or cut healthy idle streams.
 
