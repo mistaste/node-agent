@@ -1,0 +1,26 @@
+[Unit]
+Description=Guardex fixed encrypted Germany transit
+Requires=wg-quick@gxrelay0.service
+After=wg-quick@gxrelay0.service
+PartOf=wg-quick@gxrelay0.service
+
+[Service]
+DynamicUser=yes
+User=guardex-transit
+ExecStartPre=+/usr/bin/python3 /usr/local/lib/guardex-relay-transit/transit.py allow
+ExecStart=/usr/bin/python3 /usr/local/lib/guardex-relay-transit/transit.py run
+ExecStopPost=+/usr/bin/python3 /usr/local/lib/guardex-relay-transit/transit.py remove
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=256M
+TasksMax=32
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=Guardex Germany transit qualification and fallback
+Requires=wg-quick@gxrelay0.service
+After=wg-quick@gxrelay0.service guardex-relay-backhaul.service
+PartOf=wg-quick@gxrelay0.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/guardex-relay-transit/transit.py run
+ExecStopPost=-/usr/sbin/nft delete table ip guardex_relay_transit_de
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+MemoryMax=96M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target
