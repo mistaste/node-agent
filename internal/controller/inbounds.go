@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/config"
+	"github.com/guardex/node-agent/internal/controlhttp"
 	"github.com/guardex/node-agent/internal/inbound"
 	"github.com/guardex/node-agent/internal/transportbundle"
 	"github.com/guardex/node-agent/internal/trusttunnel"
@@ -180,7 +181,9 @@ func New(cfg *config.Config) (*Reconciler, error) {
 	}
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
-	return &Reconciler{cfg: cfg, http: &http.Client{Timeout: requestTimeout, CheckRedirect: rejectRedirect}, baseURL: strings.TrimRight(parsed.String(), "/"), interval: normalizedInterval(cfg.ResyncInterval), userOps: userops.New()}, nil
+	client := controlhttp.NewClient(requestTimeout, 6*time.Second)
+	client.CheckRedirect = rejectRedirect
+	return &Reconciler{cfg: cfg, http: client, baseURL: strings.TrimRight(parsed.String(), "/"), interval: normalizedInterval(cfg.ResyncInterval), userOps: userops.New()}, nil
 }
 
 func normalizedInterval(interval time.Duration) time.Duration {
