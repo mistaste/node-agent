@@ -83,13 +83,63 @@ func TestMetricsOnlyPusherUsesHTTP11Connections(t *testing.T) {
 	}
 }
 
-func TestRegularPusherKeepsDefaultHTTPTransport(t *testing.T) {
+func TestRegularPusherUsesBoundedControllerTransport(t *testing.T) {
 	pusher := NewPusher(&config.Config{}, nil, nil)
-	if pusher.http.Transport != nil {
-		t.Fatalf("regular pusher transport = %T, want net/http default", pusher.http.Transport)
+	transport, ok := pusher.http.Transport.(*http.Transport)
+	if !ok || transport.ForceAttemptHTTP2 || transport.TLSNextProto == nil {
+		t.Fatal("ingress metrics did not receive the resilient H1 transport")
 	}
-	if pusher.http.Timeout != 8*time.Second {
-		t.Fatalf("regular pusher timeout = %s, want 8s", pusher.http.Timeout)
+	if pusher.http.Timeout != metricsRequestTimeout {
+		t.Fatalf("regular pusher timeout = %s", pusher.http.Timeout)
+	}
+}
+
+func TestRegularPusherRecoversHeaderStallAndReusesSuccessfulJSONConnection(t *testing.T) {
+	var calls atomic.Int32
+	var mu sync.Mutex
+	var peers, protocols, bodies []string
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		mu.Lock()
+		peers = append(peers, req.RemoteAddr)
+		protocols = append(protocols, req.Proto)
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		if calls.Add(1) == 1 {
+			<-req.Context().Done()
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+	pusher := NewPusher(&config.Config{}, nil, nil)
+	transport, ok := pusher.http.Transport.(*http.Transport)
+	if !ok { t.Fatal("ingress pusher lacks a dedicated resilient control transport") }
+	transport.TLSClientConfig.RootCAs = server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	transport.ResponseHeaderTimeout = 100 * time.Millisecond
+	pusher.http.Timeout = time.Second
+	defer pusher.http.CloseIdleConnections()
+	const payload = `{"fixture":true}`
+	for range 2 {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pusher.send(req, []byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(peers) != 3 || peers[0] == peers[1] || peers[1] != peers[2] {
+		t.Fatalf("stalled connection not retired or successful JSON connection not reused: %v", peers)
+	}
+	for i := range peers {
+		if protocols[i] != "HTTP/1.1" || bodies[i] != payload {
+			t.Fatal("protocol or replay body changed")
+		}
 	}
 }
 
