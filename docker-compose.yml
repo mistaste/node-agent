@@ -87,6 +87,11 @@ services:
       - ./data/trusttunnel:/data/trusttunnel
 
   transport-bundle-runner:
+    # Use IPv4 resolvers: the transport UID routes IPv4 through gxwg0,
+    # while direct provider IPv6 is intentionally denied by the egress fence.
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     build: .
     restart: unless-stopped
     network_mode: host
