@@ -49,6 +49,30 @@ func TestRuntimePublishesRestrictedBundleAndWaitsForRunner(t *testing.T) {
 			t.Fatalf("%s mode = %v", name, info.Mode().Perm())
 		}
 	}
+	path := filepath.Join(root, "state.json")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Apply(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("identical reconciliation rewrote the acknowledged state")
+	}
+	if err := os.Remove(filepath.Join(root, "runner-state.json")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := runtime.Apply(ctx, request); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unchanged bundle without acknowledgement: %v", err)
+	}
+
 }
 
 func TestRuntimeRestoresPreviousBundleWhenRunnerRejectsUpdate(t *testing.T) {
