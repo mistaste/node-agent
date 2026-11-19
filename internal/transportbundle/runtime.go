@@ -1,6 +1,7 @@
 package transportbundle
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -79,7 +80,19 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 		return State{}, errors.New("transport bundle root could not be created")
 	}
 	previous := r.snapshot()
-	for name, content := range map[string][]byte{"haproxy.cfg": files.HAProxy, "Caddyfile": files.Caddy, "state.json": stateRaw} {
+	desired := map[string][]byte{"haproxy.cfg": files.HAProxy, "Caddyfile": files.Caddy, "state.json": stateRaw}
+	unchanged := true
+	for name, content := range desired {
+		info, err := os.Lstat(filepath.Join(r.root, name))
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || !bytes.Equal(previous[name], content) {
+			unchanged = false
+			break
+		}
+	}
+	if unchanged {
+		return r.waitForRunner(ctx, state)
+	}
+	for name, content := range desired {
 		if err := writeAtomic(filepath.Join(r.root, name), content, 0600); err != nil {
 			r.restore(previous)
 			return State{}, err
