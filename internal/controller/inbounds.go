@@ -324,6 +324,14 @@ func (r *Reconciler) restoreTrustTunnelPublicListener(ctx context.Context, prepa
 	if r.trustTunnel == nil {
 		return
 	}
+	if r.transportBundle != nil {
+		if _, configured := r.transportBundle.State(); configured {
+			// Apply restores the previous bundle on failure. A failed Naive TLS
+			// probe also leaves HAProxy configured and forwarding TrustTunnel.
+			// Moving TrustTunnel to the public port would conflict with that mux.
+			return
+		}
+	}
 	for _, item := range prepared {
 		if item.desired.Engine != "trusttunnel" || item.desired.Action != "apply" || item.trustTunnel == nil || item.trustTunnel.Port == item.desired.EffectivePort {
 			continue
