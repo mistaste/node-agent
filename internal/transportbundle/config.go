@@ -94,6 +94,10 @@ func Build(nodeSecret string, cfg Config) (Files, error) {
 	order forward_proxy before file_server
 	guardex_credentials%s
 	auto_https disable_redirects
+	cert_issuer acme {
+		disable_http_challenge
+		alt_tlsalpn_port %d
+	}
 }
 
 https://%s:%d, https://:%d {
@@ -124,7 +128,7 @@ https://%s:%d, https://:%d {
 	tls %s %s
 	respond "OK" 200
 }
-`, credentialKeys.String(), naiveHost, cfg.NaivePort, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
+`, credentialKeys.String(), cfg.NaivePort, naiveHost, cfg.NaivePort, cfg.NaivePort, users.String(), cfg.DecoyPort, cfg.CertificateFile, cfg.PrivateKeyFile)
 
 	// Preserve healthy idle tunnels, but reclaim dead physical connections after
 	// network handover. Kernel defaults otherwise retain them for over two hours.
