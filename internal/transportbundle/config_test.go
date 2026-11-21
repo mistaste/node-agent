@@ -62,6 +62,9 @@ func TestBuildRoutesTwoSNIAndHidesUnknownTraffic(t *testing.T) {
 	if strings.Contains(caddy, ":9443, http://:") {
 		t.Fatal("Naive listener must not mix HTTP and HTTPS on the same address")
 	}
+	if !strings.Contains(caddy, "disable_http_challenge\n\t\talt_tlsalpn_port 9443") {
+		t.Fatal("ACME must renew using the existing SNI route to the private TLS listener")
+	}
 }
 
 func TestCredentialIsStableAndDomainSeparated(t *testing.T) {
