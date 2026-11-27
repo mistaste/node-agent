@@ -1,5 +1,32 @@
 # Node host hardening
 
+## Blind relay TCP segment policy
+
+On blind relay hosts, `bash ops/install-relay-tcp-mss.sh` installs a separate
+oneshot systemd service before Docker starts. It caps TCP MSS at 1000 in both
+directions of the client-facing connection, only when conntrack confirms that
+public TCP 443 was redirected to the internal relay listener 10443. Other
+listeners, direct ingress connections and the relay-to-ingress leg are not
+matched. TLS remains end to end.
+
+Physical iPhone tests reproduced 30-second upload/readiness stalls and slow
+downloads with the original MSS. The bounded segment experiment avoided those
+stalls; removing it reproduced a 37-second relay failure on the same app build.
+This is a conservative workaround for that path, not a claim about which
+provider drops or reorders packets. Smaller segments add packet overhead, so
+check actual downloads and connection times after deployment.
+
+The installer syntax-checks the complete nft transaction, retains prior feature
+files in `/var/backups/guardex-relay-tcp-mss.*`, and never restarts the relay
+container. Reload atomically with `systemctl reload guardex-relay-tcp-mss`.
+Roll back with `systemctl disable --now guardex-relay-tcp-mss`; this removes only
+`inet guardex_relay_tcp_mss`. Existing topology/SSH/firewall tables and established
+TCP connections are retained. Verify policy application with
+`nft list table inet guardex_relay_tcp_mss` and repeat real relay transfers.
+
+Run `python3 ops/test_relay_tcp_mss.py` before deployment; also use the installer's
+Linux nft/systemd checks on each destination host.
+
 ## Opt-in receive ring for hosts reporting missed RX packets
 
 `systemd/guardex-rx-ring@.service` sets an explicitly selected interface's RX
