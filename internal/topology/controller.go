@@ -3,7 +3,6 @@ package topology
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/guardex/node-agent/internal/controlhttp"
 )
 
 type Controller struct {
@@ -47,22 +48,7 @@ func NewController(baseURL, serviceToken, nodeSecret string, interval time.Durat
 }
 
 func newTopologyHTTPClient() *http.Client {
-	// Some provider paths leave a reused HTTP/2 control-plane connection in a
-	// black-holed state while fresh HTTP/1.1 requests to the same origin work.
-	// A stale topology channel can incorrectly drain a healthy exit, so keep
-	// this small signed control-plane client on ordinary HTTP/1.1 keep-alives.
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ForceAttemptHTTP2 = false
-	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	} else {
-		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-	}
-	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
-	transport.ResponseHeaderTimeout = 6 * time.Second
-	transport.IdleConnTimeout = 45 * time.Second
-	return &http.Client{Timeout: 12 * time.Second, Transport: transport}
+	return controlhttp.NewClient(12*time.Second, 6*time.Second)
 }
 
 func (c *Controller) Run(ctx context.Context) {

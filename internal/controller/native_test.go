@@ -374,15 +374,40 @@ func TestControllerRestoresPublicTrustTunnelWhenNaiveBundleFails(t *testing.T) {
 		item.ClientCount = &count
 		_, item.ClientSetSHA256, _ = normalizeClientUUIDs(item.ClientUUIDs)
 	}
-	h := newControllerHarness(t, []desiredItem{naive, trust})
-	trustRuntime := &fakeTrustTunnelRuntime{available: true}
-	h.reconciler.EnableTrustTunnel(trustRuntime)
-	h.reconciler.EnableTransportBundle(&fakeTransportBundleRuntime{fail: true})
-	if err := h.reconciler.SyncOnce(context.Background()); err == nil {
-		t.Fatal("expected NaiveProxy activation failure")
-	}
-	if len(trustRuntime.applied) != 2 || trustRuntime.applied[0].Endpoint.Port != 8443 || trustRuntime.applied[1].Endpoint.Port != 443 {
-		t.Fatalf("TrustTunnel rollback sequence = %+v", trustRuntime.applied)
+	for _, tc := range []struct {
+		name           string
+		existingBundle bool
+		failApply      bool
+		wantPorts      []int
+	}{
+		{"initial activation fails", false, true, []int{8443, 443}},
+		{"existing bundle update fails", true, true, []int{8443}},
+		{"running mux with expired Naive certificate", false, false, []int{8443}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newControllerHarness(t, []desiredItem{naive, trust})
+			trustRuntime := &fakeTrustTunnelRuntime{available: true}
+			bundle := &fakeTransportBundleRuntime{fail: tc.failApply}
+			if tc.existingBundle {
+				bundle.state = transportbundle.State{Version: 1, InboundID: naive.InboundID, Revision: 1}
+			}
+			h.reconciler.EnableTrustTunnel(trustRuntime)
+			h.reconciler.EnableTransportBundle(bundle)
+			h.reconciler.naivePin = func(context.Context, string, int) (string, error) {
+				return "", errors.New("certificate has expired")
+			}
+			if err := h.reconciler.SyncOnce(context.Background()); err == nil {
+				t.Fatal("expected the Naive failure to remain visible")
+			}
+			if len(trustRuntime.applied) != len(tc.wantPorts) {
+				t.Fatalf("TrustTunnel apply calls = %d, want %d", len(trustRuntime.applied), len(tc.wantPorts))
+			}
+			for i, port := range tc.wantPorts {
+				if got := trustRuntime.applied[i].Endpoint.Port; got != port {
+					t.Fatalf("TrustTunnel apply %d used port %d, want %d", i, got, port)
+				}
+			}
+		})
 	}
 }
 

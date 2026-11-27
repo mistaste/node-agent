@@ -3,7 +3,6 @@ package pusher
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/config"
+	"github.com/guardex/node-agent/internal/controlhttp"
 	"github.com/guardex/node-agent/internal/metrics"
 )
 
@@ -53,39 +53,9 @@ func NewPusher(cfg *config.Config, collector *metrics.Collector, users UserInven
 	}
 }
 
-func newHTTPClient(metricsOnly bool) *http.Client {
-	client := &http.Client{
-		Timeout: 8 * time.Second,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	if !metricsOnly {
-		return client
-	}
-
-	// Relay hosts only run the metrics/control plane. Some restricted paths
-	// consistently stall Go's HTTP/2 client while the same HTTPS endpoint is
-	// healthy over HTTP/1.1. Keep normal HTTP/1.1 keep-alives: forcing a
-	// Connection: close header can itself be rejected by intermediaries on the
-	// same path. This transport is used only in metrics-only mode and cannot
-	// affect relay data.
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ForceAttemptHTTP2 = false
-	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	} else {
-		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-	}
-	// TLSNextProto disables the Go HTTP/2 round-tripper, while NextProtos keeps
-	// ALPN consistent with that choice. Without both, the server may select h2
-	// and send HTTP/2 frames to the HTTP/1.1 parser.
-	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
-	transport.ResponseHeaderTimeout = 4 * time.Second
-	client.Timeout = metricsRequestTimeout
-	client.Transport = transport
-	return client
+func newHTTPClient(_ bool) *http.Client {
+	// Ingress/exit agents need the same bounded controller path as relays.
+	return controlhttp.NewClient(metricsRequestTimeout, 4*time.Second)
 }
 
 // Run starts the push loop. Blocks until ctx is cancelled.
@@ -218,10 +188,7 @@ func (p *Pusher) push(ctx context.Context) error {
 }
 
 func (p *Pusher) send(req *http.Request, body []byte) error {
-	attempts := 1
-	if p.cfg != nil && p.cfg.MetricsOnly {
-		attempts = metricsPushAttempts
-	}
+	attempts := metricsPushAttempts
 
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -242,6 +209,9 @@ func (p *Pusher) send(req *http.Request, body []byte) error {
 			p.http.CloseIdleConnections()
 			continue
 		}
+		// Successful metrics responses contain a small JSON body. Reading it is
+		// necessary to reuse H1 connections; Close alone discards the connection.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		if resp.StatusCode >= http.StatusMultipleChoices {
 			return fmt.Errorf("controller returned %d", resp.StatusCode)

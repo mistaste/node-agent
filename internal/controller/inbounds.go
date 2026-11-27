@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/guardex/node-agent/internal/config"
+	"github.com/guardex/node-agent/internal/controlhttp"
 	"github.com/guardex/node-agent/internal/inbound"
 	"github.com/guardex/node-agent/internal/transportbundle"
 	"github.com/guardex/node-agent/internal/trusttunnel"
@@ -180,7 +181,9 @@ func New(cfg *config.Config) (*Reconciler, error) {
 	}
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
-	return &Reconciler{cfg: cfg, http: &http.Client{Timeout: requestTimeout, CheckRedirect: rejectRedirect}, baseURL: strings.TrimRight(parsed.String(), "/"), interval: normalizedInterval(cfg.ResyncInterval), userOps: userops.New()}, nil
+	client := controlhttp.NewClient(requestTimeout, 6*time.Second)
+	client.CheckRedirect = rejectRedirect
+	return &Reconciler{cfg: cfg, http: client, baseURL: strings.TrimRight(parsed.String(), "/"), interval: normalizedInterval(cfg.ResyncInterval), userOps: userops.New()}, nil
 }
 
 func normalizedInterval(interval time.Duration) time.Duration {
@@ -320,6 +323,14 @@ func (r *Reconciler) SyncOnce(ctx context.Context) error {
 func (r *Reconciler) restoreTrustTunnelPublicListener(ctx context.Context, prepared []preparedItem) {
 	if r.trustTunnel == nil {
 		return
+	}
+	if r.transportBundle != nil {
+		if _, configured := r.transportBundle.State(); configured {
+			// Apply restores the previous bundle on failure. A failed Naive TLS
+			// probe also leaves HAProxy configured and forwarding TrustTunnel.
+			// Moving TrustTunnel to the public port would conflict with that mux.
+			return
+		}
 	}
 	for _, item := range prepared {
 		if item.desired.Engine != "trusttunnel" || item.desired.Action != "apply" || item.trustTunnel == nil || item.trustTunnel.Port == item.desired.EffectivePort {
