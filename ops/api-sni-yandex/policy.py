@@ -10,11 +10,13 @@ PORT = 19446
 TABLE, CHAIN, TAG = 'gx_yandex_api_20261127', 'GX_YANDEX_API_1127', 'guardex-yandex-api-20261127'
 EDGE_LINE = '        gateway.guardex-vpn.com 127.0.0.1:19446; # guardex-yandex-api-20261127\n'
 EDGE_BLOCK = '''    # BEGIN guardex-yandex-api-20261127
+    map $remote_addr $guardex_yandex_destination {
+        default gateway.guardex-vpn.com:443;
+    }
     server {
         listen 127.0.0.1:19446 proxy_protocol;
         resolver 1.1.1.1 8.8.8.8 valid=60s ipv6=off;
         resolver_timeout 2s;
-        set $guardex_yandex_destination gateway.guardex-vpn.com:443;
         proxy_pass $guardex_yandex_destination;
         proxy_protocol off;
         proxy_next_upstream off;

@@ -21,6 +21,15 @@ def run(args, check=True):
 
 def sha(data):return hashlib.sha256(data).hexdigest()
 
+def preflight(after):
+    candidate=ROOT/'candidate-nginx.conf'
+    candidate.write_text('include /etc/nginx/modules-enabled/*.conf;\n'
+                         'error_log stderr;\n'
+                         'pid '+str(ROOT/'candidate.pid')+';\n'
+                         'events { worker_connections 16; }\n'+after)
+    candidate.chmod(0o600)
+    run(['nginx','-t','-c',str(candidate)])
+
 def save(value):
     path=STATE.with_suffix('.tmp');path.write_text(json.dumps(value,indent=2)+'\n');path.chmod(0o600);path.replace(STATE)
 
@@ -51,13 +60,14 @@ def main():
             assert not STATE.exists(),'edge_scope_exists'
             before=CONFIG.read_bytes();assert sha(before)==args.expected_before_sha256,'changed_edge_configuration'
             after=p.render_edge(before.decode())
+            preflight(after)
             assert not run(['ss','-Hlnt','sport = :19446']).stdout.strip(),'occupied_edge_port'
             (ROOT/'edge-before.conf').write_bytes(before);(ROOT/'edge-before.conf').chmod(0o600)
             value=dict(status='armed',deadline_epoch=time.time()+1200,
                        before_sha256=sha(before),after_sha256=sha(after.encode()),
                        controller_sha256=sha(Path(__file__).read_bytes()),policy_sha256=sha((ROOT/'policy.py').read_bytes()))
             save(value)
-            run(['systemd-run','--quiet','--unit',TIMER,'--on-active=1200s',
+            run(['systemd-run','--quiet','--collect','--unit',TIMER,'--on-active=1200s',
                  '--timer-property=AccuracySec=1s','/usr/bin/python3',str(Path(__file__).resolve()),'rollback'])
             temporary=CONFIG.with_suffix('.guardex-yandex.tmp')
             try:
