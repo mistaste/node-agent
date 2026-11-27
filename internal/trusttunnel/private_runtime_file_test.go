@@ -168,3 +168,63 @@ func TestExternalApplyRepairsCredentialDriftDespiteMatchingAcknowledgment(t *tes
 		})
 	}
 }
+
+func TestAcknowledgedRevisionChangePreservesCredentialInode(t *testing.T) {
+	runtime, starter, request := newFixedRuntime(t)
+	defer starter.close()
+	initial, err := runtime.Apply(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.UseExternalProcess()
+	if err := os.Chmod(runtime.root, 0750); err != nil {
+		t.Fatal(err)
+	}
+	ack := initial
+	ack.CredentialReloadVersion = 1
+	raw, _ := json.Marshal(ack)
+	if err := os.WriteFile(filepath.Join(runtime.root, runnerStateFile), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(runtime.root, "credentials.toml")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Revision++
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ackDone := make(chan error, 1)
+	go func() {
+		for {
+			data, err := os.ReadFile(filepath.Join(runtime.root, "state.json"))
+			var published State
+			if err == nil && json.Unmarshal(data, &published) == nil && published.Revision == request.Revision {
+				published.CredentialReloadVersion = 1
+				data, _ = json.Marshal(published)
+				ackDone <- writeAtomic(filepath.Join(runtime.root, runnerStateFile), data, 0600)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				ackDone <- ctx.Err()
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+	updated, applyErr := runtime.Apply(ctx, request)
+	if err := <-ackDone; err != nil {
+		t.Fatal(err)
+	}
+	if applyErr != nil || updated.Revision != request.Revision {
+		t.Fatalf("revision update: %v", applyErr)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatal("metadata update replaced credentials")
+	}
+}
