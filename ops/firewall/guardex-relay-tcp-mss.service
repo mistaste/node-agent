@@ -1,0 +1,25 @@
+[Unit]
+Description=Guardex blind relay TCP segment policy
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/guardex-relay-tcp-mss apply
+ExecReload=/usr/local/sbin/guardex-relay-tcp-mss apply
+ExecStop=/usr/local/sbin/guardex-relay-tcp-mss remove
+User=root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+CapabilityBoundingSet=CAP_NET_ADMIN
+TimeoutStartSec=10
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

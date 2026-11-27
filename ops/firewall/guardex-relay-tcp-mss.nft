@@ -1,0 +1,10 @@
+table inet guardex_relay_tcp_mss {
+    chain relay_receive {
+        type filter hook input priority mangle; policy accept;
+        ct status dnat ct original proto-dst 443 tcp dport 10443 tcp flags & syn == syn tcp option maxseg size > 1000 counter tcp option maxseg size set 1000
+    }
+    chain relay_send {
+        type route hook output priority mangle; policy accept;
+        ct status dnat ct original proto-dst 443 tcp sport 10443 tcp flags & syn == syn tcp option maxseg size > 1000 counter tcp option maxseg size set 1000
+    }
+}
