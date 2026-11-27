@@ -205,14 +205,29 @@ func (r *Runtime) Apply(ctx context.Context, request ApplyRequest) (State, error
 		hosts, _ := os.ReadFile(filepath.Join(r.root, "hosts.toml"))
 		if json.Unmarshal(raw, &observed) == nil && observed.CredentialReloadVersion == 1 &&
 			r.externalRunnerReady(current) && bytes.Equal(settings, files.Settings) && bytes.Equal(hosts, files.Hosts) {
-			previous := r.snapshot()
-			if err := writeAtomic(filepath.Join(r.root, "credentials.toml"), files.Credentials, 0600); err != nil {
-				return State{}, err
-			}
 			stateRaw, _ := json.Marshal(state)
-			if err := writeAtomic(filepath.Join(r.root, "state.json"), stateRaw, 0600); err != nil {
-				r.restore(previous)
-				return State{}, err
+			credentialsPath := filepath.Join(r.root, "credentials.toml")
+			statePath := filepath.Join(r.root, "state.json")
+			credentialsCurrent := samePrivateRuntimeFile(credentialsPath, files.Credentials)
+			stateCurrent := samePrivateRuntimeFile(statePath, stateRaw)
+			// The healthy runner already acknowledged this exact state. Replacing
+			// identical credentials would add disk syncs and temporarily replace
+			// the runner's approved group-readable file with an owner-only file.
+			// Content and private ownership are checked, so drift still repairs.
+			if current == state && credentialsCurrent && stateCurrent {
+				return current, nil
+			}
+			previous := r.snapshot()
+			if !credentialsCurrent {
+				if err := writeAtomic(credentialsPath, files.Credentials, 0600); err != nil {
+					return State{}, err
+				}
+			}
+			if !stateCurrent {
+				if err := writeAtomic(statePath, stateRaw, 0600); err != nil {
+					r.restore(previous)
+					return State{}, err
+				}
 			}
 			if err := r.waitForExternalRunner(ctx, state); err != nil {
 				r.restore(previous)
