@@ -5,11 +5,11 @@ set -Eeo pipefail
 # Usage: curl -fsSL https://raw.githubusercontent.com/mistaste/node-agent/master/install.sh | bash
 
 AGENT_PORT="${AGENT_PORT:-8099}"
-CONTROLLER_HOST="${CONTROLLER_HOST:-api.guardex-vpn.com}"
+CONTROLLER_HOST="${CONTROLLER_HOST:-internal-api.cedarport.uk}"
 [ -z "${CONTROLLER_ORIGIN_IP:-}" ] || { echo "Use CONTROLLER_HOST (DNS name), not CONTROLLER_ORIGIN_IP" >&2; exit 1; }
 
 NODE_ID="${NODE_ID:-}"
-CONTROLLER_URL="${CONTROLLER_URL:-https://api.guardex-vpn.com}"
+CONTROLLER_URL="${CONTROLLER_URL:-https://internal-api.cedarport.uk}"
 INTERNAL_SERVICE_TOKEN="${INTERNAL_SERVICE_TOKEN:-}"
 AGENT_SECRET="${AGENT_SECRET:-$(openssl rand -hex 32)}"
 REGISTRATION_STATUS=""  # set by register_node()

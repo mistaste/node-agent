@@ -34,7 +34,9 @@ run `tc qdisc replace dev net0 root pfifo_fast`, substituting its interface.
 - `ssh/00-guardex-hardening.conf` disables password-based SSH authentication.
 
 Set `CONTROLLER_HOST` to the DNS-only name of the API backend's outbound
-controller address (default `api.guardex-vpn.com`). Do not use a CDN/proxy hostname:
+controller address (default `internal-api.cedarport.uk`). This name resolves
+directly to the backend, while the public API names may resolve to ingress
+proxies. Do not use a CDN/proxy hostname:
 the allowlist must match the backend that initiates node management connections.
 No server address is pinned in Compose `/etc/hosts` or the installer.
 
