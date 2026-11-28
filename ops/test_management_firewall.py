@@ -28,7 +28,7 @@ esac
                    if k not in ("CONTROLLER_ORIGIN_IP", "CONTROLLER_HOST", "AGENT_PORT")}
             env.update(PATH=f"{path}:{env['PATH']}", RULE_LOG=str(log),
                        GUARDEX_FIREWALL_LOCK=str(path / "lock"),
-                       DNS_REPLY="192.0.2.15 STREAM api.guardex-vpn.com")
+                       DNS_REPLY="192.0.2.15 STREAM internal-api.cedarport.uk")
             env.update(overrides)
             result = subprocess.run(["sh", str(ROOT / "ops/firewall/guardex-agent-firewall.sh")],
                                     env=env, capture_output=True, text=True, timeout=15)
@@ -37,7 +37,7 @@ esac
     def test_resolves_domain_and_installs_only_exact_source(self):
         result, calls = self.run_rules()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('getent ahostsv4 api.guardex-vpn.com', calls)
+        self.assertIn('getent ahostsv4 internal-api.cedarport.uk', calls)
         self.assertIn('-s 192.0.2.15 --dport 8099 -j ACCEPT', calls)
         self.assertIn('iptables-restore --wait 5 --noflush', calls)
         self.assertIn('ip6tables-restore --wait 5 --noflush', calls)
@@ -85,7 +85,8 @@ esac
     def test_install_and_compose_have_no_endpoint_ip_pins(self):
         install = (ROOT / 'install.sh').read_text()
         compose = (ROOT / 'docker-compose.yml').read_text()
-        self.assertIn('CONTROLLER_HOST="${CONTROLLER_HOST:-api.guardex-vpn.com}"', install)
+        self.assertIn('CONTROLLER_HOST="${CONTROLLER_HOST:-internal-api.cedarport.uk}"', install)
+        self.assertIn('CONTROLLER_URL="${CONTROLLER_URL:-https://internal-api.cedarport.uk}"', install)
         self.assertIn('guardex-agent-firewall.timer', install)
         self.assertNotIn('extra_hosts:', compose)
         self.assertNotIn('CONTROLLER_ORIGIN_IP', compose)

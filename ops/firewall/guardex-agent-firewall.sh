@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 
-host = os.environ.get("CONTROLLER_HOST", "api.guardex-vpn.com").rstrip(".")
+host = os.environ.get("CONTROLLER_HOST", "internal-api.cedarport.uk").rstrip(".")
 port = os.environ.get("AGENT_PORT", "8099")
 if os.environ.get("CONTROLLER_ORIGIN_IP"):
     sys.exit("Legacy CONTROLLER_ORIGIN_IP is unsupported; configure CONTROLLER_HOST")
